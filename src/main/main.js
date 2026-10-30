@@ -663,7 +663,7 @@ ipcMain.on('window-minimize', () => {
             ? { proxyRules, proxyBypassRules: '<local>,127.0.0.1,localhost' }
             : { mode: 'direct' };
           await session.defaultSession.setProxy(config);
-          const googleSess = session.fromPartition('persist:riff-google');
+          const googleSess = session.fromPartition('persist:eclipse-google');
           if (googleSess) await googleSess.setProxy(config);
           return { success: true };
         } catch (e) {
@@ -1435,11 +1435,36 @@ ipcMain.on('window-minimize', () => {
         }
       }
 
+      async function exportSessionCookiesToFile() {
+        try {
+          fs.mkdirSync(DATA_DIR, { recursive: true });
+          const s = session.fromPartition('persist:eclipse-google');
+          const allCookies = await s.cookies.get({});
+          const lines = ['# Netscape HTTP Cookie File'];
+          for (const c of allCookies) {
+            if (!c || !c.domain || !c.name) continue;
+            if (!c.domain.includes('google.com') && !c.domain.includes('youtube.com')) continue;
+            const dom = c.domain.startsWith('.') ? c.domain : '.' + c.domain;
+            const includeSub = dom.startsWith('.') ? 'TRUE' : 'FALSE';
+            const cPath = c.path || '/';
+            const sec = c.secure ? 'TRUE' : 'FALSE';
+            const exp = c.expirationDate ? Math.floor(c.expirationDate) : 0;
+            lines.push(`${dom}\t${includeSub}\t${cPath}\t${sec}\t${exp}\t${c.name}\t${c.value || ''}`);
+          }
+          if (lines.length > 1) {
+            fs.writeFileSync(YT_COOKIES_FILE, lines.join('\n') + '\n', 'utf8');
+            try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
+            return true;
+          }
+        } catch (_) {}
+        return false;
+      }
+
       async function importYoutubeCookiesToSession() {
         if (youtubeCookieImportPromise) return youtubeCookieImportPromise;
         youtubeCookieImportPromise = (async () => {
           const txt = fs.readFileSync(YT_COOKIES_FILE, 'utf8');
-          const googleSession = session.fromPartition('persist:riff-google');
+          const googleSession = session.fromPartition('persist:eclipse-google');
           await googleSession.clearStorageData({ storages: ['cookies'] });
           const rows = txt.split(/\r?\n/);
           for (const row of rows) {
@@ -1663,9 +1688,12 @@ ipcMain.on('window-minimize', () => {
         try {
           const auth = readGoogleOAuthData();
           if (auth && auth.refreshToken) return { loggedIn: true };
-          const s = session.fromPartition('persist:riff-google');
+          const s = session.fromPartition('persist:eclipse-google');
           const cookies = await s.cookies.get({ name: 'SAPISID' });
           const loggedIn = Array.isArray(cookies) && cookies.some(c => c && c.value);
+          if (loggedIn && !hasValidYtCookiesFile()) {
+            exportSessionCookiesToFile().catch(() => {});
+          }
           return { loggedIn };
         } catch (e) {
           return { loggedIn: false };
@@ -1683,7 +1711,7 @@ ipcMain.on('window-minimize', () => {
           fs.writeFileSync(YT_LOGOUT_FLAG, '1', 'utf8');
           if (fs.existsSync(GOOGLE_OAUTH_FILE)) fs.unlinkSync(GOOGLE_OAUTH_FILE);
           if (fs.existsSync(YT_COOKIES_FILE)) fs.unlinkSync(YT_COOKIES_FILE);
-          const s = session.fromPartition('persist:riff-google');
+          const s = session.fromPartition('persist:eclipse-google');
           await s.clearStorageData();
         } catch (e) {
           return { success: false, error: e && e.message ? e.message : 'Logout failed' };
@@ -1702,13 +1730,15 @@ ipcMain.on('window-minimize', () => {
       });
 
       ipcMain.handle('google-login', async (event) => {
-        try {
-          await startGoogleOAuthLogin();
-          return { success: true, loggedIn: true };
-        } catch (_) {}
+        if (process.env.ECLIPSE_GOOGLE_CLIENT_ID) {
+          try {
+            await startGoogleOAuthLogin();
+            return { success: true, loggedIn: true };
+          } catch (_) {}
+        }
 
         const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
-        const s = session.fromPartition('persist:riff-google');
+        const s = session.fromPartition('persist:eclipse-google');
         const originalUserAgent = win ? win.webContents.userAgent : app.userAgentFallback;
         const chromeUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.152 Safari/537.36';
         try { s.setUserAgent(chromeUA); } catch (e) {}
@@ -1735,7 +1765,7 @@ ipcMain.on('window-minimize', () => {
             height: 680,
             parent: win || undefined,
             modal: true,
-            title: 'Google Login',
+            title: 'Eclipse - Google Sign In',
             webPreferences: {
               session: s,
               contextIsolation: true,
@@ -1758,6 +1788,7 @@ ipcMain.on('window-minimize', () => {
                 if (Array.isArray(cookies) && cookies.some(c => c && c.value)) {
                   finished = true;
                   if (pollTimer) clearInterval(pollTimer);
+                  await exportSessionCookiesToFile().catch(() => {});
                   if (!authWin.isDestroyed()) authWin.close();
                   resolve({ success: true, loggedIn: true });
                 }
@@ -1774,8 +1805,9 @@ ipcMain.on('window-minimize', () => {
             if (pollTimer) clearInterval(pollTimer);
             if (!finished) {
               finished = true;
-              s.cookies.get({ name: 'SAPISID' }).then(cookies => {
+              s.cookies.get({ name: 'SAPISID' }).then(async cookies => {
                 const loggedIn = Array.isArray(cookies) && cookies.some(c => c && c.value);
+                if (loggedIn) await exportSessionCookiesToFile().catch(() => {});
                 resolve({ success: loggedIn, loggedIn });
               }).catch(() => {
                 resolve({ success: false, loggedIn: false });
@@ -1794,7 +1826,7 @@ ipcMain.on('window-minimize', () => {
         const doLikes = !opts || opts.doLikes !== false;
         const doPlaylists = !opts || opts.doPlaylists !== false;
 
-        if (platform === 'youtube') {
+        if (platform === 'youtube' && process.env.ECLIPSE_GOOGLE_CLIENT_ID) {
           try {
             const accessToken = await getGoogleAccessToken();
             return {
@@ -1806,7 +1838,7 @@ ipcMain.on('window-minimize', () => {
 
         await exportYoutubeCookiesToDisk().catch(() => {});
 
-        const s = session.fromPartition('persist:riff-google');
+        const s = session.fromPartition('persist:eclipse-google');
         const cookies = await s.cookies.get({ name: 'SAPISID' });
         const sapisidCookie = Array.isArray(cookies) ? cookies.find(c => c && c.value) : null;
         if (!sapisidCookie) {
