@@ -765,13 +765,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 1. Strip common video badges / wrappers from raw title
   const stripBadges = (str) => {
     return str
-      .replace(/\s*\|\s*(?:official\s*(?:music\s*)?(?:video|audio|lyrics?\s*video)|lyrics?\s*video|mv|visualizer|oxo\s*\(ep\)|ep).*$/gi, '')
+      .replace(/\s*\|\s*(?:official\s*(?:music\s*)?(?:video|audio|lyrics?\s*video)|lyrics?\s*video|official\s*m\/?v|mv|visualizer|oxo\s*\(ep\)|ep|"[^"]+"\s*ep).*$/gi, '')
       .replace(/\s*-\s*(?:official\s*(?:music\s*)?(?:video|audio|lyric\s*video)|lyric\s*video|official\s*video).*$/gi, '')
-      .replace(/\s*[\(\[]\s*(?:official\s*(?:music\s*)?(?:video|audio|lyric\s*video|visualizer)|lyrics?\s*video|lyrics?|visualizer|hd|hq|4k|remastered\s*\d*|mv|clip\s*officiel|audio|official\s*video|official)\s*[\)\]]/gi, '')
+      .replace(/\s*[\(\[]\s*(?:official\s*(?:music\s*)?(?:video|audio|lyric\s*video|visualizer|mv)|lyrics?\s*video|lyrics?|visualizer|hd|hq|4k|remastered\s*\d*|mv|clip\s*officiel|audio|official\s*video|official)\s*[\)\]]/gi, '')
       .trim();
   };
 
   title = stripBadges(title);
+  artist = stripBadges(artist);
 
   // 2. Comprehensive Known Artists Lexicon
   const KNOWN_ARTISTS = [
@@ -782,16 +783,33 @@ document.addEventListener('DOMContentLoaded', async () => {
     'kidsai', 'bbynascar', '2pillz', 'younghao', 'left hand', 'lil liem', 'taki',
     'xoxad', 'shiki', 'tyronee', 'typbee', 'clare', 'wicper', 'par sg', 'long lự',
     'frontiniz', 'puppy', 'teuyungboy', 'vstra', 'hngle', 'bảo anh', 'vcc left hand',
-    'dmean', 'sivan', 'kai đinh', 'kai dinh', 'jasmine'
+    'dmean', 'sivan', 'kai đinh', 'kai dinh', 'jasmine', 'wren evans', 'sixtyuptown',
+    'prettyxix', 'kewwi', 'itsnk'
   ];
 
   const matchesKnownArtist = (s) => {
     if (!s) return false;
     const norm = s.toLowerCase().replace(/\s+official$/i, '').trim();
-    return KNOWN_ARTISTS.some(a => norm === a || norm.startsWith(a + ' ') || norm.endsWith(' ' + a) || norm.includes(' ' + a + ' ') || norm.includes(a + ',') || norm.includes(a + ' ft') || norm.includes(a + ' feat'));
+    return KNOWN_ARTISTS.some(a => norm === a || norm.startsWith(a + ' ') || norm.endsWith(' ' + a) || norm.includes(' ' + a + ' ') || norm.includes(a + ',') || norm.includes(a + ' ft') || norm.includes(a + ' feat') || norm.includes(a + ' x ') || norm.includes(' x ' + a));
   };
 
   const isFeaturing = (s) => /\b(ft\.?|feat\.?|featuring|prod\.?|x)\b/i.test(s) || /,\s*[a-zA-Z0-9_\s]{2,}/.test(s);
+  const featPattern = /(?:[\(\[]\s*|\s+)(?:ft\.?|feat\.?|featuring|prod\.?)\s*([^\)\]]+)[\)\]]?/i;
+
+  // Inverted check first: if title is known artist and artist is NOT known artist (e.g. title: MCK, artist: Mot Cai Om)
+  if (matchesKnownArtist(title) && artist && artist !== 'unknown artist') {
+    const featInArtist = artist.match(featPattern);
+    if (featInArtist) {
+      const featStr = stripBadges(featInArtist[0]).replace(/^[\(\[\s]+/, '').replace(/[\)\]\s]+$/, '');
+      const cleanSongTitle = stripBadges(artist.replace(featInArtist[0], '')).trim();
+      artist = `${title} (${featStr})`;
+      title = cleanSongTitle;
+    } else if (!matchesKnownArtist(artist)) {
+      const temp = title;
+      title = artist;
+      artist = temp;
+    }
+  }
 
   // 3. Separator splitting: ' - ', ' – ', ' — ', ' // '
   const sepMatch = title.match(/^(.+?)\s+(?:[-–—]|\/\/)\s+(.+)$/);
@@ -825,23 +843,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  // Strip badges after separator split as well
+  title = stripBadges(title);
+  artist = stripBadges(artist);
+
   // 4. Extract featuring / prod artist from title into artist if title contains it
-  const featPattern = /(?:[\(\[]\s*|\s+)(?:ft\.?|feat\.?|featuring|prod\.?)\s*([^\)\]]+)[\)\]]?/i;
   const featMatch = title.match(featPattern);
   if (featMatch) {
-    const featStr = featMatch[0].replace(/^[\(\[\s]+/, '').replace(/[\)\]\s]+$/, '');
-    const cleanT = title.replace(featMatch[0], '').trim();
+    const featStr = stripBadges(featMatch[0]).replace(/^[\(\[\s]+/, '').replace(/[\)\]\s]+$/, '');
+    const cleanT = stripBadges(title.replace(featMatch[0], '')).trim();
     if (cleanT.length >= 2) {
       title = cleanT;
       if (!artist.toLowerCase().includes(featStr.toLowerCase())) {
-        artist = `${artist} (${featStr})`;
+        artist = artist ? `${artist} (${featStr})` : featStr;
       }
     }
   }
 
   // Clean quotes wrapping title
-  title = title.replace(/^['"“‘](.+)['"”’]$/, '$1').trim();
+  title = title.replace(/^['"“‘]+|['"”’]+$/g, '').trim();
   title = stripBadges(title);
+  artist = stripBadges(artist);
 
   // 5. Check if title and artist need to be swapped
   const titleLooksArtist = matchesKnownArtist(title) || isFeaturing(title);
@@ -11457,6 +11479,19 @@ function renderClickableArtists(container, rawArtist) {
   }
 
   function renderFavoritesView() {
+    if (Array.isArray(state.favorites)) {
+      let favChanged = false;
+      state.favorites.forEach(t => {
+        if (!t) return;
+        const ot = t.title;
+        const oa = t.artist;
+        normalizeTrackMeta(t);
+        if (t.title !== ot || t.artist !== oa) favChanged = true;
+      });
+      if (favChanged) {
+        try { localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites)); } catch (_) {}
+      }
+    }
     const query = el.favoritesSearchInput ? el.favoritesSearchInput.value.trim().toLowerCase() : '';
     let filtered = state.favorites;
     if (query) {
@@ -12391,6 +12426,19 @@ function renderClickableArtists(container, rawArtist) {
   function openPlaylistDetail(playlistId) {
     const pl = state.playlists.find(p => p.id === playlistId);
     if (!pl) return;
+    if (Array.isArray(pl.tracks)) {
+      let changed = false;
+      pl.tracks.forEach(t => {
+        if (!t) return;
+        const ot = t.title;
+        const oa = t.artist;
+        normalizeTrackMeta(t);
+        if (t.title !== ot || t.artist !== oa) changed = true;
+      });
+      if (changed) {
+        try { localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists)); } catch (_) {}
+      }
+    }
     state.currentPlaylistId = playlistId;
     state.currentPlaylist = pl;
     if (el.playlistDetailTitle) {
