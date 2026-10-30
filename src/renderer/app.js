@@ -752,70 +752,92 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   
-  function normalizeTrackMeta(t) {
-    if (!t) return t;
-    let title = String(t.title || '').trim();
-    let artist = String(t.artist || '').replace(/\s*-\s*Topic$/i, '').replace(/\bVEVO$/i, '').trim();
+  
+  function parseSmartArtistAndTitle(rawTitle, rawArtist) {
+  let title = String(rawTitle || '').trim();
+  let artist = String(rawArtist || '')
+    .replace(/\s*-\s*Topic$/i, '')
+    .replace(/\bVEVO$/i, '')
+    .replace(/\s+Official$/i, '')
+    .trim();
 
-    const isFeaturing = (s) => /\b(ft\.?|feat\.?|featuring|prod\.?|x)\b/i.test(s);
+  // Strip noise / badges
+  title = title
+    .replace(/\s*[\(\[]\s*(?:official\s*(?:music\s*)?(?:video|audio|lyric\s*video|visualizer)|lyrics?\s*video|lyrics?|visualizer|hd|hq|4k|remastered\s*\d*|mv|clip\s*officiel|audio|official)\s*[\)\]]/gi, '')
+    .trim();
 
-    const KNOWN_ARTISTS = [
-      'mck', 'rdm mck', 'hoo', 'notchaos', 'w/n', 'lowkid', 'cupid', 'kiddi', 'thanhluan',
-      'sơn tùng m-tp', 'đen', 'vũ', 'tlinh', 'hieuthuhai', 'wrxdie', 'gill',
-      'b ray', 'masew', 'soobin hoàng sơn', 'soobin', 'mono', 'justatee', 'rhymastic'
-    ];
+  const isFeaturing = (s) => /\b(ft\.?|feat\.?|featuring|prod\.?|x)\b/i.test(s) || /,\s*[a-zA-Z0-9_\s]{2,}/.test(s);
 
-    // Check separator inside title
-    const sepMatch = title.match(/^(.+?)\s+(?:[-–—]|\/\/)\s+(.+)$/);
-    if (sepMatch) {
-      let left = sepMatch[1].trim();
-      let right = sepMatch[2].trim();
-      const normLeft = left.toLowerCase();
-      const normRight = right.toLowerCase();
-      const normA = artist.toLowerCase();
+  // Extended comprehensive list of known artists
+  const KNOWN_ARTISTS = [
+    'mck', 'rdm mck', 'hoo', 'notchaos', 'w/n', 'lowkid', 'cupid', 'kiddi', 'thanhluan', 'thanh luan',
+    'sơn tùng m-tp', 'đen', 'vũ', 'tlinh', 'hieuthuhai', 'wrxdie', 'wxrdie', 'gill',
+    'b ray', 'masew', 'soobin hoàng sơn', 'soobin', 'mono', 'justatee', 'rhymastic',
+    'dangrangto', 'eren', 'drzey', 'honlieu', 'stormie', 'fishy', 'nguyên', 'nguyên.',
+    'kidsai', 'bbynascar', '2pillz', 'younghao', 'left hand', 'lil liem', 'taki',
+    'xoxad', 'shiki', 'tyronee', 'typbee', 'clare', 'wicper', 'par sg', 'long lự',
+    'frontiniz', 'puppy', 'teuyungboy', 'vstra', 'hngle', 'bảo anh', 'vcc left hand'
+  ];
 
-      const rightMatchesA = normA && (normRight === normA || normRight.startsWith(normA) || normA.startsWith(normRight));
-      const leftMatchesA = normA && (normLeft === normA || normLeft.startsWith(normA) || normA.startsWith(normLeft));
+  const matchesKnownArtist = (s) => {
+    if (!s) return false;
+    const norm = s.toLowerCase().replace(/\s+official$/i, '').trim();
+    return KNOWN_ARTISTS.some(a => norm === a || norm.startsWith(a + ' ') || norm.endsWith(' ' + a) || norm.includes(' ' + a + ' ') || norm.includes(a + ',') || norm.includes(a + ' ft') || norm.includes(a + ' feat'));
+  };
 
-      if (rightMatchesA && !leftMatchesA) {
+  // Check separators: ' - ', ' – ', ' — ', ' // '
+  const sepMatch = title.match(/^(.+?)\s+(?:[-–—]|\/\/)\s+(.+)$/);
+  if (sepMatch) {
+    let left = sepMatch[1].trim();
+    let right = sepMatch[2].trim();
+    const normLeft = left.toLowerCase();
+    const normRight = right.toLowerCase();
+    const normA = artist.toLowerCase().replace(/\s+official$/i, '').trim();
+
+    const leftIsArtist = matchesKnownArtist(left) || isFeaturing(left) || (normA && (normLeft === normA || normLeft.startsWith(normA) || normA.startsWith(normLeft)));
+    const rightIsArtist = matchesKnownArtist(right) || isFeaturing(right) || (normA && (normRight === normA || normRight.startsWith(normA) || normA.startsWith(normRight)));
+
+    if (rightIsArtist && !leftIsArtist) {
+      artist = right;
+      title = left;
+    } else if (leftIsArtist && !rightIsArtist) {
+      artist = left;
+      title = right;
+    } else if (rightIsArtist && leftIsArtist) {
+      if (normA && (normRight === normA || normRight.startsWith(normA))) {
         artist = right;
         title = left;
-      } else if (leftMatchesA && !rightMatchesA) {
-        artist = left;
-        title = right;
-      } else if (isFeaturing(right) && !isFeaturing(left)) {
-        artist = right;
-        title = left;
-      } else if (isFeaturing(left) && !isFeaturing(right)) {
-        artist = left;
-        title = right;
-      } else if (KNOWN_ARTISTS.some(a => normRight === a || normRight.startsWith(a + ' ft') || normRight.startsWith(a + ' feat'))) {
-        artist = right;
-        title = left;
-      } else if (KNOWN_ARTISTS.some(a => normLeft === a || normLeft.startsWith(a + ' ft') || normLeft.startsWith(a + ' feat'))) {
+      } else {
         artist = left;
         title = right;
       }
+    } else {
+      artist = left;
+      title = right;
     }
+  }
 
-    const normT = title.toLowerCase();
-    const normA = artist.toLowerCase();
+  // Check if title and artist need to be swapped
+  const titleLooksArtist = matchesKnownArtist(title) || isFeaturing(title);
+  const artistLooksArtist = matchesKnownArtist(artist) || isFeaturing(artist);
 
-    const titleIsKnownArtist = KNOWN_ARTISTS.some(a => normT === a || normT.startsWith(a + ' ft') || normT.startsWith(a + ' feat') || normT.includes(' ft. ' + a) || normT.includes(' feat. ' + a));
-    const artistIsKnownArtist = KNOWN_ARTISTS.some(a => normA === a || normA.startsWith(a + ' ft') || normA.startsWith(a + ' feat') || normA.includes(' ft. ' + a) || normA.includes(' feat. ' + a));
+  if (titleLooksArtist && !artistLooksArtist && artist && artist !== 'unknown artist') {
+    const temp = title;
+    title = artist;
+    artist = temp;
+  }
 
-    if (titleIsKnownArtist && !artistIsKnownArtist && artist && artist !== 'unknown artist') {
-      const temp = title;
-      title = artist;
-      artist = temp;
-    } else if (isFeaturing(title) && !isFeaturing(artist) && artist && artist !== 'unknown artist') {
-      const temp = title;
-      title = artist;
-      artist = temp;
-    }
+  artist = artist.replace(/\s+Official$/i, '').trim();
 
-    t.title = title || 'untitled';
-    t.artist = artist || 'unknown artist';
+  return { title: title || 'untitled', artist: artist || 'unknown artist' };
+}
+
+
+  function normalizeTrackMeta(t) {
+    if (!t) return t;
+    const res = parseSmartArtistAndTitle(t.title, t.artist);
+    t.title = res.title;
+    t.artist = res.artist;
     return t;
   }
 
