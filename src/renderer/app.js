@@ -3661,6 +3661,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (window.electronAPI && window.electronAPI.onWindowVisibility) {
     window.electronAPI.onWindowVisibility(visible => handleVisibilityChange(visible));
   }
+
+  const setUnfocused = (unfocused) => {
+    if (unfocused === document.body.classList.contains('unfocused')) return;
+    document.body.classList.toggle('unfocused', unfocused);
+  };
+  window.addEventListener('blur', () => setUnfocused(true));
+  window.addEventListener('focus', () => setUnfocused(false));
+
   setInterval(() => {
     window.electronAPI?.clearWebFrameCache?.();
   }, 3 * 60 * 1000);
@@ -4448,7 +4456,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     const signal = state.currentAbortController.signal;
     const fetchAbortTimeout = setTimeout(() => {
       try { state.currentAbortController?.abort(); } catch (_) {}
-    }, 20000);
+    }, 40000);
 
     state.currentTrack = track;
     emitPluginEvent('trackchange', track);
@@ -4466,7 +4474,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         state.queue.unshift(track);
         state.queueIndex = 0;
       }
-      state.queueHistory = [state.queueIndex];
+      recordPlayedIndex(state.queueIndex);
     } else {
       const existingIndex = state.queue.findIndex(t => isSameTrack(t, track));
       if (existingIndex === -1) {
@@ -4475,9 +4483,10 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       } else {
         state.queueIndex = existingIndex;
       }
-      state.queueHistory = [state.queueIndex];
+      recordPlayedIndex(state.queueIndex);
     }
     updateQueueBadge();
+    if (state.currentView === 'queue') renderQueueView();
 
     track.playedAt = Date.now();
     state.history = state.history.filter(t => !isSameTrack(t, track));
@@ -7860,8 +7869,28 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     }
 
     if (state.isShuffle) {
-      const eligible = state.queue.map((t, i) => i).filter(i => !isTrackBlocked(state.queue[i]) && !isArtistBlocked(state.queue[i]?.artist));
-      const nextIdx = eligible.length > 0 ? eligible[Math.floor(Math.random() * eligible.length)] : Math.floor(Math.random() * state.queue.length);
+      const provider = shuffleProvider;
+      let nextIdx = -1;
+      if (provider) {
+        try {
+          const pick = await provider.fn({
+            queue: state.queue.slice(),
+            queueIndex: state.queueIndex,
+            context: state.currentTrackContext,
+            current: state.currentTrack
+          });
+          if (pick) nextIdx = state.queue.findIndex(track => isSameTrack(track, pick));
+        } catch (e) { console.warn('[better-shuffle] provider error', e); }
+      }
+      if (nextIdx < 0) {
+        const eligible = state.queue.map((track, index) => index)
+          .filter(index => !isTrackBlocked(state.queue[index]) && !isArtistBlocked(state.queue[index]?.artist));
+        if (eligible.length === 0) return;
+        const recent = new Set(state.queueHistory.slice(-Math.max(1, Math.floor(eligible.length / 2))));
+        const pool = eligible.filter(index => !recent.has(index));
+        const candidates = pool.length ? pool : eligible;
+        nextIdx = candidates[Math.floor(Math.random() * candidates.length)];
+      }
       state.queueIndex = nextIdx;
       recordPlayedIndex(nextIdx);
       playTrack(state.queue[nextIdx]);
@@ -8661,7 +8690,11 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
       const card = container.querySelector('.search-artist-card');
       if (card) {
-        card.addEventListener('click', () => openArtistProfile(artist.name));
+        const open = () => {
+          if (typeof recordSearchArtist === 'function') recordSearchArtist(artist.name, avatarUrl, artist.isVerified);
+          openArtistProfile(artist.name);
+        };
+        card.addEventListener('click', open);
         card.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') {
             e.preventDefault();
@@ -9471,6 +9504,348 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     }
   }
 
+
+  const SEARCH_HISTORY_KEY = 'riff_search_history_v2';
+  const VERIFIED_CHECK_SVG = '<svg class="verified-check" width="14" height="14" viewBox="0 0 24 24" aria-label="Verified artist"><circle cx="12" cy="12" r="11" fill="currentColor"></circle><path d="M7 12.5l3.2 3.2L17 9" fill="none" stroke="var(--md-sys-color-on-primary, #000)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
+
+  function stripFeaturing(title) {
+    return String(title || '')
+      .replace(/\s*[\(\[]\s*(?:feat\.?|ft\.?|featuring)\s[^\)\]]*[\)\]]/gi, '')
+      .replace(/\s+(?:feat\.?|ft\.?|featuring)\s+.+$/i, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+
+  function rankSearchTracks(query, tracks) {
+    if (!Array.isArray(tracks) || tracks.length < 2) return tracks;
+    const q = normalizeMatchText(stripFeaturing(query));
+    if (!q) return tracks;
+    const exact = [];
+    const rest = [];
+    tracks.forEach(t => {
+      const title = normalizeMatchText(stripFeaturing(t.title));
+      const artist = normalizeMatchText(t.artist);
+      const hit = title === q || (artist && (q === artist + ' ' + title || q === title + ' ' + artist));
+      (hit ? exact : rest).push(t);
+    });
+    return exact.length ? exact.concat(rest) : tracks;
+  }
+
+  function getSearchHistory() {
+    const v = safeJson(SEARCH_HISTORY_KEY, []);
+    return Array.isArray(v) ? v : [];
+  }
+
+  function saveSearchHistory(list) {
+    try { localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(list.slice(0, 25))); } catch (_) {}
+  }
+
+  function recordSearchHistory(entry) {
+    if (!entry || !entry.key) return;
+    const list = getSearchHistory().filter(e => e && e.key !== entry.key);
+    list.unshift(Object.assign({ ts: Date.now() }, entry));
+    saveSearchHistory(list);
+  }
+
+  function recordSearchQuery(query, thumb) {
+    const q = String(query || '').trim();
+    if (!q) return;
+    recordSearchHistory({ kind: 'query', key: 'q:' + normalizeMatchText(q), title: q, subtitle: '', query: q, thumb: thumb || '' });
+  }
+
+  function recordSearchTrack(track) {
+    if (!track || !track.title) return;
+    const id = (typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(track) : '') || track.id;
+    if (!id) return;
+    let thumb = '';
+    try { thumb = (typeof getTrackThumbUrl === 'function' ? getTrackThumbUrl(track) : '') || track.thumbnail || track.cover || ''; } catch (_) {}
+    recordSearchHistory({
+      kind: 'track',
+      key: 't:' + id,
+      title: stripFeaturing(track.title),
+      subtitle: track.artist || '',
+      thumb,
+      explicit: typeof isTrackExplicit === 'function' ? !!isTrackExplicit(track) : false,
+      track: {
+        id: track.id, title: track.title, artist: track.artist, album: track.album,
+        duration: track.duration, thumbnail: track.thumbnail || thumb, cover: track.cover,
+        url: track.url, platform: track.platform, isExplicit: track.isExplicit,
+        searchQuery: track.searchQuery
+      }
+    });
+  }
+
+  function recordSearchArtist(name, thumb, verified) {
+    const n = String(name || '').trim();
+    if (!n) return;
+    recordSearchHistory({ kind: 'artist', key: 'a:' + normalizeMatchText(n), title: n, subtitle: '', thumb: thumb || '', verified: !!verified });
+  }
+
+  function setSearchIconCover(thumb) {
+    const btn = document.getElementById('search-icon-btn');
+    if (!btn) return;
+    let img = btn.querySelector('.search-icon-cover');
+    if (!thumb) { if (img) img.remove(); const svg = btn.querySelector('.search-icon'); if (svg) svg.classList.remove('hidden'); return; }
+    const svg = btn.querySelector('.search-icon');
+    if (!img) { img = document.createElement('img'); img.className = 'search-icon-cover'; img.alt = ''; btn.appendChild(img); }
+    img.src = thumb;
+    if (svg) svg.classList.add('hidden');
+  }
+
+  function initSearchHistory() {
+    const wrapper = document.querySelector('.search-box-wrapper');
+    const input = el.searchInput;
+    if (!wrapper || !input || document.getElementById('search-history-panel')) return;
+
+    const panel = document.createElement('div');
+    panel.id = 'search-history-panel';
+    panel.className = 'search-history-panel hidden';
+    wrapper.appendChild(panel);
+
+    const hide = () => panel.classList.add('hidden');
+
+    const openEntry = (entry) => {
+      hide();
+      if (entry.kind === 'track' && entry.track) {
+        playTrack(entry.track, [entry.track], 0, 'search');
+        recordSearchTrack(entry.track);
+      } else if (entry.kind === 'artist') {
+        input.value = '';
+        if (el.searchClearBtn) el.searchClearBtn.classList.add('hidden');
+        recordSearchArtist(entry.title, entry.thumb, entry.verified);
+        openArtistProfile(entry.title);
+      } else {
+        input.value = entry.query || entry.title || '';
+        if (el.searchClearBtn) el.searchClearBtn.classList.remove('hidden');
+        performSearch(input.value);
+      }
+    };
+
+    const render = () => {
+      const typed = normalizeMatchText(input.value);
+      let list = getSearchHistory();
+      if (typed) {
+        list = list.filter(e => normalizeMatchText(e.title + ' ' + (e.subtitle || '')).includes(typed));
+      }
+      if (list.length === 0) {
+        hide();
+        return;
+      }
+      panel.innerHTML = '';
+      const head = document.createElement('div');
+      head.className = 'sh-head';
+      const label = document.createElement('span');
+      label.textContent = 'Search history';
+      const clear = document.createElement('button');
+      clear.type = 'button';
+      clear.className = 'sh-clear';
+      clear.textContent = 'Clear';
+      clear.addEventListener('mousedown', (ev) => ev.preventDefault());
+      clear.addEventListener('click', () => { saveSearchHistory([]); hide(); });
+      head.append(label, clear);
+      panel.appendChild(head);
+
+      list.slice(0, 12).forEach(entry => {
+        const row = document.createElement('div');
+        row.className = 'sh-row';
+        row.addEventListener('mousedown', (ev) => ev.preventDefault());
+
+        const thumb = document.createElement('div');
+        thumb.className = 'sh-thumb' + (entry.kind === 'artist' ? ' round' : '');
+        if (entry.kind === 'query') {
+          thumb.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.5" y2="16.5"></line></svg>';
+        } else if (entry.thumb) {
+          const img = document.createElement('img');
+          img.alt = '';
+          img.addEventListener('error', () => img.remove());
+          img.src = entry.thumb;
+          thumb.appendChild(img);
+        }
+
+        const info = document.createElement('div');
+        info.className = 'sh-info';
+        const title = document.createElement('div');
+        title.className = 'sh-title';
+        title.textContent = entry.title;
+        if (entry.kind === 'artist' && entry.verified) title.insertAdjacentHTML('beforeend', VERIFIED_CHECK_SVG);
+        const sub = document.createElement('div');
+        sub.className = 'sh-sub';
+        if (entry.kind === 'track' && entry.explicit) {
+          const badge = document.createElement('span');
+          badge.className = 'explicit-badge';
+          badge.textContent = 'E';
+          sub.appendChild(badge);
+        }
+        const kindLabel = entry.kind === 'track' ? 'Track' : entry.kind === 'artist' ? 'Artist' : 'Search';
+        sub.appendChild(document.createTextNode(entry.subtitle ? kindLabel + ' • ' + entry.subtitle : kindLabel));
+        info.append(title, sub);
+
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'sh-remove';
+        remove.setAttribute('aria-label', 'Remove');
+        remove.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+        remove.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          saveSearchHistory(getSearchHistory().filter(e => e.key !== entry.key));
+          render();
+        });
+
+        row.append(thumb, info, remove);
+        row.addEventListener('click', () => openEntry(entry));
+        panel.appendChild(row);
+      });
+      panel.classList.remove('hidden');
+    };
+
+    input.addEventListener('focus', render);
+    input.addEventListener('click', render);
+    input.addEventListener('input', render);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === 'Escape') hide();
+    });
+    document.addEventListener('pointerdown', (e) => {
+      if (!wrapper.contains(e.target)) hide();
+    });
+  }
+
+  function initQueuePanel() {
+    const btn = document.getElementById('btn-toggle-queue-panel');
+    if (!btn || document.getElementById('np-queue-panel')) return;
+
+    const panel = document.createElement('aside');
+    panel.id = 'np-queue-panel';
+    panel.className = 'np-queue-panel';
+    panel.innerHTML = `
+      <div class="np-queue-head">
+        <div class="np-queue-tabs">
+          <button type="button" class="np-queue-tab active" data-tab="queue">Queue</button>
+          <button type="button" class="np-queue-tab" data-tab="recent">Recently played</button>
+        </div>
+        <button type="button" class="btn-icon-pill np-queue-close" aria-label="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <div class="np-queue-body" id="np-queue-body"></div>`;
+    document.body.appendChild(panel);
+
+    const body = panel.querySelector('#np-queue-body');
+    let tab = 'queue';
+    let signature = '';
+
+    const makeRow = (track, onClick, playing) => {
+      const row = document.createElement('div');
+      row.className = 'np-queue-row' + (playing ? ' playing' : '');
+      const thumb = typeof getTrackThumbUrl === 'function' ? getTrackThumbUrl(track) : (track.thumbnail || track.cover || '');
+      const art = document.createElement('div');
+      art.className = 'np-queue-art';
+      if (thumb) {
+        const img = document.createElement('img');
+        img.alt = '';
+        img.loading = 'lazy';
+        img.addEventListener('error', () => { img.remove(); });
+        img.src = thumb;
+        art.appendChild(img);
+      }
+      const info = document.createElement('div');
+      info.className = 'np-queue-info';
+      const title = document.createElement('span');
+      title.className = 'np-queue-title';
+      title.textContent = track.title || 'untitled';
+      const artist = document.createElement('span');
+      artist.className = 'np-queue-artist';
+      artist.textContent = track.artist || '';
+      info.append(title, artist);
+      row.append(art, info);
+      if (onClick) row.addEventListener('click', onClick);
+      return row;
+    };
+
+    const heading = (text) => {
+      const h = document.createElement('div');
+      h.className = 'np-queue-heading';
+      h.textContent = text;
+      return h;
+    };
+
+    const render = () => {
+      body.innerHTML = '';
+      const current = state.currentTrack;
+      if (tab === 'recent') {
+        const recent = (state.history || []).filter(Boolean).slice(0, 40);
+        if (!recent.length) {
+          const empty = document.createElement('div');
+          empty.className = 'np-queue-empty';
+          empty.textContent = 'Nothing played yet';
+          body.appendChild(empty);
+          return;
+        }
+        recent.forEach(t => body.appendChild(makeRow(t, () => playTrack(t, recent, recent.indexOf(t)), false)));
+        return;
+      }
+      if (!current) {
+        const empty = document.createElement('div');
+        empty.className = 'np-queue-empty';
+        empty.textContent = 'Nothing is playing';
+        body.appendChild(empty);
+        return;
+      }
+      body.appendChild(heading('Now playing'));
+      body.appendChild(makeRow(current, null, true));
+      const start = Math.max(0, state.queueIndex + 1);
+      const upcoming = (state.queue || []).slice(start, start + 50);
+      if (upcoming.length) {
+        body.appendChild(heading('Next up'));
+        upcoming.forEach((t, i) => {
+          const idx = start + i;
+          body.appendChild(makeRow(t, () => playTrack(state.queue[idx], state.queue, idx), false));
+        });
+      } else {
+        const empty = document.createElement('div');
+        empty.className = 'np-queue-empty';
+        empty.textContent = 'Nothing queued next';
+        body.appendChild(empty);
+      }
+    };
+
+    const currentSignature = () => {
+      const cur = state.currentTrack;
+      const q = state.queue || [];
+      const upcoming = q.slice(state.queueIndex + 1, state.queueIndex + 51)
+        .map(track => (typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(track) : '') || track.id).join(',');
+      return [tab, cur ? ((typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(cur) : '') || cur.id) : '', state.queueIndex, q.length, upcoming, (state.history || []).length].join('|');
+    };
+
+    const refresh = () => {
+      if (!panel.classList.contains('open')) return;
+      const sig = currentSignature();
+      if (sig === signature) return;
+      signature = sig;
+      render();
+    };
+
+    const setOpen = (open) => {
+      panel.classList.toggle('open', open);
+      btn.classList.toggle('active', open);
+      localStorage.setItem('riff_queue_panel_open', open ? '1' : '0');
+      signature = '';
+      refresh();
+    };
+
+    btn.addEventListener('click', () => setOpen(!panel.classList.contains('open')));
+    panel.querySelector('.np-queue-close').addEventListener('click', () => setOpen(false));
+    panel.querySelectorAll('.np-queue-tab').forEach(t => {
+      t.addEventListener('click', () => {
+        tab = t.dataset.tab;
+        panel.querySelectorAll('.np-queue-tab').forEach(x => x.classList.toggle('active', x === t));
+        signature = '';
+        refresh();
+      });
+    });
+    setInterval(refresh, 700);
+    if (localStorage.getItem('riff_queue_panel_open') === '1') setOpen(true);
+  }
+
   async function performSearch(query) {
     if (!query || !query.trim()) return;
 
@@ -9526,9 +9901,13 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         throw new Error(data.error || 'Failed to load search results');
       }
 
+      data.tracks = rankSearchTracks(query, data.tracks);
       state.searchResults = data.tracks;
       state.searchOffset = data.tracks.length;
       state.searchHasMore = !!data.hasMore;
+      const firstThumb = data.tracks.length ? (typeof getTrackThumbUrl === 'function' ? getTrackThumbUrl(data.tracks[0]) : (data.tracks[0].thumbnail || data.tracks[0].cover || '')) : '';
+      setSearchIconCover(firstThumb);
+      recordSearchQuery(query, firstThumb);
 
       requestAnimationFrame(() => {
         if (el.searchTracksList) {
@@ -10466,6 +10845,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           if (context === 'search') {
             state.isRadioQueue = false;
             state.queue = [...tracks];
+            if (typeof recordSearchTrack === 'function') recordSearchTrack(track);
             playTrack(track, tracks, idx, 'search');
             row.blur();
             return;
@@ -16847,6 +17227,7 @@ function bindCoverHoldZoom(wrapEl) {
 
   const loadedPlugins = new Map();
   const pluginListeners = [];
+  let shuffleProvider = null;
   function emitPluginEvent(event, data) {
     pluginListeners.filter((l) => l.event === event).forEach((l) => { try { l.cb(data); } catch (e) { reportPluginError(l.file, e); } });
   }
@@ -16879,7 +17260,65 @@ function bindCoverHoldZoom(wrapEl) {
       getTrack: () => state.currentTrack,
       isPlaying: () => state.isPlaying,
       audio: () => el.nativeAudio,
-      query: (sel) => document.querySelector(sel)
+      query: (sel) => document.querySelector(sel),
+      sameTrack: (a, b) => isSameTrack(a, b),
+      shuffle: {
+        setProvider(fn) {
+          shuffleProvider = typeof fn === 'function' ? { fn, file: p.file } : null;
+          return () => {
+            if (shuffleProvider && shuffleProvider.file === p.file) shuffleProvider = null;
+          };
+        },
+        isOn: () => !!state.isShuffle
+      },
+      queue: {
+        get: () => state.queue.slice(),
+        getIndex: () => state.queueIndex,
+        getContext: () => state.currentTrackContext,
+        append(tracks) {
+          const added = [];
+          (Array.isArray(tracks) ? tracks : []).forEach(track => {
+            if (!track || !track.title || (!track.id && !track.url)) return;
+            if (state.queue.some(queued => isSameTrack(queued, track))) return;
+            state.queue.push(track);
+            added.push(track);
+          });
+          if (added.length) {
+            updateQueueBadge();
+            if (state.currentView === 'queue') renderQueueView();
+          }
+          return added;
+        }
+      },
+      library: {
+        favorites: () => (state.favorites || []).slice(),
+        history: () => (state.history || []).slice()
+      },
+      api: {
+        async search(query, options) {
+          const opts = options || {};
+          const limit = Math.max(1, Math.min(parseInt(opts.limit, 10) || 10, 30));
+          const url = "http://127.0.0.1:" + state.serverPort + "/api/search?q=" + encodeURIComponent(query) + "&platform=" + encodeURIComponent(opts.platform || state.platform) + "&limit=" + limit;
+          const response = await fetch(url, { signal: opts.signal });
+          if (!response.ok) throw new Error("Search failed (" + response.status + ")");
+          const data = await response.json();
+          if (!data || !data.success) throw new Error(data && data.error || 'Search failed');
+          if (!Array.isArray(data.tracks)) throw new Error('Search returned an invalid response');
+          return data.tracks;
+        },
+        async vibe(body) {
+          const response = await fetch("http://127.0.0.1:" + state.serverPort + "/api/vibe", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body || {})
+          });
+          if (!response.ok) throw new Error("Recommendations failed (" + response.status + ")");
+          const data = await response.json();
+          if (!data || !data.success) throw new Error(data && data.error || 'Recommendations failed');
+          if (!Array.isArray(data.tracks)) throw new Error('Recommendations returned an invalid response');
+          return data.tracks;
+        }
+      }
     };
   }
   function runPlugin(p) {
@@ -16895,6 +17334,7 @@ function bindCoverHoldZoom(wrapEl) {
     const entry = loadedPlugins.get(p.file);
     try { if (entry && entry.stop) entry.stop(); } catch (e) { reportPluginError(p.file, e); }
     for (let i = pluginListeners.length - 1; i >= 0; i--) if (pluginListeners[i].file === p.file) pluginListeners.splice(i, 1);
+    if (shuffleProvider && shuffleProvider.file === p.file) shuffleProvider = null;
     document.querySelectorAll(`style[data-plugin="${p.file}"]`).forEach((n) => n.remove());
     const hadStop = !!(entry && entry.stop);
     loadedPlugins.delete(p.file);
@@ -25501,6 +25941,8 @@ function bindCoverHoldZoom(wrapEl) {
   initSidebarOrderCustomizer();
   renderBlockedItemsSettings();
   initSearchFilterChips();
+  initSearchHistory();
+  initQueuePanel();
   initMouseNavInterceptor();
   initDesktopShortcutSetting();
   initLikeAlbumTracksSetting();
