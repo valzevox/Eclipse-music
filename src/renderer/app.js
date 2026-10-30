@@ -9545,8 +9545,12 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     if (typeof toggleFavoriteTrack === 'function') toggleFavoriteTrack(track);
   }
 
-  function openDownloadModalForTrack(track) {
-    if (typeof openDownloadModal === 'function') openDownloadModal(track);
+  function openDownloadModalForTrack(track, initialTab = 'download') {
+    if (typeof openDownloadModal === 'function') openDownloadModal(track, initialTab);
+  }
+
+  function openTrimModalForTrack(track) {
+    openDownloadModalForTrack(track, 'trim');
   }
 
   function openRenameTrackModal(track) {
@@ -9726,6 +9730,15 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 0 1 4-4h12"/></svg>',
         action: () => {
           if (typeof executeCopyShareLink === 'function') executeCopyShareLink(track);
+        }
+      },
+      {
+        id: 'trim',
+        label: 'Trim best part',
+        icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>',
+        action: () => {
+          if (typeof openTrimModalForTrack === 'function') openTrimModalForTrack(track);
+          else openDownloadModalForTrack(track, 'trim');
         }
       },
       {
@@ -18985,11 +18998,15 @@ function bindCoverHoldZoom(wrapEl) {
   let parsedSpotifyExport = { likes: [], playlists: [] };
   let spLoginPollTimer = null;
   let spotifyConnected = false;
-  const spotifyHeaders = { 'X-Eclipse-Token': window.electronAPI?.serverToken || '' };
+  function getSpotifyHeaders() {
+    const tok = (window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '';
+    return { 'X-Eclipse-Token': tok, 'X-Riff-Token': tok };
+  }
+  const spotifyHeaders = getSpotifyHeaders();
 
   async function checkSpotifyAuthStatus() {
     try {
-      const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/spotify-status`, { headers: spotifyHeaders });
+      const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/spotify-status`, { headers: getSpotifyHeaders() });
       const data = await res.json();
       spotifyConnected = !!data.connected;
       if (spLoginStatus) {
@@ -19149,7 +19166,7 @@ function bindCoverHoldZoom(wrapEl) {
       }
 
       try {
-        const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/spotify-auth-start?clientId=${encodeURIComponent(clientId)}`, { headers: spotifyHeaders });
+        const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/spotify-auth-start?clientId=${encodeURIComponent(clientId)}`, { headers: getSpotifyHeaders() });
         const data = await res.json();
         if (!data.success) {
           if (spLoginStatus) {
@@ -19188,7 +19205,7 @@ function bindCoverHoldZoom(wrapEl) {
             return;
           }
           try {
-            const sRes = await fetch(`http://127.0.0.1:${state.serverPort}/api/spotify-status`, { headers: spotifyHeaders });
+            const sRes = await fetch(`http://127.0.0.1:${state.serverPort}/api/spotify-status`, { headers: getSpotifyHeaders() });
             const sData = await sRes.json();
             if (sData.connected) {
               clearInterval(spLoginPollTimer);
@@ -19474,7 +19491,7 @@ function bindCoverHoldZoom(wrapEl) {
     showImportSpinnerToast('Fetching Spotify library...');
 
     try {
-      const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/spotify-library?likes=${doLikes ? 1 : 0}&playlists=${doPlaylists ? 1 : 0}`, { headers: spotifyHeaders });
+      const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/spotify-library?likes=${doLikes ? 1 : 0}&playlists=${doPlaylists ? 1 : 0}`, { headers: getSpotifyHeaders() });
       const data = await res.json();
       if (!data.success) {
         dismissImportSpinnerToast();
@@ -19516,7 +19533,7 @@ function bindCoverHoldZoom(wrapEl) {
     showImportSpinnerToast('Importing playlist...');
 
     try {
-      const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/spotify-import?url=${encodeURIComponent(url)}`, { headers: spotifyHeaders });
+      const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/spotify-import?url=${encodeURIComponent(url)}`, { headers: getSpotifyHeaders() });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.success || !Array.isArray(data.tracks) || data.tracks.length === 0) {
         dismissImportSpinnerToast();
@@ -21129,7 +21146,7 @@ function bindCoverHoldZoom(wrapEl) {
     renderTrimmerWaveform();
   }
 
-  function openDownloadModal(track) {
+  function openDownloadModal(track, initialTab = 'download') {
     if (!track || !el.downloadModal) return;
     trackToDownload = track;
     downloadBatch = null;
@@ -21159,11 +21176,12 @@ function bindCoverHoldZoom(wrapEl) {
     }
 
     const dlTabs = document.querySelectorAll('.dl-mode-tab');
-    dlTabs.forEach(t => t.classList.toggle('active', t.dataset.dlTab === 'download'));
+    const isTrimMode = initialTab === 'trim';
+    dlTabs.forEach(t => t.classList.toggle('active', t.dataset.dlTab === (isTrimMode ? 'trim' : 'download')));
     const dlPaneDownload = document.getElementById('dl-pane-download');
     const dlPaneTrim = document.getElementById('dl-pane-trim');
-    if (dlPaneDownload) dlPaneDownload.classList.remove('hidden');
-    if (dlPaneTrim) dlPaneTrim.classList.add('hidden');
+    if (dlPaneDownload) dlPaneDownload.classList.toggle('hidden', isTrimMode);
+    if (dlPaneTrim) dlPaneTrim.classList.toggle('hidden', !isTrimMode);
 
     updateTrimmerUI();
 

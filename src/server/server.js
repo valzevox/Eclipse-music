@@ -6046,7 +6046,7 @@ function fetchSpotifyEmbed(playlistId, ua) {
 }
 
 async function handleSpotifyImport(req, res, inputUrl) {
-  const m = (inputUrl || '').match(/^(?:(?:https:\/\/)?open\.spotify\.com\/(?:embed\/)?playlist\/|spotify:playlist:)([a-zA-Z0-9]{22})(?:[/?#]|$)/);
+  const m = (inputUrl || '').match(/(?:open\.spotify\.com\/(?:[a-zA-Z]{2}(?:-[a-zA-Z]{2,4})?\/)?(?:embed\/)?playlist\/|spotify:playlist:)([a-zA-Z0-9]{22})/);
   if (!m) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ success: false, code: 'spotify_error', error: 'Invalid Spotify playlist URL' }));
@@ -6187,10 +6187,6 @@ async function handleSpotifyImport(req, res, inputUrl) {
       return res.end(JSON.stringify({ success: false, code: isPriv ? 'spotify_forbidden' : 'spotify_error', error: isPriv ? 'Private playlist' : 'Could not read tracks' }));
     }
 
-    if (limited && (!Array.isArray(entity?.trackList) || !Number.isInteger(entity.totalCount) || entity.totalCount > entity.trackList.length || entity.trackList.length > 100)) {
-      res.writeHead(409, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ success: false, code: 'spotify_incomplete', error: 'Spotify exposed only part of this playlist. Connect your account or use Export files.' }));
-    }
     const hasMore = false;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, name, cover, tracks, hasMore, total, limited }));
