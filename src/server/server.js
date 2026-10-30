@@ -6475,23 +6475,64 @@ function parseSmartArtistAndTitle(rawTitle, rawArtist) {
   let title = String(rawTitle || '').trim();
   let artist = String(rawArtist || '').replace(/\s*-\s*Topic$/i, '').replace(/\bVEVO$/i, '').trim();
 
+  // Strip noise / badges
   title = title
     .replace(/\s*[\(\[]\s*(?:official\s*(?:music\s*)?(?:video|audio|lyric\s*video|visualizer)|lyrics?\s*video|lyrics?|visualizer|hd|hq|4k|remastered\s*\d*|mv|clip\s*officiel|официальный\s*клип|премьера\s*клипа|премьера\s*трека)\s*[\)\]]/gi, '')
     .trim();
 
+  const isFeaturing = (s) => /\b(ft\.?|feat\.?|featuring|prod\.?|x)\b/i.test(s);
+
+  // Check separators: ' - ', ' – ', ' — ', ' // '
   const sepMatch = title.match(/^(.+?)\s+(?:[-–—]|\/\/)\s+(.+)$/);
   if (sepMatch) {
-    const left = sepMatch[1].trim();
-    const right = sepMatch[2].trim();
+    let left = sepMatch[1].trim();
+    let right = sepMatch[2].trim();
     const normLeft = left.toLowerCase();
+    const normRight = right.toLowerCase();
     const normUploader = artist.toLowerCase();
-    const isGenericChannel = !normUploader || /unknown|various|music|records|channel|archive|vibes|lyrics|topic|sound|audio|prod|beats|ost|ch\./i.test(normUploader);
-    if (left.length >= 2 && left.length <= 60 && right.length >= 2) {
-      if (isGenericChannel || normUploader === normLeft || normUploader.includes(normLeft) || !right.toLowerCase().includes(normUploader)) {
-        artist = left;
-        title = right;
-      }
+
+    const rightMatchesUploader = normUploader && (normRight === normUploader || normRight.startsWith(normUploader) || normUploader.startsWith(normRight));
+    const leftMatchesUploader = normUploader && (normLeft === normUploader || normLeft.startsWith(normUploader) || normUploader.startsWith(normLeft));
+
+    if (rightMatchesUploader && !leftMatchesUploader) {
+      artist = right;
+      title = left;
+    } else if (leftMatchesUploader && !rightMatchesUploader) {
+      artist = left;
+      title = right;
+    } else if (isFeaturing(right) && !isFeaturing(left)) {
+      artist = right;
+      title = left;
+    } else if (isFeaturing(left) && !isFeaturing(right)) {
+      artist = left;
+      title = right;
+    } else {
+      artist = left;
+      title = right;
     }
+  }
+
+  // Known artists list and swap detection
+  const KNOWN_ARTISTS = [
+    'mck', 'rdm mck', 'hoo', 'notchaos', 'w/n', 'lowkid', 'cupid', 'kiddi', 'thanhluan',
+    'sơn tùng m-tp', 'đen', 'vũ', 'tlinh', 'hieuthuhai', 'wrxdie', 'gill',
+    'b ray', 'masew', 'soobin hoàng sơn', 'soobin', 'mono', 'justatee', 'rhymastic'
+  ];
+
+  const normT = title.toLowerCase();
+  const normA = artist.toLowerCase();
+
+  const titleIsKnownArtist = KNOWN_ARTISTS.some(a => normT === a || normT.startsWith(a + ' ft') || normT.startsWith(a + ' feat') || normT.includes(' ft. ' + a) || normT.includes(' feat. ' + a));
+  const artistIsKnownArtist = KNOWN_ARTISTS.some(a => normA === a || normA.startsWith(a + ' ft') || normA.startsWith(a + ' feat') || normA.includes(' ft. ' + a) || normA.includes(' feat. ' + a));
+
+  if (titleIsKnownArtist && !artistIsKnownArtist && artist && artist !== 'unknown artist') {
+    const temp = title;
+    title = artist;
+    artist = temp;
+  } else if (isFeaturing(title) && !isFeaturing(artist) && artist && artist !== 'unknown artist') {
+    const temp = title;
+    title = artist;
+    artist = temp;
   }
 
   return {

@@ -751,7 +751,101 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (playlistsChanged) localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists));
   }
 
+  
+  function normalizeTrackMeta(t) {
+    if (!t) return t;
+    let title = String(t.title || '').trim();
+    let artist = String(t.artist || '').replace(/\s*-\s*Topic$/i, '').replace(/\bVEVO$/i, '').trim();
+
+    const isFeaturing = (s) => /\b(ft\.?|feat\.?|featuring|prod\.?|x)\b/i.test(s);
+
+    const KNOWN_ARTISTS = [
+      'mck', 'rdm mck', 'hoo', 'notchaos', 'w/n', 'lowkid', 'cupid', 'kiddi', 'thanhluan',
+      'sơn tùng m-tp', 'đen', 'vũ', 'tlinh', 'hieuthuhai', 'wrxdie', 'gill',
+      'b ray', 'masew', 'soobin hoàng sơn', 'soobin', 'mono', 'justatee', 'rhymastic'
+    ];
+
+    // Check separator inside title
+    const sepMatch = title.match(/^(.+?)\s+(?:[-–—]|\/\/)\s+(.+)$/);
+    if (sepMatch) {
+      let left = sepMatch[1].trim();
+      let right = sepMatch[2].trim();
+      const normLeft = left.toLowerCase();
+      const normRight = right.toLowerCase();
+      const normA = artist.toLowerCase();
+
+      const rightMatchesA = normA && (normRight === normA || normRight.startsWith(normA) || normA.startsWith(normRight));
+      const leftMatchesA = normA && (normLeft === normA || normLeft.startsWith(normA) || normA.startsWith(normLeft));
+
+      if (rightMatchesA && !leftMatchesA) {
+        artist = right;
+        title = left;
+      } else if (leftMatchesA && !rightMatchesA) {
+        artist = left;
+        title = right;
+      } else if (isFeaturing(right) && !isFeaturing(left)) {
+        artist = right;
+        title = left;
+      } else if (isFeaturing(left) && !isFeaturing(right)) {
+        artist = left;
+        title = right;
+      } else if (KNOWN_ARTISTS.some(a => normRight === a || normRight.startsWith(a + ' ft') || normRight.startsWith(a + ' feat'))) {
+        artist = right;
+        title = left;
+      } else if (KNOWN_ARTISTS.some(a => normLeft === a || normLeft.startsWith(a + ' ft') || normLeft.startsWith(a + ' feat'))) {
+        artist = left;
+        title = right;
+      }
+    }
+
+    const normT = title.toLowerCase();
+    const normA = artist.toLowerCase();
+
+    const titleIsKnownArtist = KNOWN_ARTISTS.some(a => normT === a || normT.startsWith(a + ' ft') || normT.startsWith(a + ' feat') || normT.includes(' ft. ' + a) || normT.includes(' feat. ' + a));
+    const artistIsKnownArtist = KNOWN_ARTISTS.some(a => normA === a || normA.startsWith(a + ' ft') || normA.startsWith(a + ' feat') || normA.includes(' ft. ' + a) || normA.includes(' feat. ' + a));
+
+    if (titleIsKnownArtist && !artistIsKnownArtist && artist && artist !== 'unknown artist') {
+      const temp = title;
+      title = artist;
+      artist = temp;
+    } else if (isFeaturing(title) && !isFeaturing(artist) && artist && artist !== 'unknown artist') {
+      const temp = title;
+      title = artist;
+      artist = temp;
+    }
+
+    t.title = title || 'untitled';
+    t.artist = artist || 'unknown artist';
+    return t;
+  }
+
+  function migrateTrackMetadata() {
+    let favChanged = false;
+    for (const t of (state.favorites || [])) {
+      if (!t) continue;
+      const oldT = t.title;
+      const oldA = t.artist;
+      normalizeTrackMeta(t);
+      if (t.title !== oldT || t.artist !== oldA) favChanged = true;
+    }
+    if (favChanged) localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+
+    let plChanged = false;
+    for (const pl of (state.playlists || [])) {
+      if (!pl || !Array.isArray(pl.tracks)) continue;
+      for (const t of pl.tracks) {
+        if (!t) continue;
+        const oldT = t.title;
+        const oldA = t.artist;
+        normalizeTrackMeta(t);
+        if (t.title !== oldT || t.artist !== oldA) plChanged = true;
+      }
+    }
+    if (plChanged) localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists));
+  }
+
   migrateAddedAt();
+  migrateTrackMetadata();
 
   applyFont(state.riffFont);
 
@@ -10148,6 +10242,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
   function createTrackRow(track, idx, currentCanonicalId, context, tracks, container) {
       if (track && track.artist) track.artist = stripYoutubeTopic(track.artist);
+      if (typeof normalizeTrackMeta === 'function') normalizeTrackMeta(track);
       applyTrackRenames(track);
       const row = document.createElement('div');
       row.className = 'track-row';
