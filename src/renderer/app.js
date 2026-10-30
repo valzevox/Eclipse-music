@@ -753,6 +753,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   
   
+  
   function parseSmartArtistAndTitle(rawTitle, rawArtist) {
   let title = String(rawTitle || '').trim();
   let artist = String(rawArtist || '')
@@ -761,22 +762,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     .replace(/\s+Official$/i, '')
     .trim();
 
-  // Strip noise / badges
-  title = title
-    .replace(/\s*[\(\[]\s*(?:official\s*(?:music\s*)?(?:video|audio|lyric\s*video|visualizer)|lyrics?\s*video|lyrics?|visualizer|hd|hq|4k|remastered\s*\d*|mv|clip\s*officiel|audio|official)\s*[\)\]]/gi, '')
-    .trim();
+  // 1. Strip common video badges / wrappers from raw title
+  const stripBadges = (str) => {
+    return str
+      .replace(/\s*\|\s*(?:official\s*(?:music\s*)?(?:video|audio|lyrics?\s*video)|lyrics?\s*video|mv|visualizer|oxo\s*\(ep\)|ep).*$/gi, '')
+      .replace(/\s*-\s*(?:official\s*(?:music\s*)?(?:video|audio|lyric\s*video)|lyric\s*video|official\s*video).*$/gi, '')
+      .replace(/\s*[\(\[]\s*(?:official\s*(?:music\s*)?(?:video|audio|lyric\s*video|visualizer)|lyrics?\s*video|lyrics?|visualizer|hd|hq|4k|remastered\s*\d*|mv|clip\s*officiel|audio|official\s*video|official)\s*[\)\]]/gi, '')
+      .trim();
+  };
 
-  const isFeaturing = (s) => /\b(ft\.?|feat\.?|featuring|prod\.?|x)\b/i.test(s) || /,\s*[a-zA-Z0-9_\s]{2,}/.test(s);
+  title = stripBadges(title);
 
-  // Extended comprehensive list of known artists
+  // 2. Comprehensive Known Artists Lexicon
   const KNOWN_ARTISTS = [
     'mck', 'rdm mck', 'hoo', 'notchaos', 'w/n', 'lowkid', 'cupid', 'kiddi', 'thanhluan', 'thanh luan',
     'sơn tùng m-tp', 'đen', 'vũ', 'tlinh', 'hieuthuhai', 'wrxdie', 'wxrdie', 'gill',
     'b ray', 'masew', 'soobin hoàng sơn', 'soobin', 'mono', 'justatee', 'rhymastic',
-    'dangrangto', 'eren', 'drzey', 'honlieu', 'stormie', 'fishy', 'nguyên', 'nguyên.',
+    'dangrangto', 'eren', 'drzey', 'drzey 洲', 'honlieu', 'stormie', 'fishy', 'nguyên', 'nguyên.',
     'kidsai', 'bbynascar', '2pillz', 'younghao', 'left hand', 'lil liem', 'taki',
     'xoxad', 'shiki', 'tyronee', 'typbee', 'clare', 'wicper', 'par sg', 'long lự',
-    'frontiniz', 'puppy', 'teuyungboy', 'vstra', 'hngle', 'bảo anh', 'vcc left hand'
+    'frontiniz', 'puppy', 'teuyungboy', 'vstra', 'hngle', 'bảo anh', 'vcc left hand',
+    'dmean', 'sivan', 'kai đinh', 'kai dinh', 'jasmine'
   ];
 
   const matchesKnownArtist = (s) => {
@@ -785,7 +791,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     return KNOWN_ARTISTS.some(a => norm === a || norm.startsWith(a + ' ') || norm.endsWith(' ' + a) || norm.includes(' ' + a + ' ') || norm.includes(a + ',') || norm.includes(a + ' ft') || norm.includes(a + ' feat'));
   };
 
-  // Check separators: ' - ', ' – ', ' — ', ' // '
+  const isFeaturing = (s) => /\b(ft\.?|feat\.?|featuring|prod\.?|x)\b/i.test(s) || /,\s*[a-zA-Z0-9_\s]{2,}/.test(s);
+
+  // 3. Separator splitting: ' - ', ' – ', ' — ', ' // '
   const sepMatch = title.match(/^(.+?)\s+(?:[-–—]|\/\/)\s+(.+)$/);
   if (sepMatch) {
     let left = sepMatch[1].trim();
@@ -794,8 +802,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const normRight = right.toLowerCase();
     const normA = artist.toLowerCase().replace(/\s+official$/i, '').trim();
 
-    const leftIsArtist = matchesKnownArtist(left) || isFeaturing(left) || (normA && (normLeft === normA || normLeft.startsWith(normA) || normA.startsWith(normLeft)));
-    const rightIsArtist = matchesKnownArtist(right) || isFeaturing(right) || (normA && (normRight === normA || normRight.startsWith(normA) || normA.startsWith(normRight)));
+    const leftIsArtist = matchesKnownArtist(left) || (normA && (normLeft === normA || normLeft.startsWith(normA) || normA.startsWith(normLeft)));
+    const rightIsArtist = matchesKnownArtist(right) || (normA && (normRight === normA || normRight.startsWith(normA) || normA.startsWith(normRight)));
 
     if (rightIsArtist && !leftIsArtist) {
       artist = right;
@@ -817,7 +825,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // Check if title and artist need to be swapped
+  // 4. Extract featuring / prod artist from title into artist if title contains it
+  const featPattern = /(?:[\(\[]\s*|\s+)(?:ft\.?|feat\.?|featuring|prod\.?)\s*([^\)\]]+)[\)\]]?/i;
+  const featMatch = title.match(featPattern);
+  if (featMatch) {
+    const featStr = featMatch[0].replace(/^[\(\[\s]+/, '').replace(/[\)\]\s]+$/, '');
+    const cleanT = title.replace(featMatch[0], '').trim();
+    if (cleanT.length >= 2) {
+      title = cleanT;
+      if (!artist.toLowerCase().includes(featStr.toLowerCase())) {
+        artist = `${artist} (${featStr})`;
+      }
+    }
+  }
+
+  // Clean quotes wrapping title
+  title = title.replace(/^['"“‘](.+)['"”’]$/, '$1').trim();
+  title = stripBadges(title);
+
+  // 5. Check if title and artist need to be swapped
   const titleLooksArtist = matchesKnownArtist(title) || isFeaturing(title);
   const artistLooksArtist = matchesKnownArtist(artist) || isFeaturing(artist);
 
