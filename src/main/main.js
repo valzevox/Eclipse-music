@@ -1,12 +1,22 @@
-const { app, BrowserWindow, dialog, ipcMain, screen, shell, Tray, Menu, nativeImage, globalShortcut, powerMonitor, session } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, screen, shell, Tray, Menu, nativeImage, globalShortcut, powerMonitor, session, safeStorage } = require('electron');
+const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const url = require('url');
 const { pathToFileURL } = url;
-const { spawn, execFile } = require('child_process');
+const { spawn, execFile, execSync } = require('child_process');
 const crypto = require('crypto');
 const zlib = require('zlib');
+const {
+  createCodeVerifier,
+  createCodeChallenge,
+  createOAuthState,
+  createAuthorizationUrl,
+  exchangeAuthorizationCode,
+  refreshAccessToken
+} = require('./google-oauth');
+const { fetchYouTubeLibrary } = require('./youtube-data');
 const RFACC_KEY = crypto.createHash('sha256').update('riff-account-key-v1').digest();
 
 function encryptAccount(dataObj) {
@@ -1410,8 +1420,249 @@ ipcMain.on('window-minimize', () => {
         });
       });
 
+      const YT_COOKIES_FILE = path.join(DATA_DIR, 'yt-cookies.txt');
+      const YT_LOGOUT_FLAG = path.join(DATA_DIR, '.yt-logged-out');
+      const GOOGLE_OAUTH_FILE = path.join(DATA_DIR, 'google-oauth.enc');
+      let youtubeCookieImportPromise = null;
+
+      function hasValidYtCookiesFile() {
+        try {
+          if (!fs.existsSync(YT_COOKIES_FILE)) return false;
+          const txt = fs.readFileSync(YT_COOKIES_FILE, 'utf8');
+          return /\.(?:youtube|google)\.com\s+.*\s+(?:SAPISID|__Secure-3PAPISID|__Secure-1PAPISID|LOGIN_INFO|SID)\s+\S+/i.test(txt);
+        } catch (_) {
+          return false;
+        }
+      }
+
+      async function importYoutubeCookiesToSession() {
+        if (youtubeCookieImportPromise) return youtubeCookieImportPromise;
+        youtubeCookieImportPromise = (async () => {
+          const txt = fs.readFileSync(YT_COOKIES_FILE, 'utf8');
+          const googleSession = session.fromPartition('persist:riff-google');
+          await googleSession.clearStorageData({ storages: ['cookies'] });
+          const rows = txt.split(/\r?\n/);
+          for (const row of rows) {
+            const line = row.startsWith('#HttpOnly_') ? row.slice(10) : row;
+            if (!line || line.startsWith('#')) continue;
+            const fields = line.split('\t');
+            if (fields.length < 7) continue;
+            const [domain, , cookiePath, secure, expires, name, ...valueParts] = fields;
+            if (!domain || !name || valueParts.length === 0) continue;
+            const host = domain.replace(/^\./, '');
+            if (host !== 'google.com' && !host.endsWith('.google.com') &&
+                host !== 'youtube.com' && !host.endsWith('.youtube.com')) continue;
+            const details = {
+              url: `https://${host}${cookiePath.startsWith('/') ? cookiePath : '/'}`,
+              name,
+              value: valueParts.join('\t'),
+              domain,
+              path: cookiePath || '/',
+              secure: secure.toUpperCase() === 'TRUE',
+              httpOnly: row.startsWith('#HttpOnly_')
+            };
+            const expiration = Number(expires);
+            if (Number.isFinite(expiration) && expiration > 0) details.expirationDate = expiration;
+            await googleSession.cookies.set(details);
+          }
+        })();
+        try {
+          await youtubeCookieImportPromise;
+        } finally {
+          youtubeCookieImportPromise = null;
+        }
+      }
+
+      function getCandidateBrowserSpecs() {
+        const specs = [];
+        const addIfDir = (dirPath, spec) => {
+          try {
+            if (fs.existsSync(dirPath) && !specs.includes(spec)) specs.push(spec);
+          } catch (_) {}
+        };
+        if (process.platform === 'win32') {
+          const local = process.env.LOCALAPPDATA || '';
+          const roaming = process.env.APPDATA || '';
+          addIfDir(path.join(local, 'Google', 'Chrome'), 'chrome');
+          addIfDir(path.join(local, 'BraveSoftware', 'Brave-Browser'), 'brave');
+          addIfDir(path.join(local, 'Microsoft', 'Edge'), 'edge');
+          addIfDir(path.join(roaming, 'Mozilla', 'Firefox'), 'firefox');
+          addIfDir(path.join(local, 'Vivaldi'), 'vivaldi');
+        }
+        if (!specs.includes('chrome')) specs.push('chrome');
+        if (!specs.includes('edge')) specs.push('edge');
+        if (!specs.includes('firefox')) specs.push('firefox');
+        return specs;
+      }
+
+      async function exportYoutubeCookiesToDisk() {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+        if (hasValidYtCookiesFile()) {
+          await importYoutubeCookiesToSession().catch(() => {});
+          return true;
+        }
+        const ytdlpBin = resolveBinary('yt-dlp');
+        if (!ytdlpBin) return false;
+        for (const spec of getCandidateBrowserSpecs()) {
+          try {
+            await new Promise((resolve) => {
+              execFile(ytdlpBin, [
+                '--no-config',
+                '--cookies-from-browser', spec,
+                '--cookies', YT_COOKIES_FILE,
+                '--skip-download',
+                '--no-warnings',
+                'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+              ], { timeout: 12000, windowsHide: true }, () => resolve());
+            });
+            if (hasValidYtCookiesFile()) {
+              await importYoutubeCookiesToSession().catch(() => {});
+              try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
+              return true;
+            }
+          } catch (_) {}
+        }
+        return false;
+      }
+
+      function readGoogleOAuthData() {
+        if (!fs.existsSync(GOOGLE_OAUTH_FILE)) return null;
+        if (!safeStorage.isEncryptionAvailable()) return null;
+        return JSON.parse(safeStorage.decryptString(fs.readFileSync(GOOGLE_OAUTH_FILE)));
+      }
+
+      function writeGoogleOAuthData(data) {
+        if (!safeStorage.isEncryptionAvailable()) {
+          throw new Error('Secure storage is unavailable on this system');
+        }
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+        fs.writeFileSync(GOOGLE_OAUTH_FILE, safeStorage.encryptString(JSON.stringify(data)));
+      }
+
+      async function getGoogleAccessToken() {
+        const auth = readGoogleOAuthData();
+        if (!auth || !auth.refreshToken) {
+          throw new Error('Sign in to Google before importing your YouTube library');
+        }
+        if (auth.accessToken && auth.expiresAt > Date.now() + 60000) {
+          return auth.accessToken;
+        }
+        const refreshed = await refreshAccessToken(auth.refreshToken);
+        auth.accessToken = refreshed.access_token;
+        auth.expiresAt = Date.now() + (Number(refreshed.expires_in) || 3600) * 1000;
+        if (refreshed.refresh_token) auth.refreshToken = refreshed.refresh_token;
+        writeGoogleOAuthData(auth);
+        return auth.accessToken;
+      }
+
+      async function startGoogleOAuthLogin() {
+        if (!safeStorage.isEncryptionAvailable()) {
+          throw new Error('Secure storage is unavailable on this system');
+        }
+        const codeVerifier = createCodeVerifier();
+        const state = createOAuthState();
+        const server = http.createServer();
+        await new Promise((resolve, reject) => {
+          server.once('error', reject);
+          server.listen(0, '127.0.0.1', resolve);
+        });
+        const address = server.address();
+        const redirectUri = `http://127.0.0.1:${address.port}`;
+        const authUrl = createAuthorizationUrl({
+          redirectUri,
+          state,
+          codeChallenge: createCodeChallenge(codeVerifier)
+        });
+        let cancelCallback;
+        try {
+          const callback = new Promise((resolve, reject) => {
+            let settled = false;
+            const timeout = setTimeout(() => {
+              finish(new Error('Google sign-in timed out. Complete the authorization in your browser and try again.'));
+            }, 180000);
+            const finish = (error, value) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timeout);
+              server.removeListener('request', onRequest);
+              if (error) reject(error);
+              else resolve(value);
+            };
+            cancelCallback = () => finish(new Error('Google sign-in could not be completed'));
+            const onRequest = (req, res) => {
+              const isLoopback = req.socket.remoteAddress === '127.0.0.1' ||
+                req.socket.remoteAddress === '::ffff:127.0.0.1';
+              if (!isLoopback) {
+                res.writeHead(403);
+                res.end();
+                return;
+              }
+              const requestUrl = new URL(req.url || '/', redirectUri);
+              if (req.method !== 'GET' || requestUrl.pathname !== '/') {
+                res.writeHead(404);
+                res.end();
+                return;
+              }
+              const returnedState = requestUrl.searchParams.get('state') || '';
+              const expected = Buffer.from(state);
+              const actual = Buffer.from(returnedState);
+              if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) {
+                res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+                res.end('Authorization could not be verified. Return to Eclipse and try again.');
+                finish(new Error('Google authorization state did not match'));
+                return;
+              }
+              const providerError = requestUrl.searchParams.get('error');
+              if (providerError) {
+                res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+                res.end('<!doctype html><title>Eclipse</title><p>Google sign-in was cancelled. You can close this tab and return to Eclipse.</p>');
+                finish(new Error(providerError === 'access_denied'
+                  ? 'Google sign-in was cancelled'
+                  : `Google authorization failed: ${providerError}`));
+                return;
+              }
+              const code = requestUrl.searchParams.get('code');
+              if (!code) {
+                res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+                res.end('Google did not return an authorization code. Return to Eclipse and try again.');
+                finish(new Error('Google did not return an authorization code'));
+                return;
+              }
+              res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+              res.end('<!doctype html><title>Eclipse</title><p>Google account connected. You can close this tab and return to Eclipse.</p>');
+              finish(null, { code });
+            };
+            server.on('request', onRequest);
+          });
+          await shell.openExternal(authUrl);
+          const result = await callback;
+          const tokens = await exchangeAuthorizationCode({
+            code: result.code,
+            redirectUri,
+            codeVerifier
+          });
+          if (!tokens.refresh_token) {
+            throw new Error('Google did not provide a refresh token. Revoke Eclipse access in your Google account and try again.');
+          }
+          writeGoogleOAuthData({
+            accessToken: tokens.access_token,
+            refreshToken: tokens.refresh_token,
+            expiresAt: Date.now() + (Number(tokens.expires_in) || 3600) * 1000,
+            scope: tokens.scope || ''
+          });
+          exportYoutubeCookiesToDisk().catch(() => {});
+        } finally {
+          if (cancelCallback) cancelCallback();
+          if (server.listening) {
+            await new Promise(resolve => server.close(resolve));
+          }
+        }
+      }
+
       ipcMain.handle('google-auth-status', async () => {
         try {
+          const auth = readGoogleOAuthData();
+          if (auth && auth.refreshToken) return { loggedIn: true };
           const s = session.fromPartition('persist:riff-google');
           const cookies = await s.cookies.get({ name: 'SAPISID' });
           const loggedIn = Array.isArray(cookies) && cookies.some(c => c && c.value);
@@ -1422,19 +1673,44 @@ ipcMain.on('window-minimize', () => {
       });
 
       ipcMain.handle('google-logout', async () => {
+        let revokeToken = '';
         try {
+          const auth = readGoogleOAuthData();
+          revokeToken = auth && auth.refreshToken ? auth.refreshToken : '';
+        } catch (_) {}
+        try {
+          fs.mkdirSync(DATA_DIR, { recursive: true });
+          fs.writeFileSync(YT_LOGOUT_FLAG, '1', 'utf8');
+          if (fs.existsSync(GOOGLE_OAUTH_FILE)) fs.unlinkSync(GOOGLE_OAUTH_FILE);
+          if (fs.existsSync(YT_COOKIES_FILE)) fs.unlinkSync(YT_COOKIES_FILE);
           const s = session.fromPartition('persist:riff-google');
           await s.clearStorageData();
-          return { success: true };
         } catch (e) {
           return { success: false, error: e && e.message ? e.message : 'Logout failed' };
         }
+        if (revokeToken) {
+          try {
+            await fetch('https://oauth2.googleapis.com/revoke', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: new URLSearchParams({ token: revokeToken }),
+              signal: AbortSignal.timeout(10000)
+            });
+          } catch (_) {}
+        }
+        return { success: true };
       });
 
       ipcMain.handle('google-login', async (event) => {
+        try {
+          await startGoogleOAuthLogin();
+          return { success: true, loggedIn: true };
+        } catch (_) {}
+
         const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
         const s = session.fromPartition('persist:riff-google');
-        const chromeUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+        const originalUserAgent = win ? win.webContents.userAgent : app.userAgentFallback;
+        const chromeUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.152 Safari/537.36';
         try { s.setUserAgent(chromeUA); } catch (e) {}
 
         try {
@@ -1443,6 +1719,9 @@ ipcMain.on('window-minimize', () => {
               delete details.requestHeaders['sec-ch-ua'];
               delete details.requestHeaders['sec-ch-ua-mobile'];
               delete details.requestHeaders['sec-ch-ua-platform'];
+              if (details.url && details.url.startsWith('https://accounts.google.com') && originalUserAgent) {
+                details.requestHeaders['User-Agent'] = chromeUA;
+              }
             }
             callback({ requestHeaders: details.requestHeaders });
           });
@@ -1504,7 +1783,7 @@ ipcMain.on('window-minimize', () => {
             }
           });
 
-          authWin.loadURL('https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F', {
+          authWin.loadURL('https://accounts.google.com/ServiceLogin?ltmpl=music&service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26next%3Dhttps%253A%252F%252Fmusic.youtube.com%252F', {
             userAgent: chromeUA
           }).catch(() => {});
         });
@@ -1514,6 +1793,18 @@ ipcMain.on('window-minimize', () => {
         const platform = (opts && opts.platform === 'ytmusic') ? 'ytmusic' : 'youtube';
         const doLikes = !opts || opts.doLikes !== false;
         const doPlaylists = !opts || opts.doPlaylists !== false;
+
+        if (platform === 'youtube') {
+          try {
+            const accessToken = await getGoogleAccessToken();
+            return {
+              success: true,
+              ...await fetchYouTubeLibrary(accessToken, { platform, doLikes, doPlaylists })
+            };
+          } catch (_) {}
+        }
+
+        await exportYoutubeCookiesToDisk().catch(() => {});
 
         const s = session.fromPartition('persist:riff-google');
         const cookies = await s.cookies.get({ name: 'SAPISID' });

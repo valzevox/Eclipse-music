@@ -19,6 +19,45 @@ const zlib = require('zlib');
 
 const PORT = 38472;
 const { DATA_DIR, CACHE_DIR, CUSTOM_LYRICS_DIR, LYRICS_DIR, THUMBNAILS_DIR, METADATA_PATH, LIBRARY_DIR, LIBRARY_PATH, ytDlpCommand, resolveDownloadDir, resolveBinary } = require('../shared/platform');
+const YT_COOKIES_FILE = path.join(DATA_DIR, 'yt-cookies.txt');
+
+function getYtAuthHeaders(origin = 'https://www.youtube.com') {
+  try {
+    if (!fs.existsSync(YT_COOKIES_FILE)) return null;
+    const raw = fs.readFileSync(YT_COOKIES_FILE, 'utf8');
+    const cookiePairs = [];
+    let sapisid = '';
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const parts = trimmed.split('\t');
+      if (parts.length >= 7) {
+        const domain = parts[0];
+        const name = parts[5];
+        const val = parts[6];
+        if (domain.includes('youtube.com')) {
+          cookiePairs.push(`${name}=${val}`);
+          if (name === 'SAPISID' || (!sapisid && name === '__Secure-3PAPISID')) {
+            sapisid = val;
+          }
+        }
+      }
+    }
+    if (!sapisid || !cookiePairs.length) return null;
+    const ts = Math.floor(Date.now() / 1000);
+    const hash = crypto.createHash('sha1').update(`${ts} ${sapisid} ${origin}`).digest('hex');
+    return {
+      'Cookie': cookiePairs.join('; '),
+      'Authorization': `SAPISIDHASH ${ts}_${hash}`,
+      'Origin': origin,
+      'X-Origin': origin,
+      'X-Goog-AuthUser': '0'
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
 const I18N_DIR = path.join(DATA_DIR, 'i18n');
 try { fs.mkdirSync(I18N_DIR, { recursive: true }); } catch (_) {}
 
@@ -1503,6 +1542,9 @@ function executeYtDlp(args, timeoutMs = 15000, opts = {}) {
     const prependFlags = [];
     if (!finalArgs.includes('--force-ipv4')) prependFlags.push('--force-ipv4');
     if (!finalArgs.includes('--geo-bypass')) prependFlags.push('--geo-bypass');
+    if (fs.existsSync(YT_COOKIES_FILE) && !finalArgs.includes('--cookies')) {
+      prependFlags.push('--cookies', YT_COOKIES_FILE);
+    }
     if (prependFlags.length > 0) {
       finalArgs.unshift(...prependFlags);
     }
@@ -2310,6 +2352,25 @@ function scoreImportedCandidate(targetTitle, targetArtist, targetDur, cand) {
   return score;
 }
 
+function makeCleanSearchQuery(artist, title) {
+  const cleanA = String(artist || '')
+    .replace(/\s*-\s*Topic$/i, '')
+    .replace(/\bVEVO$/i, '')
+    .split(/[,;&\/]|feat\.?|ft\.?/i)[0]
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const cleanT = String(title || '')
+    .replace(/\s*[\(\[]\s*(?:feat\.?|ft\.?|prod\.?|featuring)[^)]*[\)\]]/gi, '')
+    .replace(/\s*[\(\[]\s*(?:official\s*(?:music\s*)?(?:video|audio|lyric\s*video|visualizer)|lyrics?\s*video|lyrics?|visualizer|hd|hq|4k|mv|clip)\s*[\)\]]/gi, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return `${cleanA} ${cleanT}`.trim();
+}
+
 async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube', title = '', artist = '', duration = 0, thumbnail = '', timeoutSec = 12) {
   artist = stripYoutubeTopic(artist);
   trackUrl = normalizeSoundCloudUrl(trackUrl);
@@ -2615,91 +2676,98 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
         streamUrl = await resolveYtCandidateStream(cleanId);
       }
 
-      // Priority 1 — YouTube Music (ytmusicSearch(q)): score all candidates with scoreImportedCandidate(title, artist, duration, cand)
-      // As soon as a candidate with score >= 15 is found, immediately call fetchDirectYoutubeStreamServer(bestCand.id, quality) and return the stream!
-      if (!streamUrl && q) {
+      const searchQ = makeCleanSearchQuery(artist, title) || q;
+
+      // Priority 1 — YouTube Music (ytmusicSearch): loosened threshold + yt-dlp fallback
+      if (!streamUrl && (q || searchQ)) {
         try {
-          const ytmCandidates = await ytmusicSearch(q);
+          const ytmCandidates = await ytmusicSearch(searchQ || q);
           if (Array.isArray(ytmCandidates) && ytmCandidates.length > 0) {
             const scored = ytmCandidates
-              .map(c => ({ cand: c, score: scoreImportedCandidate(title, artist, duration, c) }))
-              .filter(x => x.score >= 15)
+              .map(c => ({ cand: c, score: scoreImportedCandidate(title || searchQ, artist, duration, c) }))
               .sort((a, b) => b.score - a.score);
-            for (const item of scored) {
-              if (!forceYtDlp) {
-                try {
-                  streamUrl = await fetchDirectYoutubeStreamServer(item.cand.id, quality);
-                } catch (_) {}
-              }
+            for (const item of scored.slice(0, 4)) {
+              streamUrl = await resolveYtCandidateStream(item.cand.id);
               if (streamUrl) {
                 cleanId = item.cand.id;
-                break;
-              }
-            }
-            if (!streamUrl) {
-              for (const item of scored.slice(0, 2)) {
-                streamUrl = await resolveYtCandidateStream(item.cand.id);
-                if (streamUrl) {
-                  cleanId = item.cand.id;
-                  break;
-                }
+                return sendStreamResponse(streamUrl, cleanId);
               }
             }
           }
         } catch (_) {}
       }
 
-      // Priority 2 — YouTube (directYoutubeSearch(q, false, 15)): only if ytmusicSearch + fetchDirectYoutubeStreamServer did not yield a stream
-      if (!streamUrl && q) {
+      // Priority 2 — YouTube (directYoutubeSearch)
+      if (!streamUrl && (q || searchQ)) {
         try {
-          const ytCandidates = await directYoutubeSearch(q, false, 15);
+          const ytCandidates = await directYoutubeSearch(searchQ || q, false, 15);
           if (Array.isArray(ytCandidates) && ytCandidates.length > 0) {
             const scored = ytCandidates
-              .map(c => ({ cand: c, score: scoreImportedCandidate(title, artist, duration, c) }))
-              .filter(x => x.score > -500)
+              .map(c => ({ cand: c, score: scoreImportedCandidate(title || searchQ, artist, duration, c) }))
               .sort((a, b) => b.score - a.score);
-            for (const item of scored) {
-              if (!forceYtDlp) {
-                try {
-                  streamUrl = await fetchDirectYoutubeStreamServer(item.cand.id, quality);
-                } catch (_) {}
-              }
+            for (const item of scored.slice(0, 4)) {
+              streamUrl = await resolveYtCandidateStream(item.cand.id);
               if (streamUrl) {
                 cleanId = item.cand.id;
-                break;
-              }
-            }
-            if (!streamUrl) {
-              for (const item of scored.slice(0, 2)) {
-                streamUrl = await resolveYtCandidateStream(item.cand.id);
-                if (streamUrl) {
-                  cleanId = item.cand.id;
-                  break;
-                }
+                return sendStreamResponse(streamUrl, cleanId);
               }
             }
           }
         } catch (_) {}
       }
 
-      // Priority 3 — SoundCloud (fetchSoundCloudSearch(q, 10)): only if ytmusic and youtube did not yield a stream
-      if (!streamUrl && q) {
+      // Priority 3 — SoundCloud (fetchSoundCloudSearch)
+      if (!streamUrl && (q || searchQ)) {
         try {
-          const scCandidates = await fetchSoundCloudSearch(q, 10);
+          const scCandidates = await fetchSoundCloudSearch(q || searchQ, 10);
           if (Array.isArray(scCandidates) && scCandidates.length > 0) {
             const scored = scCandidates
-              .map(c => ({ cand: c, score: scoreImportedCandidate(title, artist, duration, c) }))
-              .filter(x => x.score > -500)
+              .map(c => ({ cand: c, score: scoreImportedCandidate(title || searchQ, artist, duration, c) }))
               .sort((a, b) => b.score - a.score);
-            for (const item of scored) {
+            for (const item of scored.slice(0, 4)) {
               streamUrl = await resolveScCandidateStream(item.cand.url, item.cand.id);
-              if (streamUrl) break;
+              if (streamUrl) return sendStreamResponse(streamUrl);
             }
           }
           if (!streamUrl) {
-            streamUrl = await fetchDirectSoundCloudStreamServer('', q);
+            streamUrl = await fetchDirectSoundCloudStreamServer('', q || searchQ);
+            if (streamUrl) return sendStreamResponse(streamUrl);
           }
         } catch (_) {}
+      }
+
+      // Priority 4 — Aggressive yt-dlp search fallback (ytsearch1: & scsearch1:)
+      if (!streamUrl && (q || searchQ)) {
+        try {
+          const fbRaw = await executeYtDlp([
+            '--no-config', '-g', '--no-warnings', '--no-playlist', '--no-check-certificates',
+            '--socket-timeout', '8', '--retries', '1',
+            '--extractor-args', 'youtube:player_client=default,android_vr,android',
+            '-f', (forShare ? audioFormat : ytDlpQualityFormat),
+            `ytsearch1:${q || searchQ} audio`
+          ], 12000);
+          const fbLines = fbRaw.trim().split('\n').map(l => l.trim()).filter(l => l.startsWith('http'));
+          if (fbLines.length > 0) {
+            streamUrl = fbLines[0];
+            return sendStreamResponse(streamUrl);
+          }
+        } catch (_) {}
+        if (!streamUrl) {
+          try {
+            const scRaw = await executeYtDlp([
+              '--no-config', '-g', '--no-warnings', '--no-playlist', '--no-check-certificates',
+              '--socket-timeout', '8', '--retries', '1',
+              '-f', audioFormat,
+              `scsearch1:${q || searchQ}`
+            ], 10000);
+            const scLines = scRaw.trim().split('\n').map(l => l.trim()).filter(l => l.startsWith('http'));
+            const nonDrm = scLines.find(l => !/preview|drm|cf-preview-media/i.test(l));
+            if (nonDrm) {
+              streamUrl = nonDrm;
+              return sendStreamResponse(streamUrl);
+            }
+          } catch (_) {}
+        }
       }
     }
 
