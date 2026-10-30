@@ -1730,97 +1730,19 @@ ipcMain.on('window-minimize', () => {
       });
 
       ipcMain.handle('google-login', async (event) => {
-        // Step 1: Thử tự động sync cookies từ Chrome/Edge/Brave/Firefox nếu user đã đăng nhập trên máy
+        // Mở thẳng trình duyệt mặc định bên ngoài hệ thống (Chrome/Edge/Brave/Firefox) qua Google OAuth PKCE
+        // Tuyệt đối không bị Google chặn "This browser or app may not be secure"
         try {
-          const synced = await exportYoutubeCookiesToDisk();
-          if (synced && hasValidYtCookiesFile()) {
-            const s = session.fromPartition('persist:eclipse-google');
-            const cookies = await s.cookies.get({ name: 'SAPISID' });
-            if (Array.isArray(cookies) && cookies.some(c => c && c.value)) {
-              return { success: true, loggedIn: true, source: 'browser-cookies' };
-            }
-          }
-        } catch (_) {}
-
-        // Step 2: Mở Web Login YouTube Music chuẩn Pear Desktop (bảo mật, không bị Google chặn bảo mật)
-        const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
-        const s = session.fromPartition('persist:eclipse-google');
-
-        // Lấy clean UA từ app (loại bỏ Electron và Eclipse tag, giữ nguyên nhân Chromium chính xác của runtime)
-        const cleanUA = (app.userAgentFallback || s.getUserAgent() || '')
-          .replace(/\s*Electron\/[^\s]+/gi, '')
-          .replace(/\s*(?:riff|eclipse)\/[^\s]+/gi, '') ||
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36';
-
-        try { s.setUserAgent(cleanUA); } catch (e) {}
-
-        return new Promise((resolve) => {
-          let finished = false;
-          let pollTimer = null;
-          const authWin = new BrowserWindow({
-            width: 500,
-            height: 700,
-            parent: win || undefined,
-            modal: true,
-            title: 'Eclipse - YouTube Sign In',
-            autoHideMenuBar: true,
-            webPreferences: {
-              session: s,
-              contextIsolation: true,
-              nodeIntegration: false,
-              sandbox: false,
-              disableBlinkFeatures: 'AutomationControlled'
-            }
-          });
-
-          try { authWin.webContents.setUserAgent(cleanUA); } catch (e) {}
-
-          authWin.webContents.on('dom-ready', () => {
-            authWin.webContents.executeJavaScript(`
-              try {
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-              } catch (_) {}
-            `).catch(() => {});
-          });
-
-          const checkCookies = async () => {
-            if (finished) return;
-            try {
-              const cookies = await s.cookies.get({ name: 'SAPISID' });
-              if (Array.isArray(cookies) && cookies.some(c => c && c.value)) {
-                finished = true;
-                if (pollTimer) clearInterval(pollTimer);
-                await exportSessionCookiesToFile().catch(() => {});
-                if (!authWin.isDestroyed()) authWin.close();
-                resolve({ success: true, loggedIn: true });
-              }
-            } catch (e) {}
+          await startGoogleOAuthLogin();
+          return { success: true, loggedIn: true };
+        } catch (err) {
+          console.warn('[google-login] OAuth flow failed or cancelled:', err && err.message);
+          return {
+            success: false,
+            loggedIn: false,
+            error: err && err.message ? err.message : 'Google sign-in was cancelled or failed'
           };
-
-          authWin.webContents.on('did-navigate', checkCookies);
-          authWin.webContents.on('did-navigate-in-page', checkCookies);
-          authWin.webContents.on('did-finish-load', checkCookies);
-          pollTimer = setInterval(checkCookies, 1000);
-
-          authWin.on('closed', () => {
-            if (pollTimer) clearInterval(pollTimer);
-            if (!finished) {
-              finished = true;
-              s.cookies.get({ name: 'SAPISID' }).then(async (cookies) => {
-                const loggedIn = Array.isArray(cookies) && cookies.some(c => c && c.value);
-                if (loggedIn) await exportSessionCookiesToFile().catch(() => {});
-                resolve({ success: loggedIn, loggedIn });
-              }).catch(() => {
-                resolve({ success: false, loggedIn: false });
-              });
-            }
-          });
-
-          // Load trực tiếp URL đăng nhập chính thống của YouTube Music (như Pear Desktop)
-          authWin.loadURL('https://accounts.google.com/ServiceLogin?ltmpl=music&service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26next%3Dhttps%253A%252F%252Fmusic.youtube.com%252F', {
-            userAgent: cleanUA
-          }).catch(() => {});
-        });
+        }
       });
 
       ipcMain.handle('google-import-library', async (event, opts) => {
