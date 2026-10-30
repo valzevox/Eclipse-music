@@ -787,7 +787,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (customArt && isHttpUrl(customArt.cover)) rpcThumb = customArt.cover;
     else if (isHttpUrl(track.thumbnail)) rpcThumb = track.thumbnail;
     else if (isHttpUrl(track.cover)) rpcThumb = track.cover;
-    const shareUrl = buildRiffShareUrl(track, '', '', 500);
+    const shareTrackUrl = (track.url || (track.id ? ('https://www.youtube.com/watch?v=' + track.id) : ''));
+    const shareUrl = buildRiffShareUrl(track, '', shareTrackUrl, 512);
     const curPos = (el.nativeAudio && Number.isFinite(el.nativeAudio.currentTime)) ? el.nativeAudio.currentTime : 0;
     const nowSec = Math.floor(Date.now() / 1000);
     window.electronAPI.discordRpcUpdate({
