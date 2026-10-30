@@ -3932,7 +3932,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   function getShareBaseUrl() {
     const custom = (localStorage.getItem('eclipse_share_base_url') || '').trim();
     if (custom) return custom.endsWith('/') ? custom : (custom + '/');
-    return 'https://riff.hs.vc/share/';
+    return 'https://eclipse-music.vercel.app/share/';
   }
 
   function buildRiffShareUrl(track, directStream = '', resolvedUrl = '', maxLen = 0) {
