@@ -116,6 +116,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getDiagnostics: () => ipcRenderer.invoke('get-diagnostics'),
   getAudioOutputInfo: () => ipcRenderer.invoke('get-audio-output-info'),
   googleLogin: () => ipcRenderer.invoke('google-login'),
+  googleImportCookieText: (cookieText) => ipcRenderer.invoke('google-import-cookie-text', cookieText),
   googleLogout: () => ipcRenderer.invoke('google-logout'),
   googleAuthStatus: () => ipcRenderer.invoke('google-auth-status'),
   googleImportLibrary: (opts) => ipcRenderer.invoke('google-import-library', opts),

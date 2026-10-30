@@ -20875,6 +20875,51 @@ function bindCoverHoldZoom(wrapEl) {
     });
   }
 
+  const btnGoogleCookieToggle = document.getElementById("btn-google-cookie-toggle");
+  const googleCookieBox = document.getElementById("google-cookie-box");
+  const googleCookieInput = document.getElementById("google-cookie-input");
+  const btnGoogleCookieApply = document.getElementById("btn-google-cookie-apply");
+  const googleCookieMsg = document.getElementById("google-cookie-msg");
+
+  if (btnGoogleCookieToggle && googleCookieBox) {
+    btnGoogleCookieToggle.addEventListener("click", () => {
+      googleCookieBox.classList.toggle("hidden");
+      if (!googleCookieBox.classList.contains("hidden") && googleCookieInput) {
+        googleCookieInput.focus();
+      }
+    });
+  }
+
+  if (btnGoogleCookieApply && googleCookieInput) {
+    btnGoogleCookieApply.addEventListener("click", async () => {
+      const val = (googleCookieInput.value || "").trim();
+      if (!val) {
+        if (googleCookieMsg) { googleCookieMsg.textContent = "Vui lòng dán cookie"; googleCookieMsg.style.color = "var(--md-sys-color-error, #ba1a1a)"; }
+        return;
+      }
+      if (googleCookieMsg) { googleCookieMsg.textContent = "Đang kiểm tra..."; googleCookieMsg.style.color = "var(--md-sys-color-outline)"; }
+      btnGoogleCookieApply.disabled = true;
+      try {
+        if (window.electronAPI && window.electronAPI.googleImportCookieText) {
+          const res = await window.electronAPI.googleImportCookieText(val);
+          if (res && res.success && res.loggedIn) {
+            googleConnected = true;
+            if (googleCookieMsg) { googleCookieMsg.textContent = "Đã kết nối thành công!"; googleCookieMsg.style.color = "var(--md-sys-color-primary, #6750A4)"; }
+            if (googleCookieBox) googleCookieBox.classList.add("hidden");
+            googleCookieInput.value = "";
+          } else {
+            if (googleCookieMsg) { googleCookieMsg.textContent = (res && res.error) || "Cookie không hợp lệ (thiếu SAPISID)"; googleCookieMsg.style.color = "var(--md-sys-color-error, #ba1a1a)"; }
+          }
+        }
+      } catch (err) {
+        if (googleCookieMsg) { googleCookieMsg.textContent = err.message || "Lỗi xử lý cookie"; googleCookieMsg.style.color = "var(--md-sys-color-error, #ba1a1a)"; }
+      } finally {
+        btnGoogleCookieApply.disabled = false;
+        updateGoogleAuthUI();
+      }
+    });
+  }
+
   if (btnGoogleLogout) {
     btnGoogleLogout.addEventListener('click', async () => {
       try {

@@ -3125,6 +3125,7 @@
         <div style="font-size: calc(13px * var(--font-scale, 1)); color: var(--md-sys-color-on-surface-variant); margin-bottom: 12px; line-height: 1.4;">Log in with your Google account to import your liked music and playlists directly.</div>
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
           <button type="button" class="btn-outline-pill" id="btn-google-login">Log in with Google</button>
+          <button type="button" class="btn-outline-pill" id="btn-google-cookie-toggle">Paste Cookie</button>
           <button type="button" class="btn-outline-pill hidden" id="btn-google-logout">Log out</button>
           <span id="google-login-status" style="font-size: calc(13px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">Not connected</span>
         </div>
@@ -3149,6 +3150,14 @@
             <div class="m3-dropdown-menu" id="google-target-menu">
               <button class="m3-dropdown-option selected" data-value="new" type="button">Separate playlists</button>
             </div>
+          </div>
+        </div>
+        <div id="google-cookie-box" class="hidden" style="margin-bottom: 14px; background: rgba(0,0,0,0.04); padding: 12px; border-radius: 12px; border: 1px solid var(--md-sys-color-outline-variant, #ccc);">
+          <div style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-on-surface-variant); margin-bottom: 6px;">Dán chuỗi Cookie từ YouTube / YouTube Music (hoặc file cookies.txt):</div>
+          <textarea id="google-cookie-input" class="pill-text-input" placeholder="Dán cookie header (ví dụ: SAPISID=...; HSID=...) hoặc định dạng cookies.txt vào đây" style="width: 100%; height: 70px; resize: vertical; font-family: monospace; font-size: 11px; padding: 8px; box-sizing: border-box;"></textarea>
+          <div style="display: flex; gap: 8px; margin-top: 8px; align-items: center;">
+            <button type="button" class="btn-outline-pill" id="btn-google-cookie-apply" style="font-size: 12px; padding: 4px 12px;">Áp dụng Cookie</button>
+            <span id="google-cookie-msg" style="font-size: 12px; color: var(--md-sys-color-outline);"></span>
           </div>
         </div>
         <div class="sp-warning">

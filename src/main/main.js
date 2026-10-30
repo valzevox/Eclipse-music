@@ -1684,6 +1684,93 @@ ipcMain.on('window-minimize', () => {
         }
       }
 
+      ipcMain.handle('google-import-cookie-text', async (event, cookieText) => {
+        try {
+          if (!cookieText || typeof cookieText !== 'string' || !cookieText.trim()) {
+            return { success: false, error: 'Cookie content is empty' };
+          }
+          const raw = cookieText.trim();
+          const googleSession = session.fromPartition('persist:eclipse-google');
+          await googleSession.clearStorageData({ storages: ['cookies'] });
+
+          const netscapeLines = ['# Netscape HTTP Cookie File', '# Created by Eclipse', ''];
+          let sapisidFound = false;
+
+          if (raw.includes('\t') && (raw.includes('youtube.com') || raw.includes('google.com') || raw.includes('#HttpOnly'))) {
+            // Netscape cookies.txt format
+            const rows = raw.split(/\r?\n/);
+            for (const row of rows) {
+              const line = row.startsWith('#HttpOnly_') ? row.slice(10) : row;
+              if (!line || line.startsWith('#')) continue;
+              const fields = line.split('\t');
+              if (fields.length < 7) continue;
+              const [domain, , cookiePath, secure, expires, name, ...valueParts] = fields;
+              if (!domain || !name || valueParts.length === 0) continue;
+              const val = valueParts.join('\t');
+              if (name === 'SAPISID' && val) sapisidFound = true;
+              const host = domain.replace(/^\./, '');
+              const details = {
+                url: `https://${host}${cookiePath.startsWith('/') ? cookiePath : '/'}`,
+                name,
+                value: val,
+                domain,
+                path: cookiePath || '/',
+                secure: secure.toUpperCase() === 'TRUE',
+                httpOnly: row.startsWith('#HttpOnly_')
+              };
+              const expiration = Number(expires);
+              if (Number.isFinite(expiration) && expiration > 0) details.expirationDate = expiration;
+              await googleSession.cookies.set(details).catch(() => {});
+              netscapeLines.push(`${details.httpOnly ? '#HttpOnly_' : ''}${domain}\tTRUE\t${details.path}\t${details.secure ? 'TRUE' : 'FALSE'}\t${details.expirationDate || 2147483647}\t${name}\t${val}`);
+            }
+          } else {
+            // Header cookie string format: "NAME1=VAL1; NAME2=VAL2; ..."
+            const pairs = raw.split(';');
+            const now = Math.floor(Date.now() / 1000) + 31536000;
+            for (const pair of pairs) {
+              const eq = pair.indexOf('=');
+              if (eq <= 0) continue;
+              const name = pair.slice(0, eq).trim();
+              const val = pair.slice(eq + 1).trim();
+              if (!name || !val) continue;
+              if (name === 'SAPISID') sapisidFound = true;
+              for (const domain of ['.youtube.com', '.google.com']) {
+                await googleSession.cookies.set({
+                  url: `https://${domain.replace(/^\./, '')}/`,
+                  name,
+                  value: val,
+                  domain,
+                  path: '/',
+                  secure: true,
+                  expirationDate: now
+                }).catch(() => {});
+                netscapeLines.push(`${domain}\tTRUE\t/\tTRUE\t${now}\t${name}\t${val}`);
+              }
+            }
+          }
+
+          if (!sapisidFound) {
+            const cookies = await googleSession.cookies.get({ name: 'SAPISID' });
+            if (Array.isArray(cookies) && cookies.some(c => c && c.value)) {
+              sapisidFound = true;
+            }
+          }
+
+          if (!sapisidFound) {
+            return { success: false, error: 'Could not find SAPISID in the provided cookie. Make sure you copied cookies from YouTube or YouTube Music while logged in.' };
+          }
+
+          fs.mkdirSync(DATA_DIR, { recursive: true });
+          fs.writeFileSync(YT_COOKIES_FILE, netscapeLines.join('\n'), 'utf8');
+          try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
+          try { if (fs.existsSync(GOOGLE_OAUTH_FILE)) fs.unlinkSync(GOOGLE_OAUTH_FILE); } catch (_) {}
+
+          return { success: true, loggedIn: true };
+        } catch (err) {
+          return { success: false, error: err && err.message ? err.message : 'Failed to import cookie' };
+        }
+      });
+
       ipcMain.handle('google-auth-status', async () => {
         try {
           const auth = readGoogleOAuthData();
