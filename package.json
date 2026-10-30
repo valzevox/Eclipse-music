@@ -29,13 +29,13 @@
     "tone": "^15.1.22"
   },
   "productName": "Eclipse",
-  "homepage": "https://github.com/eclipse-player/eclipse",
+  "homepage": "https://github.com/valzevox/Eclipse-music",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/eclipse-player/eclipse.git"
+    "url": "git+https://github.com/valzevox/Eclipse-music.git"
   },
   "bugs": {
-    "url": "https://github.com/eclipse-player/eclipse/issues"
+    "url": "https://github.com/valzevox/Eclipse-music/issues"
   },
   "build": {
     "appId": "io.github.eclipse.app",
@@ -54,6 +54,13 @@
       "target": [
         {
           "target": "nsis",
+          "arch": [
+            "x64",
+            "ia32"
+          ]
+        },
+        {
+          "target": "zip",
           "arch": [
             "x64"
           ]
@@ -105,8 +112,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "eclipse-player",
-        "repo": "eclipse",
+        "owner": "valzevox",
+        "repo": "Eclipse-music",
         "releaseType": "release"
       }
     ],

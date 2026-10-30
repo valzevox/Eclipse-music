@@ -17769,7 +17769,7 @@ function bindCoverHoldZoom(wrapEl) {
     const originalBtnHtml = btn ? btn.innerHTML : 'Check for updates';
     let manualUpdateCheck = false;
     let checkTimeoutId = null;
-    let fallbackReleaseUrl = 'https://github.com/eclipse-player/eclipse/releases/latest';
+    let fallbackReleaseUrl = 'https://github.com/valzevox/Eclipse-music/releases/latest';
     let canNativeInstall = false;
 
     let latestUpdateInfo = null;
@@ -17891,13 +17891,13 @@ function bindCoverHoldZoom(wrapEl) {
           showToast('Could not check for updates', 'error');
           return;
         }
-        const res = await fetch('https://api.github.com/repos/eclipse-player/eclipse/releases/latest', {
+        const res = await fetch('https://api.github.com/repos/valzevox/Eclipse-music/releases/latest', {
           headers: { 'User-Agent': 'Eclipse-Player' }
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const json = await res.json();
         const latestVersion = (json.tag_name || '').replace(/^v/i, '');
-        fallbackReleaseUrl = json.html_url || 'https://github.com/eclipse-player/eclipse/releases/latest';
+        fallbackReleaseUrl = json.html_url || 'https://github.com/valzevox/Eclipse-music/releases/latest';
         if (isNewerVersion(latestVersion, currentAppVersion)) {
           latestUpdateInfo = {
             version: latestVersion,
@@ -17960,7 +17960,7 @@ function bindCoverHoldZoom(wrapEl) {
 
         if (!hasImg || !hasPublishedAt) {
           try {
-            const res = await fetch('https://api.github.com/repos/eclipse-player/eclipse/releases/latest', {
+            const res = await fetch('https://api.github.com/repos/valzevox/Eclipse-music/releases/latest', {
               headers: { 'User-Agent': 'Eclipse-Player' }
             });
             if (res.ok) {

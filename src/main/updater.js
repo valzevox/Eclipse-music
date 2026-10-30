@@ -31,7 +31,7 @@ function initUpdater(getWindow) {
   if (pkg.version) {
     app.setVersion(pkg.version);
   }
-  const releasesUrl = `${pkg.homepage || 'https://github.com/eclipse-player/eclipse'}/releases`;
+  const releasesUrl = `${pkg.homepage || 'https://github.com/valzevox/Eclipse-music'}/releases`;
   let manualCheck = false;
   let installNow = false;
   let current = null;
@@ -50,7 +50,7 @@ function initUpdater(getWindow) {
 
   const checkViaGithubApi = async () => {
     try {
-      const res = await fetch('https://api.github.com/repos/eclipse-player/eclipse/releases/latest', {
+      const res = await fetch('https://api.github.com/repos/valzevox/Eclipse-music/releases/latest', {
         headers: { 'User-Agent': 'Eclipse-Player' }
       });
       if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -108,7 +108,7 @@ function initUpdater(getWindow) {
         let htmlUrl = `${releasesUrl}/tag/v${info.version}`;
 
         try {
-          const res = await fetch('https://api.github.com/repos/eclipse-player/eclipse/releases/latest', {
+          const res = await fetch('https://api.github.com/repos/valzevox/Eclipse-music/releases/latest', {
             headers: { 'User-Agent': 'Eclipse-Player' }
           });
           if (res.ok) {
