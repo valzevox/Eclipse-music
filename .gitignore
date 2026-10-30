@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Production build artifacts & binaries
+dist/
+build/
+bin/
+*.exe
+*.dll
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+*.zip
+*.tar.gz
+*.7z
+*.rar
+
+# User data, backups & test downloads
+appdata_backup/
+Download/
+Music Download/
+tmp/
+temp/
+*.log
+*.tmp
+*.ini
+*.vtt
+
+# Environments & secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.keystore
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Web portal (managed in separate repo valzevox/Eclipse-web)
+web/
+
+# Development cache
+dev-app-update.yml
+plugins/lastfm-scrobbler.js
+test/lastfm-scrobbler.test.js
