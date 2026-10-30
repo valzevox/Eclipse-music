@@ -1730,70 +1730,69 @@ ipcMain.on('window-minimize', () => {
       });
 
       ipcMain.handle('google-login', async (event) => {
-        if (GOOGLE_CLIENT_ID) {
-          try {
-            await startGoogleOAuthLogin();
-            return { success: true, loggedIn: true };
-          } catch (err) {
-            return { success: false, loggedIn: false, error: err && err.message ? err.message : 'Google sign-in failed' };
+        // Step 1: Thử tự động sync cookies từ Chrome/Edge/Brave/Firefox nếu user đã đăng nhập trên máy
+        try {
+          const synced = await exportYoutubeCookiesToDisk();
+          if (synced && hasValidYtCookiesFile()) {
+            const s = session.fromPartition('persist:eclipse-google');
+            const cookies = await s.cookies.get({ name: 'SAPISID' });
+            if (Array.isArray(cookies) && cookies.some(c => c && c.value)) {
+              return { success: true, loggedIn: true, source: 'browser-cookies' };
+            }
           }
-        }
+        } catch (_) {}
 
+        // Step 2: Mở Web Login YouTube Music chuẩn Pear Desktop (bảo mật, không bị Google chặn bảo mật)
         const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
         const s = session.fromPartition('persist:eclipse-google');
-        const originalUserAgent = win ? win.webContents.userAgent : app.userAgentFallback;
-        const chromeUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.152 Safari/537.36';
-        try { s.setUserAgent(chromeUA); } catch (e) {}
 
-        try {
-          s.webRequest.onBeforeSendHeaders((details, callback) => {
-            if (details.requestHeaders) {
-              delete details.requestHeaders['sec-ch-ua'];
-              delete details.requestHeaders['sec-ch-ua-mobile'];
-              delete details.requestHeaders['sec-ch-ua-platform'];
-              if (details.url && details.url.startsWith('https://accounts.google.com') && originalUserAgent) {
-                details.requestHeaders['User-Agent'] = chromeUA;
-              }
-            }
-            callback({ requestHeaders: details.requestHeaders });
-          });
-        } catch (_) {}
+        // Lấy clean UA từ app (loại bỏ Electron và Eclipse tag, giữ nguyên nhân Chromium chính xác của runtime)
+        const cleanUA = (app.userAgentFallback || s.getUserAgent() || '')
+          .replace(/\s*Electron\/[^\s]+/gi, '')
+          .replace(/\s*(?:riff|eclipse)\/[^\s]+/gi, '') ||
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36';
+
+        try { s.setUserAgent(cleanUA); } catch (e) {}
 
         return new Promise((resolve) => {
           let finished = false;
           let pollTimer = null;
           const authWin = new BrowserWindow({
-            width: 480,
-            height: 680,
+            width: 500,
+            height: 700,
             parent: win || undefined,
             modal: true,
-            title: 'Eclipse - Google Sign In',
+            title: 'Eclipse - YouTube Sign In',
+            autoHideMenuBar: true,
             webPreferences: {
               session: s,
               contextIsolation: true,
               nodeIntegration: false,
+              sandbox: false,
               disableBlinkFeatures: 'AutomationControlled'
             }
           });
-          try { authWin.webContents.setUserAgent(chromeUA); } catch (e) {}
+
+          try { authWin.webContents.setUserAgent(cleanUA); } catch (e) {}
 
           authWin.webContents.on('dom-ready', () => {
-            authWin.webContents.executeJavaScript('Object.defineProperty(navigator, "webdriver", { get: () => undefined });').catch(() => {});
+            authWin.webContents.executeJavaScript(`
+              try {
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+              } catch (_) {}
+            `).catch(() => {});
           });
 
           const checkCookies = async () => {
             if (finished) return;
             try {
-              const url = authWin.webContents.getURL() || '';
-              if (url.includes('music.youtube.com') || url.includes('youtube.com')) {
-                const cookies = await s.cookies.get({ name: 'SAPISID' });
-                if (Array.isArray(cookies) && cookies.some(c => c && c.value)) {
-                  finished = true;
-                  if (pollTimer) clearInterval(pollTimer);
-                  await exportSessionCookiesToFile().catch(() => {});
-                  if (!authWin.isDestroyed()) authWin.close();
-                  resolve({ success: true, loggedIn: true });
-                }
+              const cookies = await s.cookies.get({ name: 'SAPISID' });
+              if (Array.isArray(cookies) && cookies.some(c => c && c.value)) {
+                finished = true;
+                if (pollTimer) clearInterval(pollTimer);
+                await exportSessionCookiesToFile().catch(() => {});
+                if (!authWin.isDestroyed()) authWin.close();
+                resolve({ success: true, loggedIn: true });
               }
             } catch (e) {}
           };
@@ -1807,7 +1806,7 @@ ipcMain.on('window-minimize', () => {
             if (pollTimer) clearInterval(pollTimer);
             if (!finished) {
               finished = true;
-              s.cookies.get({ name: 'SAPISID' }).then(async cookies => {
+              s.cookies.get({ name: 'SAPISID' }).then(async (cookies) => {
                 const loggedIn = Array.isArray(cookies) && cookies.some(c => c && c.value);
                 if (loggedIn) await exportSessionCookiesToFile().catch(() => {});
                 resolve({ success: loggedIn, loggedIn });
@@ -1817,8 +1816,9 @@ ipcMain.on('window-minimize', () => {
             }
           });
 
+          // Load trực tiếp URL đăng nhập chính thống của YouTube Music (như Pear Desktop)
           authWin.loadURL('https://accounts.google.com/ServiceLogin?ltmpl=music&service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26next%3Dhttps%253A%252F%252Fmusic.youtube.com%252F', {
-            userAgent: chromeUA
+            userAgent: cleanUA
           }).catch(() => {});
         });
       });
