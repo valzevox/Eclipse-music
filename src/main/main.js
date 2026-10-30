@@ -1696,7 +1696,48 @@ ipcMain.on('window-minimize', () => {
           const netscapeLines = ['# Netscape HTTP Cookie File', '# Created by Eclipse', ''];
           let sapisidFound = false;
 
-          if (raw.includes('\t') && (raw.includes('youtube.com') || raw.includes('google.com') || raw.includes('#HttpOnly'))) {
+          let parsedJson = null;
+          if (raw.startsWith('[') || raw.startsWith('{')) {
+            try {
+              const data = JSON.parse(raw);
+              parsedJson = Array.isArray(data) ? data : (Array.isArray(data.cookies) ? data.cookies : null);
+            } catch (_) {}
+          }
+
+          if (parsedJson && Array.isArray(parsedJson)) {
+            // JSON cookie array format (EditThisCookie, Cookie-Editor, DevTools export)
+            for (const item of parsedJson) {
+              if (!item || typeof item !== 'object') continue;
+              const name = String(item.name || '').trim();
+              const val = String(item.value != null ? item.value : '').trim();
+              if (!name || !val) continue;
+              if (name === 'SAPISID') sapisidFound = true;
+
+              let domain = String(item.domain || '.youtube.com').trim();
+              if (!domain.startsWith('.') && !domain.includes('localhost') && domain.includes('.')) {
+                domain = '.' + domain;
+              }
+              const cookiePath = String(item.path || '/');
+              const host = domain.replace(/^\./, '');
+              const secure = item.secure !== false;
+              const httpOnly = item.httpOnly === true;
+              const expiration = Number(item.expirationDate || item.expires || 0);
+
+              const details = {
+                url: `https://${host}${cookiePath.startsWith('/') ? cookiePath : '/'}`,
+                name,
+                value: val,
+                domain,
+                path: cookiePath.startsWith('/') ? cookiePath : '/',
+                secure,
+                httpOnly
+              };
+              if (Number.isFinite(expiration) && expiration > 0) details.expirationDate = Math.floor(expiration);
+
+              await googleSession.cookies.set(details).catch(() => {});
+              netscapeLines.push(`${httpOnly ? '#HttpOnly_' : ''}${domain}\tTRUE\t${details.path}\t${secure ? 'TRUE' : 'FALSE'}\t${details.expirationDate || 2147483647}\t${name}\t${val}`);
+            }
+          } else if (raw.includes('\t') && (raw.includes('youtube.com') || raw.includes('google.com') || raw.includes('#HttpOnly'))) {
             // Netscape cookies.txt format
             const rows = raw.split(/\r?\n/);
             for (const row of rows) {
