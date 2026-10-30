@@ -1871,6 +1871,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                           playbarTitle: document.getElementById('playbar-title'),
                           playbarArtist: document.getElementById('playbar-artist'),
                           btnToggleFav: document.getElementById('btn-toggle-fav'),
+                          btnPlaybarTrim: document.getElementById('btn-playbar-trim'),
                           favIcon: document.getElementById('fav-icon'),
                           btnShuffle: document.getElementById('btn-shuffle'),
                           btnPrev: document.getElementById('btn-prev'),
@@ -10209,6 +10210,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       <button class="btn-icon-pill btn-row-fav btn-fav btn-fav-track" title="favorite">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="${isFav ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path></svg>
       </button>
+      <button class="btn-icon-pill btn-row-trim" title="Trim best part">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
+      </button>
       <button class="btn-icon-pill btn-row-art" title="Customize cover & banner">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
       </button>
@@ -10334,6 +10338,14 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           });
         }
 
+        const btnTrim = row.querySelector('.btn-row-trim');
+        if (btnTrim) {
+          btnTrim.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openTrimModalForTrack(track);
+          });
+        }
+
         const btnFav = row.querySelector('.btn-row-fav');
         if (btnFav) {
           btnFav.addEventListener('click', (e) => {
@@ -10357,7 +10369,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         if (btnMore) {
           btnMore.addEventListener('click', (e) => {
             e.stopPropagation();
-            openDownloadModal(track);
+            openTrackContextMenu(e, track, { row });
           });
         }
 
@@ -13576,6 +13588,17 @@ function bindCoverHoldZoom(wrapEl) {
   if (el.btnToggleFav) {
     el.btnToggleFav.addEventListener('click', () => {
       if (state.currentTrack) toggleFavoriteTrack(state.currentTrack);
+    });
+  }
+
+  const btnPlaybarTrim = el.btnPlaybarTrim || document.getElementById('btn-playbar-trim');
+  if (btnPlaybarTrim) {
+    btnPlaybarTrim.addEventListener('click', () => {
+      if (state.currentTrack) {
+        openTrimModalForTrack(state.currentTrack);
+      } else {
+        showToast('No track playing to trim', 'info');
+      }
     });
   }
 

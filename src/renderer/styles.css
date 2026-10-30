@@ -9636,7 +9636,7 @@ body.perf .btn-proxy-remove {
   transition: none !important;
 }
 
-.track-row .track-row-actions > button:not(.btn-fav):not(.btn-fav-track):not(.btn-remove-from-queue) {
+.track-row .track-row-actions > button:not(.btn-fav):not(.btn-fav-track):not(.btn-remove-from-queue):not(.btn-row-more):not(.btn-row-trim) {
   display: none !important;
 }
 .riff-ctx-menu {
