@@ -3932,7 +3932,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   function getShareBaseUrl() {
     const custom = (localStorage.getItem('eclipse_share_base_url') || '').trim();
     if (custom) return custom.endsWith('/') ? custom : (custom + '/');
-    return 'https://eclipse-music.vercel.app/share/';
+    return 'https://eclipse-player.vercel.app/share/';
   }
 
   function buildRiffShareUrl(track, directStream = '', resolvedUrl = '', maxLen = 0) {
