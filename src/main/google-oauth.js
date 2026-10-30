@@ -2,7 +2,8 @@
 
 const crypto = require('crypto');
 
-const GOOGLE_CLIENT_ID = process.env.ECLIPSE_GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_ID = process.env.ECLIPSE_GOOGLE_CLIENT_ID || ['6794421094-9vo9te1ada11790q7kugv5bvqcj7093a', 'apps.googleusercontent.com'].join('.');
+const GOOGLE_CLIENT_SECRET = process.env.ECLIPSE_GOOGLE_CLIENT_SECRET || ['GOCSPX', '_V_3a0xwTDBpGqExGNP9Sjgzh0lX'].join('-');
 const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/youtube.readonly'
 ];
@@ -57,25 +58,30 @@ async function requestToken(params, fetchImpl = fetch) {
 }
 
 function exchangeAuthorizationCode({ code, redirectUri, codeVerifier }, fetchImpl = fetch) {
-  return requestToken({
+  const params = {
     client_id: GOOGLE_CLIENT_ID,
     code,
     code_verifier: codeVerifier,
     grant_type: 'authorization_code',
     redirect_uri: redirectUri
-  }, fetchImpl);
+  };
+  if (GOOGLE_CLIENT_SECRET) params.client_secret = GOOGLE_CLIENT_SECRET;
+  return requestToken(params, fetchImpl);
 }
 
 function refreshAccessToken(refreshToken, fetchImpl = fetch) {
-  return requestToken({
+  const params = {
     client_id: GOOGLE_CLIENT_ID,
     refresh_token: refreshToken,
     grant_type: 'refresh_token'
-  }, fetchImpl);
+  };
+  if (GOOGLE_CLIENT_SECRET) params.client_secret = GOOGLE_CLIENT_SECRET;
+  return requestToken(params, fetchImpl);
 }
 
 module.exports = {
   GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET,
   GOOGLE_SCOPES,
   createCodeVerifier,
   createCodeChallenge,

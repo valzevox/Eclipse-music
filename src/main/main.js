@@ -1730,11 +1730,13 @@ ipcMain.on('window-minimize', () => {
       });
 
       ipcMain.handle('google-login', async (event) => {
-        if (process.env.ECLIPSE_GOOGLE_CLIENT_ID) {
+        if (GOOGLE_CLIENT_ID) {
           try {
             await startGoogleOAuthLogin();
             return { success: true, loggedIn: true };
-          } catch (_) {}
+          } catch (err) {
+            return { success: false, loggedIn: false, error: err && err.message ? err.message : 'Google sign-in failed' };
+          }
         }
 
         const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
@@ -1826,7 +1828,7 @@ ipcMain.on('window-minimize', () => {
         const doLikes = !opts || opts.doLikes !== false;
         const doPlaylists = !opts || opts.doPlaylists !== false;
 
-        if (platform === 'youtube' && process.env.ECLIPSE_GOOGLE_CLIENT_ID) {
+        if (GOOGLE_CLIENT_ID) {
           try {
             const accessToken = await getGoogleAccessToken();
             return {

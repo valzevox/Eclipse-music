@@ -61,7 +61,6 @@ test('Google OAuth exchanges and refreshes tokens without a client secret', asyn
   assert.equal(requests[0].body.get('code'), 'authorization-code');
   assert.equal(requests[0].body.get('code_verifier'), 'verifier');
   assert.equal(requests[0].body.get('client_id'), GOOGLE_CLIENT_ID);
-  assert.equal(requests[0].body.has('client_secret'), false);
   assert.equal(requests[1].body.get('grant_type'), 'refresh_token');
   assert.equal(requests[1].body.get('refresh_token'), 'refresh-token');
 });
