@@ -2234,6 +2234,16 @@
       </div>
 
       <div class="right-panel-artwork-box" id="right-panel-artwork-box">
+        <div class="av-switcher-container" id="av-switcher-container">
+          <button type="button" class="av-switch-btn active" id="btn-av-song" title="Chế độ Nghe nhạc">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
+            <span>Bài hát</span>
+          </button>
+          <button type="button" class="av-switch-btn" id="btn-av-video" title="Chế độ Xem MV">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+            <span>MV</span>
+          </button>
+        </div>
         <div class="cover-container" id="cover-container">
           <img src="" alt="" class="right-panel-cover" id="right-panel-cover">
           <div class="right-panel-cover-fallback" id="right-panel-fallback">
@@ -2243,6 +2253,17 @@
           <button id="btn-right-panel-art" title="Change cover/banner for this track" aria-label="Change cover/banner for this track">
             <svg width="20" height="20" viewBox="0 -960 960 960" fill="currentColor"><path d="m460-380 280-180-280-180v360ZM320-240q-33 0-56.5-23.5T240-320v-480q0-33 23.5-56.5T320-880h480q33 0 56.5 23.5T880-800v480q0 33-23.5 56.5T800-240H320Zm0-80h480v-480H320v480ZM160-80q-33 0-56.5-23.5T80-160v-560h80v560h560v80H160Zm160-720v480-480Z"/></svg>
           </button>
+        </div>
+                <div class="mv-player-wrapper hidden" id="mv-player-wrapper">
+          <div class="mv-player-aspect">
+            <iframe id="mv-iframe" src="" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>
+          </div>
+          <div class="mv-player-bar">
+            <span class="mv-status-badge">YouTube MV</span>
+            <button class="mv-action-btn" id="btn-mv-popout" title="Thu phóng kích thước MV">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+            </button>
+          </div>
         </div>
         <div class="right-panel-meta">
           <div class="right-panel-title-row" style="display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0;">
@@ -2374,6 +2395,9 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
       </button>
 
+      <button class="btn-icon-pill" id="btn-toggle-mv" title="Xem MV (Video)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+      </button>
       <button class="btn-icon-pill" id="btn-toggle-lyrics-panel" title="Toggle lyrics">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
       </button>

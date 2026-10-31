@@ -2004,6 +2004,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                           btnCloseRightPanel: document.getElementById('btn-close-right-panel'),
                           btnToggleLyricsPanel: document.getElementById('btn-toggle-lyrics-panel'),
                           btnLyricsMode: document.getElementById('btn-lyrics-mode'),
+                          btnAvSong: document.getElementById('btn-av-song'),
+                          btnAvVideo: document.getElementById('btn-av-video'),
+                          mvPlayerWrapper: document.getElementById('mv-player-wrapper'),
+                          mvIframe: document.getElementById('mv-iframe'),
+                          btnMvPopout: document.getElementById('btn-mv-popout'),
+                          btnToggleMv: document.getElementById('btn-toggle-mv'),
                           coverContainer: document.getElementById('cover-container'),
                           rightPanelArtworkBox: document.getElementById('right-panel-artwork-box'),
                           rightPanelCover: document.getElementById('right-panel-cover'),
@@ -4459,6 +4465,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     }, 40000);
 
     state.currentTrack = track;
+    try { mvController.onTrackChanged(track); } catch (_) {}
     emitPluginEvent('trackchange', track);
     state.currentTrackContext = context;
     state.currentTrackIndexInContext = startIndex;
@@ -7804,7 +7811,126 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     return false;
   }
 
+  
+  const mvController = {
+    active: false,
+    videoId: null,
+    post(func, args = []) {
+      if (!el.mvIframe || !el.mvIframe.contentWindow) return;
+      try {
+        el.mvIframe.contentWindow.postMessage(JSON.stringify({
+          event: 'command',
+          func: func,
+          args: args
+        }), '*');
+      } catch (_) {}
+    },
+    extractYtId(track) {
+      if (!track) return null;
+      if (track.id && /^[a-zA-Z0-9_-]{11}$/.test(track.id)) return track.id;
+      const str = track.url || '';
+      const m = str.match(/(?:youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([a-zA-Z0-9_-]{11})/);
+      return m ? m[1] : null;
+    },
+    showMv(startSec = null) {
+      if (!state.currentTrack) return;
+      const vid = this.extractYtId(state.currentTrack);
+      if (!vid) {
+        if (typeof showToast === 'function') showToast('Track này chưa có Video YouTube');
+        return;
+      }
+      this.active = true;
+      this.videoId = vid;
+
+      if (el.btnAvVideo) el.btnAvVideo.classList.add('active');
+      if (el.btnAvSong) el.btnAvSong.classList.remove('active');
+      if (el.btnToggleMv) el.btnToggleMv.classList.add('active');
+      if (el.coverContainer) el.coverContainer.classList.add('hidden');
+      if (el.mvPlayerWrapper) el.mvPlayerWrapper.classList.remove('hidden');
+
+      if (!state.isRightPanelOpen && el.btnToggleLyricsPanel) {
+        el.btnToggleLyricsPanel.click();
+      }
+
+      const cur = typeof startSec === 'number'
+        ? startSec
+        : (el.nativeAudio ? Math.floor(el.nativeAudio.currentTime || 0) : 0);
+
+      if (el.nativeAudio && !el.nativeAudio.paused) {
+        el.nativeAudio.pause();
+      }
+
+      const embedUrl = `https://www.youtube-nocookie.com/embed/${vid}?autoplay=1&enablejsapi=1&start=${cur}&rel=0`;
+      if (el.mvIframe) {
+        el.mvIframe.src = embedUrl;
+      }
+    },
+    hideMv() {
+      this.active = false;
+      this.videoId = null;
+
+      if (el.btnAvVideo) el.btnAvVideo.classList.remove('active');
+      if (el.btnAvSong) el.btnAvSong.classList.add('active');
+      if (el.btnToggleMv) el.btnToggleMv.classList.remove('active');
+      if (el.coverContainer) el.coverContainer.classList.remove('hidden');
+      if (el.mvPlayerWrapper) el.mvPlayerWrapper.classList.add('hidden');
+
+      if (el.mvIframe) {
+        this.post('stopVideo');
+        el.mvIframe.src = '';
+      }
+
+      if (state.currentTrack && el.nativeAudio && el.nativeAudio.paused) {
+        el.nativeAudio.play().catch(() => {});
+      }
+    },
+    toggle() {
+      if (this.active) {
+        this.hideMv();
+      } else {
+        this.showMv();
+      }
+    },
+    onTrackChanged(track) {
+      if (!this.active) return;
+      const vid = this.extractYtId(track);
+      if (vid) {
+        this.showMv(0);
+      } else {
+        this.hideMv();
+      }
+    },
+    onPlay() {
+      if (!this.active) return;
+      this.post('playVideo');
+    },
+    onPause() {
+      if (!this.active) return;
+      this.post('pauseVideo');
+    },
+    onSeek(sec) {
+      if (!this.active) return;
+      this.post('seekTo', [sec, true]);
+    }
+  };
+
   function togglePlayPause() {
+    if (!state.currentTrack) {
+      startWaveIfIdle();
+      return;
+    }
+    if (mvController && mvController.active) {
+      if (state.isPlaying) {
+        state.isPlaying = false;
+        mvController.onPause();
+        updatePlayPauseButton(false, false);
+      } else {
+        state.isPlaying = true;
+        mvController.onPlay();
+        updatePlayPauseButton(true, false);
+      }
+      return;
+    }
     if (!state.currentTrack) {
       startWaveIfIdle();
       return;
@@ -8263,6 +8389,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     });
 
     el.nativeAudio.addEventListener('seeked', () => {
+      try { mvController.onSeek(el.nativeAudio.currentTime); } catch (_) {}
       updateMediaPositionState();
       state.forceLyricsScroll = true;
       state.forceSnapLyrics = true;
@@ -13727,6 +13854,25 @@ function updateNavIndicator(animate) {
       setTimeout(resizeCanvases, 150);
     });
   }
+
+  
+  if (el.btnAvSong) el.btnAvSong.addEventListener('click', () => mvController.hideMv());
+  if (el.btnAvVideo) el.btnAvVideo.addEventListener('click', () => mvController.showMv());
+  if (el.btnToggleMv) el.btnToggleMv.addEventListener('click', () => mvController.toggle());
+  if (el.btnMvPopout) {
+    el.btnMvPopout.addEventListener('click', () => {
+      if (el.mvPlayerWrapper) el.mvPlayerWrapper.classList.toggle('expanded');
+    });
+  }
+  window.addEventListener('message', (event) => {
+    if (!mvController.active || !event.data || typeof event.data !== 'string') return;
+    try {
+      const data = JSON.parse(event.data);
+      if (data.event === 'onStateChange' && data.info === 0) {
+        playNext();
+      }
+    } catch (_) {}
+  });
 
   if (el.btnCloseRightPanel) {
     el.btnCloseRightPanel.addEventListener('click', () => {

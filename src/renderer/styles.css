@@ -10611,3 +10611,119 @@ body.perf .np-queue-panel { transition: none; }
 .sh-remove:hover { color: var(--md-sys-color-on-surface); }
 .verified-check { color: var(--md-sys-color-primary); flex-shrink: 0; vertical-align: -2px; margin-left: 6px; }
 .sh-title .verified-check { margin-left: 0; }
+
+
+/* ==========================================================================
+   ECLIPSE MV / VIDEO PLAYER & AV SWITCHER (Pear Desktop Style)
+   ========================================================================== */
+.av-switcher-container {
+  display: inline-flex;
+  align-items: center;
+  background: color-mix(in srgb, var(--md-sys-color-surface-container-highest, #2a2a2a) 65%, transparent);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 3px;
+  gap: 3px;
+  margin-bottom: 4px;
+  z-index: 2;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+.av-switch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--md-sys-color-on-surface-variant, #ccc);
+  font-size: calc(11px * var(--font-scale, 1));
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.2, 0, 0, 1);
+  user-select: none;
+}
+.av-switch-btn:hover {
+  color: var(--md-sys-color-on-surface, #fff);
+  background: rgba(255, 255, 255, 0.06);
+}
+.av-switch-btn.active {
+  background: var(--md-sys-color-primary, #a881af);
+  color: var(--md-sys-color-on-primary, #fff);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+.mv-player-wrapper {
+  width: 100%;
+  max-width: 340px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #000;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  transition: all 0.3s cubic-bezier(0.2, 0, 0, 1);
+  position: relative;
+  z-index: 2;
+}
+.mv-player-wrapper.expanded {
+  max-width: 100%;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
+}
+.mv-player-aspect {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  position: relative;
+}
+.mv-player-aspect iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+.mv-player-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  background: rgba(18, 18, 18, 0.95);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.mv-status-badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: #ff0033;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.mv-status-badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff0033;
+  display: inline-block;
+  box-shadow: 0 0 6px #ff0033;
+}
+.mv-action-btn {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  padding: 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+.mv-action-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+#btn-toggle-mv.active {
+  color: var(--md-sys-color-primary, #a881af);
+  background: rgba(255, 255, 255, 0.12);
+}
