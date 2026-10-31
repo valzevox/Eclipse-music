@@ -693,7 +693,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     trLang: localStorage.getItem('riff_tr_lang') || 'en',
     lyricsTranslationLang: localStorage.getItem('riff_tr_lang') || 'en',
     trAuto: localStorage.getItem('riff_tr_auto') === 'true',
-    trActive: false,
+    trActive: (localStorage.getItem('riff_tr_enabled') === 'true' && (localStorage.getItem('riff_tr_active') === 'true' || localStorage.getItem('riff_tr_auto') === 'true')),
     currentTranslations: null,
     isTvKaraokeOpen: false,
                           audioSettings: savedSound.audioSettings,
@@ -5251,7 +5251,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
       state.syncedLyrics = parsed;
       if (el.lyricsStatus) el.lyricsStatus.textContent = data.isCustom ? (hasSyncTimes ? 'Custom synced' : 'Custom') : (hasSyncTimes ? 'Synced' : 'Plain');
-      if (state.trEnabled && state.trAuto) {
+      if (state.trEnabled && (state.trAuto || state.trActive)) {
         state.trActive = true;
         fetchAndApplyTranslation();
       } else {
@@ -5820,7 +5820,8 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     if (!state.currentTrack || !state.syncedLyrics || state.syncedLyrics.length === 0) return;
     const track = state.currentTrack;
     const lang = state.trLang || 'en';
-    const cacheKey = `${track.title || ''}|${track.artist || ''}|${lang}`.toLowerCase();
+    const textSample = (state.syncedLyrics || []).slice(0, 3).map(l => l.text).join('|');
+    const cacheKey = `${track.title || ''}|${track.artist || ''}|${lang}|${(state.syncedLyrics || []).length}|${textSample}`.toLowerCase();
 
     if (lyricsTranslationCache.has(cacheKey)) {
       state.currentTranslations = lyricsTranslationCache.get(cacheKey);
@@ -6294,6 +6295,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   if (el.btnTranslateLyrics) {
     el.btnTranslateLyrics.addEventListener('click', () => {
       state.trActive = !state.trActive;
+      localStorage.setItem('riff_tr_active', String(state.trActive));
       updateLyricsTranslationUI();
       if (state.trActive) {
         fetchAndApplyTranslation();
@@ -7531,7 +7533,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
       showToast(text ? 'Lyrics saved successfully' : 'Lyrics removed', 'info');
       closeCustomLyricsEditor();
-      lyricsSessionCache.clear();
+      lyricsSessionCache.clear(); lyricsTranslationCache.clear();
       wordsSessionCache.clear();
       state.lastActiveLyricIdx = -1;
       state.forceLyricsScroll = true;
@@ -7722,7 +7724,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
       showToast('Synced lyrics saved', 'info');
       closeSyncMode();
-      lyricsSessionCache.clear();
+      lyricsSessionCache.clear(); lyricsTranslationCache.clear();
       wordsSessionCache.clear();
       state.lastActiveLyricIdx = -1;
       state.forceLyricsScroll = true;
@@ -18125,7 +18127,7 @@ function bindCoverHoldZoom(wrapEl) {
         state.currentTranslations = null;
         renderLyricsView();
         if (el.nativeAudio) updateSyncedLyricsHighlight(el.nativeAudio.currentTime || 0);
-      } else if (state.trAuto) {
+      } else if (state.trAuto || state.trActive) {
         state.trActive = true;
         updateLyricsTranslationUI();
         fetchAndApplyTranslation();
@@ -18518,7 +18520,7 @@ function bindCoverHoldZoom(wrapEl) {
       if (lyricsSourceMenu) {
         lyricsSourceMenu.querySelectorAll('.m3-dropdown-option').forEach(o => o.classList.toggle('selected', o.dataset.value === next));
       }
-      lyricsSessionCache.clear();
+      lyricsSessionCache.clear(); lyricsTranslationCache.clear();
       syncLyricsOffsetUI(next);
       if (state.currentTrack) {
         loadSyncedLyrics(state.currentTrack.title, state.currentTrack.artist, state.loadToken);
@@ -18547,7 +18549,7 @@ function bindCoverHoldZoom(wrapEl) {
         if (lyricsSourceLabel) lyricsSourceLabel.textContent = opt.textContent;
         lyricsSourceMenu.querySelectorAll('.m3-dropdown-option').forEach(o => o.classList.toggle('selected', o === opt));
         lyricsSourceDropdown.classList.remove('open');
-        lyricsSessionCache.clear();
+        lyricsSessionCache.clear(); lyricsTranslationCache.clear();
         syncLyricsOffsetUI(val);
         if (state.currentTrack) {
           loadSyncedLyrics(state.currentTrack.title, state.currentTrack.artist, state.loadToken);
