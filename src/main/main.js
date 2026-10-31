@@ -356,6 +356,7 @@ function runGUI() {
                                    nodeIntegration: false,
                                    contextIsolation: true,
                                    webSecurity: false,
+                                   webviewTag: true,
                                    backgroundThrottling: true,
                                    spellcheck: false
                                    }

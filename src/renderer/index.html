@@ -2174,7 +2174,7 @@
                   </div>
                   <div style="display: flex; flex-direction: column;">
                     <span class="setting-name">Eclipse</span>
-                    <span id="about-version" style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">Version 43.1.0</span>
+                    <span id="about-version" style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">Version 1.2.1</span>
                   </div>
                 </div>
                 <button class="btn-pill-primary" id="btn-check-updates" style="padding: 6px 14px; font-size: calc(12px * var(--font-scale, 1));">Check for updates</button>
@@ -2211,7 +2211,7 @@
               </svg>
               Eclipse Audio Player
             </span>
-            <span class="settings-version-tag">v43.1.0</span>
+            <span class="settings-version-tag">v1.2.1</span>
           </div>
             </div>
           </div>
@@ -2256,7 +2256,7 @@
         </div>
                 <div class="mv-player-wrapper hidden" id="mv-player-wrapper">
           <div class="mv-player-aspect">
-            <iframe id="mv-iframe" src="" allow="autoplay; encrypted-media; picture-in-picture; accelerometer; clipboard-write; gyroscope" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+            <webview id="mv-webview" allowpopups style="width: 100%; height: 100%; border: none;"></webview>
           </div>
           <div class="mv-player-bar">
             <span class="mv-status-badge">YouTube MV</span>

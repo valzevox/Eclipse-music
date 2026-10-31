@@ -2007,7 +2007,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                           btnAvSong: document.getElementById('btn-av-song'),
                           btnAvVideo: document.getElementById('btn-av-video'),
                           mvPlayerWrapper: document.getElementById('mv-player-wrapper'),
-                          mvIframe: document.getElementById('mv-iframe'),
+                          mvWebview: document.getElementById('mv-webview'),
                           btnMvPopout: document.getElementById('btn-mv-popout'),
                           btnToggleMv: document.getElementById('btn-toggle-mv'),
                           coverContainer: document.getElementById('cover-container'),
@@ -7815,22 +7815,18 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   const mvController = {
     active: false,
     videoId: null,
-    post(func, args = []) {
-      if (!el.mvIframe || !el.mvIframe.contentWindow) return;
-      try {
-        el.mvIframe.contentWindow.postMessage(JSON.stringify({
-          event: 'command',
-          func: func,
-          args: args
-        }), '*');
-      } catch (_) {}
-    },
     extractYtId(track) {
       if (!track) return null;
       if (track.id && /^[a-zA-Z0-9_-]{11}$/.test(track.id)) return track.id;
       const str = track.url || '';
       const m = str.match(/(?:youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([a-zA-Z0-9_-]{11})/);
       return m ? m[1] : null;
+    },
+    execJs(script) {
+      if (!el.mvWebview) return;
+      try {
+        el.mvWebview.executeJavaScript(script).catch(() => {});
+      } catch (_) {}
     },
     showMv(startSec = null) {
       if (!state.currentTrack) return;
@@ -7860,9 +7856,25 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         el.nativeAudio.pause();
       }
 
-      const embedUrl = `https://www.youtube.com/embed/${vid}?autoplay=1&enablejsapi=1&start=${cur}&rel=0&origin=https://www.youtube.com&widget_referrer=https://www.youtube.com`;
-      if (el.mvIframe) {
-        el.mvIframe.src = embedUrl;
+      const targetUrl = `https://www.youtube-nocookie.com/embed/${vid}?autoplay=1&enablejsapi=1&start=${cur}&rel=0`;
+      if (el.mvWebview) {
+        el.mvWebview.src = targetUrl;
+        el.mvWebview.addEventListener('dom-ready', () => {
+          this.execJs(`
+            const v = document.querySelector('video');
+            if (v && !v._endedBound) {
+              v._endedBound = true;
+              v.addEventListener('ended', () => {
+                console.log('ECLIPSE_MV_ENDED');
+              });
+            }
+          `);
+        }, { once: true });
+        el.mvWebview.addEventListener('console-message', (e) => {
+          if (e.message === 'ECLIPSE_MV_ENDED') {
+            playNext();
+          }
+        });
       }
     },
     hideMv() {
@@ -7875,9 +7887,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       if (el.coverContainer) el.coverContainer.classList.remove('hidden');
       if (el.mvPlayerWrapper) el.mvPlayerWrapper.classList.add('hidden');
 
-      if (el.mvIframe) {
-        this.post('stopVideo');
-        el.mvIframe.src = '';
+      if (el.mvWebview) {
+        this.execJs('const v = document.querySelector("video"); if (v) v.pause();');
+        el.mvWebview.src = 'about:blank';
       }
 
       if (state.currentTrack && el.nativeAudio && el.nativeAudio.paused) {
@@ -7902,15 +7914,15 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     },
     onPlay() {
       if (!this.active) return;
-      this.post('playVideo');
+      this.execJs('const v = document.querySelector("video"); if (v) v.play();');
     },
     onPause() {
       if (!this.active) return;
-      this.post('pauseVideo');
+      this.execJs('const v = document.querySelector("video"); if (v) v.pause();');
     },
     onSeek(sec) {
       if (!this.active) return;
-      this.post('seekTo', [sec, true]);
+      this.execJs(`const v = document.querySelector("video"); if (v) v.currentTime = ${sec};`);
     }
   };
 
@@ -18577,7 +18589,7 @@ function bindCoverHoldZoom(wrapEl) {
   (function initUpdateUI() {
     const api = window.electronAPI;
     const $ = (id) => document.getElementById(id);
-    let currentAppVersion = '43.1.0';
+    let currentAppVersion = '1.2.1';
     if (api && api.getAppVersion) {
       api.getAppVersion().then((v) => {
         if (v) {
