@@ -2041,6 +2041,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                           artworkFallback: document.getElementById('artwork-fallback'),
                           playbarTitle: document.getElementById('playbar-title'),
                           playbarArtist: document.getElementById('playbar-artist'),
+                          scrubberLoadingBar: document.getElementById('scrubber-loading-bar'),
+                          audioLoadingPill: document.getElementById('audio-loading-pill'),
+                          audioLoadingText: document.getElementById('audio-loading-text'),
                           btnToggleFav: document.getElementById('btn-toggle-fav'),
                           btnPlaybarTrim: document.getElementById('btn-playbar-trim'),
                           favIcon: document.getElementById('fav-icon'),
@@ -4370,6 +4373,73 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (_) {}
   }
 
+  let audioLoadingTimer1 = null;
+  let audioLoadingTimer2 = null;
+
+  function showAudioLoadingState(track, msg = 'Đang kết nối luồng nhạc...') {
+    state._isLoadingAudio = true;
+    state._loadingTrackId = track ? track.id : null;
+
+    if (audioLoadingTimer1) { clearTimeout(audioLoadingTimer1); audioLoadingTimer1 = null; }
+    if (audioLoadingTimer2) { clearTimeout(audioLoadingTimer2); audioLoadingTimer2 = null; }
+
+    const scrub = (el && el.scrubberLoadingBar) || document.getElementById('scrubber-loading-bar');
+    const pill = (el && el.audioLoadingPill) || document.getElementById('audio-loading-pill');
+    const txt = (el && el.audioLoadingText) || document.getElementById('audio-loading-text');
+    const artist = (el && el.playbarArtist) || document.getElementById('playbar-artist');
+    const bar = (el && el.playbar) || document.getElementById('playbar');
+
+    if (scrub) scrub.classList.remove('hidden');
+    if (pill) {
+      if (txt) txt.textContent = msg;
+      pill.classList.remove('hidden');
+    }
+    if (artist) artist.classList.add('hidden');
+    if (bar) bar.classList.add('is-buffering-track');
+
+    try {
+      document.querySelectorAll('.track-row.is-loading-track').forEach(r => r.classList.remove('is-loading-track'));
+      if (track && track.id) {
+        const row = document.querySelector(`.track-row[data-track-id="${track.id}"]`);
+        if (row) row.classList.add('is-loading-track');
+      }
+    } catch (_) {}
+
+    audioLoadingTimer1 = setTimeout(() => {
+      if (state._isLoadingAudio && txt) {
+        txt.textContent = 'Đang tìm kiếm luồng phát tối ưu...';
+      }
+    }, 3200);
+
+    audioLoadingTimer2 = setTimeout(() => {
+      if (state._isLoadingAudio && txt) {
+        txt.textContent = 'Đang tải bộ đệm âm thanh...';
+      }
+    }, 7000);
+  }
+
+  function hideAudioLoadingState() {
+    state._isLoadingAudio = false;
+    state._loadingTrackId = null;
+
+    if (audioLoadingTimer1) { clearTimeout(audioLoadingTimer1); audioLoadingTimer1 = null; }
+    if (audioLoadingTimer2) { clearTimeout(audioLoadingTimer2); audioLoadingTimer2 = null; }
+
+    const scrub = (el && el.scrubberLoadingBar) || document.getElementById('scrubber-loading-bar');
+    const pill = (el && el.audioLoadingPill) || document.getElementById('audio-loading-pill');
+    const artist = (el && el.playbarArtist) || document.getElementById('playbar-artist');
+    const bar = (el && el.playbar) || document.getElementById('playbar');
+
+    if (scrub) scrub.classList.add('hidden');
+    if (pill) pill.classList.add('hidden');
+    if (artist) artist.classList.remove('hidden');
+    if (bar) bar.classList.remove('is-buffering-track');
+
+    try {
+      document.querySelectorAll('.track-row.is-loading-track').forEach(r => r.classList.remove('is-loading-track'));
+    } catch (_) {}
+  }
+
 async function playTrack(track, queueList = null, startIndex = -1, context = null) {
     if (track) track._errorRetryStage = 0;
     if (track && track.artist) track.artist = stripYoutubeTopic(track.artist);
@@ -4428,6 +4498,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
     state.isPlaying = false;
     updatePlayPauseButton(false, true);
+    showAudioLoadingState(track);
     sendStateToServer();
 
     if (el.lyricsContainer) el.lyricsContainer.scrollTop = 0;
