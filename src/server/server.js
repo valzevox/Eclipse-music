@@ -1,4 +1,4 @@
-const http = require('http');
+﻿const http = require('http');
 const https = require('https');
 const keepAliveHttpsAgent = new https.Agent({
   keepAlive: true,
@@ -6539,6 +6539,133 @@ async function handleYandexImport(req, res, inputUrl) {
   }
 }
 
+async function matchAndResolveTrack(targetTitle, targetArtist, targetDur = 0, autoLyrics = true) {
+  const title = String(targetTitle || '').trim();
+  const artist = String(targetArtist || '').trim();
+  const dur = Number(targetDur) || 0;
+  if (!title) return null;
+
+  const searchQ = makeCleanSearchQuery(artist, title) || ((artist ? artist + ' - ' : '') + title).trim();
+  let bestCandidate = null;
+  let bestScore = -999;
+
+  // 1. Try ytmusicSearch
+  try {
+    const hits = await ytmusicSearch(searchQ).catch(() => []);
+    if (Array.isArray(hits) && hits.length > 0) {
+      for (const h of hits) {
+        if (!h || !h.id || !/^[a-zA-Z0-9_-]{11}$/.test(h.id)) continue;
+        const score = scoreImportedCandidate(title, artist, dur, h);
+        if (score > bestScore) {
+          bestScore = score;
+          bestCandidate = {
+            id: h.id,
+            title: h.title || title,
+            artist: h.artist || artist,
+            duration: Number(h.duration) || dur,
+            thumbnail: h.thumbnail || ("https://i.ytimg.com/vi/" + h.id + "/hqdefault.jpg")
+          };
+        }
+      }
+    }
+  } catch (_) {}
+
+  // 2. If score is low, fallback to yt-dlp flat search
+  if (!bestCandidate || bestScore < 45) {
+    try {
+      const raw = await executeYtDlp([
+        '--no-config', '--flat-playlist', '-J', '--no-warnings',
+        '--socket-timeout', '6',
+        'ytsearch5:' + searchQ + ' audio'
+      ], 10000);
+      const parsed = JSON.parse(raw);
+      const entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
+      for (const e of entries) {
+        if (!e || !e.id || !/^[a-zA-Z0-9_-]{11}$/.test(e.id)) continue;
+        const cand = {
+          id: e.id,
+          title: e.title || '',
+          artist: e.uploader || e.channel || artist,
+          duration: Number(e.duration) || 0
+        };
+        const score = scoreImportedCandidate(title, artist, dur, cand);
+        if (score > bestScore) {
+          bestScore = score;
+          bestCandidate = {
+            id: cand.id,
+            title: cand.title || title,
+            artist: cand.artist || artist,
+            duration: cand.duration || dur,
+            thumbnail: "https://i.ytimg.com/vi/" + cand.id + "/hqdefault.jpg"
+          };
+        }
+      }
+    } catch (_) {}
+  }
+
+  if (!bestCandidate || !bestCandidate.id) return null;
+
+  // 3. Pre-fetch and cache Synced Lyrics (LRCLIB -> YouTube Subtitles)
+  let hasSyncedLyrics = false;
+  if (autoLyrics && bestCandidate.id) {
+    try {
+      const vid = bestCandidate.id;
+      const customLrcPath = path.join(CUSTOM_LYRICS_DIR, vid + '.lrc');
+      const lyricsLrcPath = path.join(LYRICS_DIR, vid + '.lrc');
+      const nameLrcPath = path.join(LYRICS_DIR, lyricsKey(title, artist) + '.lrc');
+
+      let existing = null;
+      for (const p of [customLrcPath, lyricsLrcPath, nameLrcPath]) {
+        if (fs.existsSync(p)) {
+          existing = fs.readFileSync(p, 'utf8');
+          if (existing && /^\[\d{2}:\d{2}/m.test(existing)) {
+            hasSyncedLyrics = true;
+            break;
+          }
+        }
+      }
+
+      if (!hasSyncedLyrics) {
+        // Try LRCLIB direct
+        let lrcObj = await fetchLyricsDirect(title, artist, dur || bestCandidate.duration).catch(() => null);
+        let lrcText = typeof lrcObj === 'string' ? lrcObj : (lrcObj?.syncedLyrics || '');
+
+        // If LRCLIB had no synced, try YouTube caption/subtitles
+        if (!lrcText || !/^\[\d{2}:\d{2}/m.test(lrcText)) {
+          const subObj = await fetchYoutubeCaptionSubtitles(vid, title, artist).catch(() => null);
+          if (subObj?.syncedLyrics) lrcText = subObj.syncedLyrics;
+        }
+
+        if (lrcText && /^\[\d{2}:\d{2}/m.test(lrcText)) {
+          hasSyncedLyrics = true;
+          try {
+            if (!fs.existsSync(CUSTOM_LYRICS_DIR)) fs.mkdirSync(CUSTOM_LYRICS_DIR, { recursive: true });
+            fs.writeFileSync(customLrcPath, lrcText, 'utf8');
+            if (fs.existsSync(LYRICS_DIR)) {
+              fs.writeFileSync(lyricsLrcPath, lrcText, 'utf8');
+              fs.writeFileSync(nameLrcPath, lrcText, 'utf8');
+            }
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+
+  return {
+    matched: true,
+    id: bestCandidate.id,
+    title: bestCandidate.title,
+    artist: bestCandidate.artist,
+    duration: bestCandidate.duration,
+    thumbnail: bestCandidate.thumbnail,
+    cover: bestCandidate.thumbnail,
+    url: "https://www.youtube.com/watch?v=" + bestCandidate.id,
+    platform: 'youtube',
+    hasSyncedLyrics,
+    score: bestScore
+  };
+}
+
 function parseSmartArtistAndTitle(rawTitle, rawArtist) {
   let title = String(rawTitle || '').trim();
   let artist = String(rawArtist || '')
@@ -8395,6 +8522,79 @@ const server = http.createServer(async (req, res) => {
     return handleYandexImport(req, res, yandexUrl);
   }
 
+  if (parsedUrl.pathname === '/api/match-track') {
+    const title = (parsedUrl.query && parsedUrl.query.title) || '';
+    const artist = (parsedUrl.query && parsedUrl.query.artist) || '';
+    const duration = parseFloat((parsedUrl.query && parsedUrl.query.duration) || '0') || 0;
+    const autoLyrics = (parsedUrl.query && parsedUrl.query.lyrics) !== '0';
+    try {
+      const result = await matchAndResolveTrack(title, artist, duration, autoLyrics);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: !!result, track: result || null }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: err.message || 'Match error' }));
+    }
+  }
+
+  if (parsedUrl.pathname === '/api/batch-match-tracks' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => {
+      if (res.writableEnded) return;
+      body += chunk;
+      if (body.length > MAX_BODY_BYTES * 2) {
+        body = '';
+        req.removeAllListeners('data');
+        req.removeAllListeners('end');
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'payload too large' }));
+        req.resume();
+      }
+    });
+    req.on('end', async () => {
+      const payload = safeJsonParse(body, {});
+      const rawTracks = Array.isArray(payload.tracks) ? payload.tracks : [];
+      const autoLyrics = payload.lyrics !== false && payload.autoLyrics !== false;
+      const matched = [];
+
+      // Concurrency limit of 3
+      const queue = [...rawTracks];
+      const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
+        while (queue.length > 0) {
+          const item = queue.shift();
+          if (!item) continue;
+          try {
+            const m = await matchAndResolveTrack(item.title, item.artist, item.duration, autoLyrics);
+            if (m && m.id) {
+              matched.push({
+                originalId: item.id || '',
+                id: m.id,
+                title: m.title || item.title,
+                artist: m.artist || item.artist,
+                duration: m.duration || item.duration || 0,
+                thumbnail: m.thumbnail || item.thumbnail || '',
+                cover: m.cover || item.cover || '',
+                url: m.url,
+                platform: 'youtube',
+                hasSyncedLyrics: !!m.hasSyncedLyrics,
+                score: m.score
+              });
+            } else {
+              matched.push(item);
+            }
+          } catch (_) {
+            matched.push(item);
+          }
+        }
+      });
+
+      await Promise.all(workers);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: true, count: matched.length, tracks: matched }));
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/api/playlist-import') {
     const playlistUrl = parsedUrl.query.url || '';
     return handlePlaylistImport(req, res, playlistUrl);
@@ -8966,7 +9166,7 @@ function startServer(port = PORT) {
   });
 }
 
-module.exports = { handleLyrics, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc };
+module.exports = { matchAndResolveTrack, handleLyrics, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc };
 
 if (require.main === module) {
   startServer();

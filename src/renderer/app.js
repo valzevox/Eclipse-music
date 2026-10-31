@@ -1,4 +1,4 @@
-(function initRiffDiskStorageDaemon() {
+﻿(function initRiffDiskStorageDaemon() {
 if (!window.electronAPI || typeof window.electronAPI.storageInitSync !== 'function') return;
 const origGet = Storage.prototype.getItem;
 const origSet = Storage.prototype.setItem;
@@ -19529,12 +19529,14 @@ function bindCoverHoldZoom(wrapEl) {
       activeImportToast = toast;
     }
 
-    const chunkSize = 25;
+    const chunkSize = 15;
     const converted = [];
     let processed = 0;
 
     for (let i = 0; i < total; i += chunkSize) {
       const chunk = list.slice(i, i + chunkSize);
+      const batchToMatch = [];
+
       for (const rt of chunk) {
         if (!rt) continue;
         const title = String(rt.title || rt.name || '').trim();
@@ -19564,29 +19566,56 @@ function bindCoverHoldZoom(wrapEl) {
             addedAt: Date.now()
           });
         } else {
-          const lowerTitle = title.toLowerCase();
-          const hasModifier = /slowed|remix|live/i.test(lowerTitle);
-          const baseQuery = `${artist} - ${title}`;
-          const searchQuery = baseQuery;
-          const hasDirectUrl = rt.url && /^https?:\/\//i.test(rt.url);
-          const hasRealId = rt.id && !/^(cand_|dz_|it_|sp_|ym_)/i.test(String(rt.id)) && hasDirectUrl;
-          converted.push({
-            id: hasRealId ? String(rt.id) : ('sp_' + Math.random().toString(36).slice(2, 10)),
+          batchToMatch.push({
+            id: rt.id ? String(rt.id) : ('sp_' + Math.random().toString(36).slice(2, 10)),
             title,
             artist,
             duration: Number(rt.duration) || 0,
             thumbnail: thumb,
-            cover: thumb,
-            url: hasDirectUrl ? rt.url : '',
-            searchQuery,
-            platform: 'ytmusic',
-            addedAt: Date.now()
+            cover: thumb
           });
         }
       }
+
+      if (batchToMatch.length > 0) {
+        try {
+          const matchRes = await fetch(`http://127.0.0.1:${state.serverPort}/api/batch-match-tracks`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tracks: batchToMatch, autoLyrics: true })
+          });
+          const matchData = await matchRes.json().catch(() => null);
+          const matchedList = (matchData && Array.isArray(matchData.tracks)) ? matchData.tracks : batchToMatch;
+          for (const m of matchedList) {
+            converted.push({
+              id: m.id || ('sp_' + Math.random().toString(36).slice(2, 10)),
+              title: m.title,
+              artist: m.artist,
+              duration: Number(m.duration) || 0,
+              thumbnail: m.thumbnail || m.cover || '',
+              cover: m.cover || m.thumbnail || '',
+              url: m.url || (m.id && /^[a-zA-Z0-9_-]{11}$/.test(m.id) ? `https://www.youtube.com/watch?v=${m.id}` : ''),
+              searchQuery: `${m.artist} - ${m.title}`,
+              platform: m.platform || 'ytmusic',
+              hasSyncedLyrics: !!m.hasSyncedLyrics,
+              addedAt: Date.now()
+            });
+          }
+        } catch (_) {
+          for (const item of batchToMatch) {
+            converted.push({
+              ...item,
+              searchQuery: `${item.artist} - ${item.title}`,
+              platform: 'ytmusic',
+              addedAt: Date.now()
+            });
+          }
+        }
+      }
+
       processed = Math.min(i + chunkSize, total);
       if (textSpan) {
-        textSpan.textContent = `Importing ${playlistName}... (${processed}/${total})`;
+        textSpan.textContent = `Matching & Importing ${playlistName}... (${processed}/${total})`;
       }
       if (typeof onProgress === 'function') {
         onProgress(processed, total);
@@ -19595,7 +19624,6 @@ function bindCoverHoldZoom(wrapEl) {
         await new Promise(r => setTimeout(r, 0));
       }
     }
-
     const validTracks = converted.filter(t => t && t.title);
     const failedCount = total - validTracks.length;
     validTracks.failStats = {
