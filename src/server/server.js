@@ -18,8 +18,30 @@ const net = require('net');
 const zlib = require('zlib');
 
 const PORT = 38472;
-const { DATA_DIR, CACHE_DIR, CUSTOM_LYRICS_DIR, LYRICS_DIR, THUMBNAILS_DIR, METADATA_PATH, LIBRARY_DIR, LIBRARY_PATH, ytDlpCommand, resolveDownloadDir, resolveBinary } = require('../shared/platform');
+const { DATA_DIR, CACHE_DIR, CUSTOM_LYRICS_DIR, LYRICS_DIR, THUMBNAILS_DIR, METADATA_PATH, LIBRARY_DIR, LIBRARY_PATH, ytDlpCommand, resolveDownloadDir, defaultDownloadDir, resolveBinary, clearBinaryCache, cookieJarHasYtLogin } = require('../shared/platform');
 const YT_COOKIES_FILE = path.join(DATA_DIR, 'yt-cookies.txt');
+
+// A browser cookie export can contain .google.com session cookies without the
+// user actually being signed in to YouTube. Passing those to yt-dlp makes the
+// YouTube extractor fail with "The page needs to be reloaded.", so only treat
+// the cookies as usable when YouTube itself has a login cookie.
+let ytCookieCache = { mtime: -1, valid: false };
+function hasYtLoginCookies() {
+  try {
+    if (!fs.existsSync(YT_COOKIES_FILE)) {
+      ytCookieCache = { mtime: -1, valid: false };
+      return false;
+    }
+    const stat = fs.statSync(YT_COOKIES_FILE);
+    if (stat.mtimeMs === ytCookieCache.mtime) return ytCookieCache.valid;
+    const txt = fs.readFileSync(YT_COOKIES_FILE, 'utf8');
+    const valid = cookieJarHasYtLogin(txt);
+    ytCookieCache = { mtime: stat.mtimeMs, valid };
+    return valid;
+  } catch (_) {
+    return false;
+  }
+}
 
 function getYtAuthHeaders(origin = 'https://www.youtube.com') {
   try {
@@ -532,6 +554,82 @@ function extractYtIdFromAny(urlOrId) {
   return m ? m[1] : '';
 }
 
+function evictStreamCache(rawUrl) {
+  if (!rawUrl) return;
+  for (const [k, v] of streamUrlCache.entries()) {
+    if (v && v.data && (v.data.rawStreamUrl === rawUrl || v.data.streamUrl === rawUrl || (typeof v.data.streamUrl === 'string' && v.data.streamUrl.includes(encodeURIComponent(rawUrl))))) {
+      streamUrlCache.delete(k);
+    }
+  }
+}
+
+function verifyStreamPlayable(streamUrl, userAgent, redirectsLeft = 3) {
+  return new Promise((resolve) => {
+    if (!streamUrl || typeof streamUrl !== 'string') return resolve(false);
+    if (streamUrl.includes('.m3u8')) return resolve(true);
+    let settled = false;
+    const done = (ok) => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+    try {
+      const parsed = new URL(streamUrl);
+      const cParam = (parsed.searchParams.get('c') || '').toUpperCase();
+      let ua = userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36';
+      if (!userAgent) {
+        if (cParam === 'IOS') ua = 'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)';
+        else if (cParam === 'ANDROID_VR') ua = 'com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip';
+      }
+      const isGooglevideo = parsed.hostname.endsWith('googlevideo.com');
+      const req = https.request(streamUrl, {
+        method: 'GET',
+        agent: keepAliveHttpsAgent,
+        family: 4,
+        timeout: 5000,
+        headers: Object.assign({
+          'Host': parsed.host,
+          'Range': 'bytes=0-',
+          'User-Agent': ua,
+          // Same header set yt-dlp/ffmpeg uses for googlevideo.
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-us,en;q=0.5',
+          'Sec-Fetch-Mode': 'navigate'
+        }, isGooglevideo ? {
+          // googlevideo rejects WEB_EMBEDDED_PLAYER URLs without these.
+          'Origin': 'https://www.youtube.com',
+          'Referer': 'https://www.youtube.com/'
+        } : {})
+      }, (res) => {
+        if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirectsLeft > 0) {
+          res.resume();
+          const nextUrl = new URL(res.headers.location, streamUrl).toString();
+          return verifyStreamPlayable(nextUrl, ua, redirectsLeft - 1).then(done);
+        }
+        if (res.statusCode !== 200 && res.statusCode !== 206) {
+          res.destroy();
+          return done(false);
+        }
+        let received = 0;
+        res.on('data', (chunk) => {
+          received += chunk.length;
+          if (received >= 16384) {
+            res.destroy();
+            done(true);
+          }
+        });
+        res.on('end', () => done(received >= 16384 || received > 0));
+        res.on('error', () => done(false));
+      });
+      req.on('timeout', () => { req.destroy(); done(false); });
+      req.on('error', () => done(false));
+      req.end();
+    } catch (_) {
+      done(false);
+    }
+  });
+}
+const verifyGoogleVideoStream = verifyStreamPlayable;
 async function fetchDirectYoutubeStreamServer(videoId, quality = 'medium') {
   const vid = extractYtIdFromAny(videoId);
   if (!vid) return null;
@@ -1540,10 +1638,32 @@ function executeYtDlp(args, timeoutMs = 15000, opts = {}) {
     const cleanEnv = Object.assign({}, process.env);
     let finalArgs = Array.isArray(args) ? [...args] : [];
     const prependFlags = [];
+    let cookieJarPath = null;
+    const cleanupCookieJar = () => {
+      if (!cookieJarPath) return;
+      const p = cookieJarPath;
+      cookieJarPath = null;
+      try { fs.unlinkSync(p); } catch (_) {}
+    };
     if (!finalArgs.includes('--force-ipv4')) prependFlags.push('--force-ipv4');
     if (!finalArgs.includes('--geo-bypass')) prependFlags.push('--geo-bypass');
-    if (fs.existsSync(YT_COOKIES_FILE) && !finalArgs.includes('--cookies')) {
-      prependFlags.push('--cookies', YT_COOKIES_FILE);
+    if (!finalArgs.includes('--js-runtimes')) {
+      prependFlags.push('--js-runtimes', 'node');
+    }
+    if (!finalArgs.includes('--remote-components')) prependFlags.push('--remote-components', 'ejs:github');
+    if (!opts.noCookies && hasYtLoginCookies() && !finalArgs.includes('--cookies')) {
+      // Several yt-dlp processes can run at once (playback, prefetch, download).
+      // Give each one a private copy of the jar so they cannot rewrite the
+      // shared cookie file concurrently and corrupt the YouTube session.
+      try {
+        cookieJarPath = path.join(DATA_DIR, `.yt-cookies-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp`);
+        fs.copyFileSync(YT_COOKIES_FILE, cookieJarPath);
+        prependFlags.push('--cookies', cookieJarPath);
+      } catch (_) {
+        cleanupCookieJar();
+        prependFlags.push('--cookies', YT_COOKIES_FILE);
+      }
+
     }
     if (prependFlags.length > 0) {
       finalArgs.unshift(...prependFlags);
@@ -1577,6 +1697,7 @@ function executeYtDlp(args, timeoutMs = 15000, opts = {}) {
     if (timeoutMs > 0) {
       timer = setTimeout(() => {
         try { proc.kill('SIGKILL'); } catch (e) {}
+        cleanupCookieJar();
         reject(new Error(`yt-dlp timed out after ${timeoutMs}ms`));
       }, timeoutMs);
     }
@@ -1586,21 +1707,37 @@ function executeYtDlp(args, timeoutMs = 15000, opts = {}) {
 
     proc.on('close', (code) => {
       if (timer) clearTimeout(timer);
+      cleanupCookieJar();
       if (code === 0) {
         resolve(stdout);
       } else {
         const firstArgs = (args || []).slice(0, 3).join(' ');
         const errSnippet = String(stderr || `code ${code}`).slice(0, 300);
-        try { logger.log('error', `yt-dlp failed: ${firstArgs} - ${errSnippet}`); } catch (_) {}
+        const isWarn = !stderr || /not available|unavailable|private video|timed out/i.test(errSnippet);
+        if (!opts.quiet) {
+          try { logger.log(isWarn ? 'warn' : 'error', `yt-dlp failed: ${firstArgs} - ${errSnippet}`); } catch (_) {}
+        }
+
         reject(new Error(stderr || `yt-dlp exited with code ${code}`));
       }
     });
 
     proc.on('error', (err) => {
       if (timer) clearTimeout(timer);
+      cleanupCookieJar();
       const firstArgs = (args || []).slice(0, 3).join(' ');
       const errSnippet = String(err && err.message ? err.message : err).slice(0, 300);
       try { logger.log('error', `yt-dlp spawn error: ${firstArgs} - ${errSnippet}`); } catch (_) {}
+      // A managed yt-dlp can disappear between resolution and spawn (failed
+      // self-update, cleared data dir). Drop the stale cache entry and retry
+      // once so we can fall back to a binary from PATH.
+      if (err && err.code === 'ENOENT' && !opts.retried) {
+        clearBinaryCache();
+        try {
+          resolveBinary('yt-dlp');
+        } catch (_) {}
+        return executeYtDlp(args, timeoutMs, Object.assign({}, opts, { retried: true })).then(resolve, reject);
+      }
       reject(err);
     });
   });
@@ -2371,7 +2508,41 @@ function makeCleanSearchQuery(artist, title) {
   return `${cleanA} ${cleanT}`.trim();
 }
 
-async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube', title = '', artist = '', duration = 0, thumbnail = '', timeoutSec = 12) {
+async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube', title = '', artist = '', duration = 0, thumbnail = '', timeoutSec = 20) {
+  const deadlineAt = Date.now() + timeoutSec * 1000;
+  let timedOut = false;
+  const activeYtDlps = new Set();
+  const stopActiveYtDlps = () => {
+    for (const proc of activeYtDlps) {
+      if (!proc.killed) proc.kill('SIGKILL');
+    }
+  };
+  const deadlineTimer = setTimeout(() => {
+    timedOut = true;
+    stopActiveYtDlps();
+    if (!res.writableEnded) {
+      res.writeHead(504, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Stream resolution timed out' }));
+    }
+  }, timeoutSec * 1000);
+  deadlineTimer.unref();
+  res.once('close', () => {
+    clearTimeout(deadlineTimer);
+    if (!res.writableEnded) stopActiveYtDlps();
+  });
+  const runYtDlp = (args, limit, extraOpts = {}) => {
+    const remaining = deadlineAt - Date.now();
+    if (timedOut || remaining <= 0) return Promise.reject(new Error('Stream resolution timed out'));
+    return executeYtDlp(args, Math.max(1, Math.min(limit, remaining)), {
+      ...extraOpts,
+      onChild: (proc) => {
+        activeYtDlps.add(proc);
+        proc.once('close', () => activeYtDlps.delete(proc));
+        if (timedOut) proc.kill('SIGKILL');
+      }
+    });
+  };
+
   artist = stripYoutubeTopic(artist);
   trackUrl = normalizeSoundCloudUrl(trackUrl);
   const parsedUrl = (req && req.url) ? url.parse(req.url, true) : { query: {} };
@@ -2500,62 +2671,81 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
       return res.end(JSON.stringify(data));
     };
 
-    if (isRealYtId && !forceYtDlp) {
-      try {
-        streamUrl = await fetchDirectYoutubeStreamServer(cleanId, quality);
-        if (streamUrl) {
-          return sendStreamResponse(streamUrl);
-        }
-      } catch (_) {}
-    }
-
-    if (!isRealYtId && !(platform === 'soundcloud' || isSc) && q) {
-      try {
-        const ytmHits = await ytmusicSearch(q);
-        if (Array.isArray(ytmHits) && ytmHits.length > 0) {
-          const scored = ytmHits
-            .map(c => ({ cand: c, score: scoreImportedCandidate(title, artist, duration, c) }))
-            .sort((a, b) => b.score - a.score);
-          const bestHit = scored[0]?.cand;
-          if (bestHit && bestHit.id) {
-            streamUrl = await fetchDirectYoutubeStreamServer(bestHit.id, quality);
-            if (streamUrl) {
-              return sendStreamResponse(streamUrl, bestHit.id);
-            }
-          }
-        }
-      } catch (_) {}
-    }
-
     const resolveYtCandidateStream = async (candId) => {
-      if (!candId) return null;
+      const vid = extractYtIdFromAny(candId);
+      if (!vid) return null;
       let s = null;
       if (!forceYtDlp) {
-        try { s = await fetchDirectYoutubeStreamServer(candId, quality); } catch (_) {}
+        try { s = await fetchDirectYoutubeStreamServer(vid, quality); } catch (_) {}
+        if (s) return s;
       }
-      if (!s) {
-        const vUrl = `https://www.youtube.com/watch?v=${candId}`;
-        const clients = lastGoodYtClient
-          ? [lastGoodYtClient, ...YT_PLAYER_CLIENTS.filter(c => c !== lastGoodYtClient)]
-          : YT_PLAYER_CLIENTS;
-        for (const client of clients) {
-          if (s) break;
+      const vUrl = `https://www.youtube.com/watch?v=${vid}`;
+      const hasCookies = hasYtLoginCookies();
+      // web_embedded yields WEB_EMBEDDED_PLAYER URLs that work with a plain
+      // YouTube Origin header. Try it cookie-free first: it is the fastest and
+      // most reliable path, and cookies can trigger "unavailable (152-18)".
+      const attempts = [];
+      attempts.push({ clientSpec: 'web_embedded,web,tv', cookies: false });
+      if (hasCookies) attempts.push({ clientSpec: 'web_embedded,web,tv', cookies: true });
+      attempts.push({ clientSpec: 'ios', cookies: false });
+      if (hasCookies) attempts.push({ clientSpec: 'default', cookies: true });
+      let lastAttemptError = '';
+      let stopAttempts = false;
+      for (const attempt of attempts) {
+        if (s || stopAttempts) break;
+        // Rapid track skipping makes YouTube intermittently answer with
+        // "Requested format is not available" / "The page needs to be
+        // reloaded." even for otherwise playable videos. Retry once.
+        for (let tryNo = 0; tryNo < 2 && !s && !stopAttempts; tryNo++) {
+          let retryable = false;
           try {
             const args = [
-              "--no-config", "-g", "--no-warnings", "--no-playlist", "--no-check-certificates",
-              "--socket-timeout", "5", "--retries", "1",
-              ...(client ? ["--extractor-args", "youtube:player_client=" + client] : []),
-              "-f", (forShare ? audioFormat : ytDlpQualityFormat),
-              "--", vUrl
+              '--no-config', '-g', '--no-warnings', '--no-playlist', '--no-check-certificates',
+              '--js-runtimes', 'node', '--remote-components', 'ejs:github',
+              '--socket-timeout', '6', '--retries', '1',
+              '--extractor-args', 'youtube:player_client=' + attempt.clientSpec,
+              '-f', (forShare ? audioFormat : ytDlpQualityFormat),
+              '--', vUrl
             ];
-            const raw = await executeYtDlp(args, 18000);
-            const lines = raw.trim().split(String.fromCharCode(10)).map(l => l.trim()).filter(l => l.startsWith("http"));
-            if (lines.length > 0) {
-              s = lines[0];
-              lastGoodYtClient = client;
+            const raw = await runYtDlp(args, 18000, { noCookies: !attempt.cookies, quiet: true });
+            const lines = raw.trim().split('\n').map(l => l.trim()).filter(l => l.startsWith('http'));
+            for (const lineUrl of lines) {
+              let verified = false;
+              // googlevideo 403s are often transient right after extraction
+              // (edge propagation / rate limiting), so check a few times.
+              for (let check = 0; check < 3 && !verified; check++) {
+                verified = await verifyStreamPlayable(lineUrl);
+                if (!verified) await new Promise((r) => setTimeout(r, 500 + check * 500));
+              }
+              // If yt-dlp produced a googlevideo URL, prefer trying it over
+              // skipping the track; the media element can still recover.
+              if (!verified && /googlevideo\.com/i.test(lineUrl)) verified = true;
+              if (verified) {
+                s = lineUrl;
+                break;
+              }
             }
-          } catch (_) {}
+          } catch (err) {
+            const msg = String((err && err.message) || err || '');
+            lastAttemptError = msg;
+            if (/confirm your age|not a bot|Sign in to confirm|age-restricted|LOGIN_REQUIRED/i.test(msg)) {
+              needYtAuth = true;
+              // Still try the cookie attempt before giving up on login-gated videos.
+              if (!hasCookies || attempt.cookies) stopAttempts = true;
+              break;
+            }
+            if (/Video unavailable|This video is not available|Private video/i.test(msg)) {
+              stopAttempts = true;
+              break;
+            }
+            retryable = /format is not available|page needs to be reloaded|429|too many requests|temporar/i.test(msg);
+          }
+          if (!retryable || tryNo === 1) break;
+          await new Promise((r) => setTimeout(r, 900));
         }
+      }
+      if (!s) {
+        try { logger.log('warn', `No stream for ${vid}: ${String(lastAttemptError || 'all attempts failed').slice(0, 200)}`); } catch (_) {}
       }
       return s;
     };
@@ -3379,17 +3569,30 @@ async function handleAudioProxy(req, res, targetUrl) {
       forward['Range'] = req.headers['range'];
     }
 
-    if (parsed.hostname.endsWith('googlevideo.com')) {
-      const cParam = parsed.searchParams.get('c') || '';
-      if (cParam === 'IOS') {
-        forward['user-agent'] = 'com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X;)';
-      } else if (cParam === 'ANDROID_VR') {
-        forward['user-agent'] = 'com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 14; eureka-user Build/SQ3A.220605.009.A1) gzip';
-      } else if (cParam.startsWith('ANDROID')) {
-        forward['user-agent'] = 'com.google.android.youtube/19.44.38 (Linux; U; Android 14) gzip';
+    if (hostLower.endsWith('googlevideo.com')) {
+      if (!forward['range']) {
+        forward['range'] = 'bytes=0-';
       }
-      delete forward['origin'];
-      delete forward['referer'];
+      // googlevideo rejects requests without a YouTube origin/referer pair
+      // (403 with an empty body), which surfaced as playback failures.
+      forward['origin'] = 'https://www.youtube.com';
+      forward['referer'] = 'https://www.youtube.com/';
+      const cParam = (parsed.searchParams.get('c') || '').toUpperCase();
+      if (cParam === 'IOS') {
+        forward['user-agent'] = 'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)';
+      } else if (cParam === 'ANDROID_VR') {
+        forward['user-agent'] = 'com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip';
+      } else if (cParam.startsWith('ANDROID')) {
+        forward['user-agent'] = 'com.google.android.youtube/19.44.38 (Linux; U; Android 14; en_US; sdk_gphone64_x86_64 Build/UE1A.230829.036) gzip';
+      } else {
+        forward['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36';
+      }
+      if ((cParam === 'WEB' || cParam === 'WEB_REMIX' || cParam === 'TVHTML5') && hasYtLoginCookies()) {
+        const authHdrs = getYtAuthHeaders();
+        if (authHdrs && authHdrs.Cookie) forward['cookie'] = authHdrs.Cookie;
+      }
+    } else {
+      forward['user-agent'] = req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
     }
 
     const proxyReq = client.request(targetUrl, {

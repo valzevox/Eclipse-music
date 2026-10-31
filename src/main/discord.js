@@ -1,5 +1,10 @@
 
-const RPC = require('discord-rpc');
+let RPC = null;
+try {
+  RPC = require('discord-rpc');
+} catch (e) {
+  try { console.warn('[Discord RPC] discord-rpc is not installed, rich presence disabled'); } catch (_) {}
+}
 
 let currentClientId = process.env.ECLIPSE_DISCORD_CLIENT_ID || '1564857196334940162';
 function setClientId(newId) {
@@ -20,7 +25,7 @@ let reconnectTimer = null;
 let isDestroying = false;
 
 function initRPC() {
-  if (rpcClient || isDestroying) return;
+  if (!RPC || rpcClient || isDestroying) return;
 
   rpcClient = new RPC.Client({ transport: 'ipc' });
 
