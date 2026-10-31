@@ -8994,7 +8994,11 @@ const server = http.createServer(async (req, res) => {
     if ((!vid || !/^[a-zA-Z0-9_-]{11}$/.test(vid)) && (q || artist)) {
       try {
         const searchTarget = ((artist ? artist + ' - ' : '') + q).trim() + ' official music video';
-        const searchRaw = await executeYtDlp(['--no-config', '--flat-playlist', '-J', '--no-warnings', 'ytsearch1:' + searchTarget], 10000);
+        const searchRaw = await executeYtDlp([
+          '--no-config', '--flat-playlist', '-J', '--no-warnings',
+          '--extractor-args', 'youtube:player_client=android,web_embedded',
+          'ytsearch1:' + searchTarget
+        ], 10000);
         const parsedSearch = JSON.parse(searchRaw);
         const cand = Array.isArray(parsedSearch?.entries) ? parsedSearch.entries[0] : null;
         if (cand && cand.id && /^[a-zA-Z0-9_-]{11}$/.test(cand.id)) vid = cand.id;
@@ -9005,25 +9009,48 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ success: false, error: 'Invalid YouTube id' }));
     }
     const vUrl = 'https://www.youtube.com/watch?v=' + vid;
-    const args = [
-      '--no-config', '-g', '--no-warnings', '--no-playlist', '--no-check-certificates',
-      '--js-runtimes', 'node', '--remote-components', 'ejs:github',
-      '--socket-timeout', '8', '--retries', '2',
-      '-f', 'bestvideo[ext=mp4][vcodec^=avc1][height<=480]/18/bestvideo[ext=mp4][vcodec^=avc1]/best[ext=mp4][height<=480]/best[height<=480]/best',
-      '--', vUrl
+    const formatSpec = 'bestvideo[ext=mp4][vcodec^=avc1][height<=480]/18/bestvideo[ext=mp4][vcodec^=avc1]/best[ext=mp4][height<=480]/best[height<=480]/best';
+    const clientAttempts = [
+      { client: 'android,web_embedded', noCookies: false },
+      { client: 'ios,web_embedded', noCookies: true },
+      { client: 'android_vr,tv', noCookies: true }
     ];
-    executeYtDlp(args, 15000, { quiet: true }).then((raw) => {
-      const lines = raw.trim().split(/\r?\n/).map(l => l.trim()).filter(l => l.startsWith('http'));
-      if (lines.length > 0) {
-        const directUrl = lines[0];
-        const addr = server.address(); const curPort = (addr && typeof addr === 'object' && addr.port) ? addr.port : PORT;
+
+    (async () => {
+      let directUrl = null;
+      let lastErr = null;
+      for (const attempt of clientAttempts) {
+        try {
+          const args = [
+            '--no-config', '-g', '--no-warnings', '--no-playlist', '--no-check-certificates',
+            '--js-runtimes', 'node', '--remote-components', 'ejs:github',
+            '--socket-timeout', '8', '--retries', '1',
+            '--extractor-args', 'youtube:player_client=' + attempt.client,
+            '-f', formatSpec,
+            '--', vUrl
+          ];
+          const raw = await executeYtDlp(args, 12000, { quiet: true, noCookies: attempt.noCookies });
+          const lines = raw.trim().split(/\r?\n/).map(l => l.trim()).filter(l => l.startsWith('http'));
+          if (lines.length > 0) {
+            directUrl = lines[0];
+            break;
+          }
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+
+      if (directUrl) {
+        const addr = server.address();
+        const curPort = (addr && typeof addr === 'object' && addr.port) ? addr.port : PORT;
         const proxyUrl = 'http://127.0.0.1:' + curPort + '/api/audio-proxy?url=' + encodeURIComponent(directUrl);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ success: true, url: proxyUrl, rawUrl: directUrl }));
+        return res.end(JSON.stringify({ success: true, resolvedId: vid, url: proxyUrl, rawUrl: directUrl }));
       }
+
       res.writeHead(404, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ success: false, error: 'No video stream found' }));
-    }).catch((err) => {
+      return res.end(JSON.stringify({ success: false, error: lastErr ? lastErr.message : 'No video stream found' }));
+    })().catch((err) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ success: false, error: String(err && err.message || err) }));
     });
