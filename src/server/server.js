@@ -8978,6 +8978,37 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify({ started: true }));
   }
 
+  if (parsedUrl.pathname === '/api/mv-stream-info') {
+    const vid = (parsedUrl.query.id || '').trim();
+    if (!vid || !/^[a-zA-Z0-9_-]{11}$/.test(vid)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: 'Invalid YouTube id' }));
+    }
+    const vUrl = 'https://www.youtube.com/watch?v=' + vid;
+    const args = [
+      '--no-config', '-g', '--no-warnings', '--no-playlist', '--no-check-certificates',
+      '--js-runtimes', 'node', '--remote-components', 'ejs:github',
+      '--socket-timeout', '6', '--retries', '1',
+      '-f', 'bestvideo[height<=480][ext=mp4]/bestvideo[height<=720][ext=mp4]/bestvideo/best',
+      '--', vUrl
+    ];
+    executeYtDlp(args, 15000, { quiet: true }).then((raw) => {
+      const lines = raw.trim().split(/\r?\n/).map(l => l.trim()).filter(l => l.startsWith('http'));
+      if (lines.length > 0) {
+        const directUrl = lines[0];
+        const proxyUrl = 'http://127.0.0.1:' + PORT + '/api/audio-proxy?url=' + encodeURIComponent(directUrl);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, url: proxyUrl, rawUrl: directUrl }));
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: 'No video stream found' }));
+    }).catch((err) => {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: String(err && err.message || err) }));
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/api/stream-info') {
     const trackUrl = parsedUrl.query.url || '';
     const trackId = parsedUrl.query.id || '';

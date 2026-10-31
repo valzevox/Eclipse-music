@@ -2007,7 +2007,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                           btnAvSong: document.getElementById('btn-av-song'),
                           btnAvVideo: document.getElementById('btn-av-video'),
                           mvPlayerWrapper: document.getElementById('mv-player-wrapper'),
-                          mvWebview: document.getElementById('mv-webview'),
+                          mvVideo: document.getElementById('mv-video'),
+                          mvLoadingOverlay: document.getElementById('mv-loading-overlay'),
                           btnMvPopout: document.getElementById('btn-mv-popout'),
                           btnToggleMv: document.getElementById('btn-toggle-mv'),
                           coverContainer: document.getElementById('cover-container'),
@@ -7815,6 +7816,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   const mvController = {
     active: false,
     videoId: null,
+    loading: false,
     extractYtId(track) {
       if (!track) return null;
       if (track.id && /^[a-zA-Z0-9_-]{11}$/.test(track.id)) return track.id;
@@ -7822,13 +7824,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       const m = str.match(/(?:youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([a-zA-Z0-9_-]{11})/);
       return m ? m[1] : null;
     },
-    execJs(script) {
-      if (!el.mvWebview) return;
-      try {
-        el.mvWebview.executeJavaScript(script).catch(() => {});
-      } catch (_) {}
-    },
-    showMv(startSec = null) {
+    async showMv() {
       if (!state.currentTrack) return;
       const vid = this.extractYtId(state.currentTrack);
       if (!vid) {
@@ -7848,33 +7844,37 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         el.btnToggleLyricsPanel.click();
       }
 
-      const cur = typeof startSec === 'number'
-        ? startSec
-        : (el.nativeAudio ? Math.floor(el.nativeAudio.currentTime || 0) : 0);
-
-      if (el.nativeAudio && !el.nativeAudio.paused) {
-        el.nativeAudio.pause();
-      }
-
-      const targetUrl = `https://www.youtube-nocookie.com/embed/${vid}?autoplay=1&enablejsapi=1&start=${cur}&rel=0`;
-      if (el.mvWebview) {
-        el.mvWebview.src = targetUrl;
-        el.mvWebview.addEventListener('dom-ready', () => {
-          this.execJs(`
-            const v = document.querySelector('video');
-            if (v && !v._endedBound) {
-              v._endedBound = true;
-              v.addEventListener('ended', () => {
-                console.log('ECLIPSE_MV_ENDED');
-              });
+      if (el.mvVideo) {
+        // Chỉ fetch stream nếu đổi bài hoặc chưa có src
+        if (el.mvVideo.dataset.vid !== vid || !el.mvVideo.src) {
+          if (el.mvLoadingOverlay) el.mvLoadingOverlay.classList.remove('hidden');
+          this.loading = true;
+          try {
+            const resp = await fetch('http://127.0.0.1:38472/api/mv-stream-info?id=' + encodeURIComponent(vid));
+            const data = await resp.json();
+            if (data && data.success && data.url) {
+              el.mvVideo.dataset.vid = vid;
+              el.mvVideo.src = data.url;
+              el.mvVideo.load();
+            } else {
+              if (typeof showToast === 'function') showToast('Không thể tải luồng video');
             }
-          `);
-        }, { once: true });
-        el.mvWebview.addEventListener('console-message', (e) => {
-          if (e.message === 'ECLIPSE_MV_ENDED') {
-            playNext();
+          } catch (e) {
+            try { console.error('MV fetch error:', e); } catch (_) {}
+          } finally {
+            if (el.mvLoadingOverlay) el.mvLoadingOverlay.classList.add('hidden');
+            this.loading = false;
           }
-        });
+        }
+
+        // Đồng bộ giây với audio
+        const cur = el.nativeAudio ? (el.nativeAudio.currentTime || 0) : 0;
+        try {
+          el.mvVideo.currentTime = cur;
+          if (state.isPlaying && !el.nativeAudio.paused) {
+            el.mvVideo.play().catch(() => {});
+          }
+        } catch (_) {}
       }
     },
     hideMv() {
@@ -7887,13 +7887,8 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       if (el.coverContainer) el.coverContainer.classList.remove('hidden');
       if (el.mvPlayerWrapper) el.mvPlayerWrapper.classList.add('hidden');
 
-      if (el.mvWebview) {
-        this.execJs('const v = document.querySelector("video"); if (v) v.pause();');
-        el.mvWebview.src = 'about:blank';
-      }
-
-      if (state.currentTrack && el.nativeAudio && el.nativeAudio.paused) {
-        el.nativeAudio.play().catch(() => {});
+      if (el.mvVideo) {
+        try { el.mvVideo.pause(); } catch (_) {}
       }
     },
     toggle() {
@@ -7907,22 +7902,36 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       if (!this.active) return;
       const vid = this.extractYtId(track);
       if (vid) {
-        this.showMv(0);
+        this.showMv();
       } else {
         this.hideMv();
       }
     },
     onPlay() {
-      if (!this.active) return;
-      this.execJs('const v = document.querySelector("video"); if (v) v.play();');
+      if (!this.active || !el.mvVideo) return;
+      try {
+        if (el.nativeAudio) el.mvVideo.currentTime = el.nativeAudio.currentTime;
+        el.mvVideo.play().catch(() => {});
+      } catch (_) {}
     },
     onPause() {
-      if (!this.active) return;
-      this.execJs('const v = document.querySelector("video"); if (v) v.pause();');
+      if (!this.active || !el.mvVideo) return;
+      try { el.mvVideo.pause(); } catch (_) {}
     },
     onSeek(sec) {
-      if (!this.active) return;
-      this.execJs(`const v = document.querySelector("video"); if (v) v.currentTime = ${sec};`);
+      if (!this.active || !el.mvVideo) return;
+      try { el.mvVideo.currentTime = sec; } catch (_) {}
+    },
+    onTimeUpdate(curTime) {
+      if (!this.active || !el.mvVideo || this.loading) return;
+      try {
+        if (el.mvVideo.readyState >= 2) {
+          const diff = Math.abs(el.mvVideo.currentTime - curTime);
+          if (diff > 0.4) {
+            el.mvVideo.currentTime = curTime;
+          }
+        }
+      } catch (_) {}
     }
   };
 
@@ -8414,6 +8423,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
     lastTimeupdateSec = -1;
     el.nativeAudio.addEventListener('timeupdate', () => {
+      try { mvController.onTimeUpdate(el.nativeAudio.currentTime || 0); } catch (_) {}
       if (!preloadedTrack10sFired && el.nativeAudio && el.nativeAudio.currentTime >= 10) {
         preloadedTrack10sFired = true;
         preloadNextTrackStream();
