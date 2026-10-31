@@ -3557,6 +3557,7 @@ async function handleAudioProxy(req, res, targetUrl) {
       return res.end('Blocked target');
     }
     const client = parsed.protocol === 'https:' ? https : http;
+    const hostLower = (parsed.hostname || '').toLowerCase();
 
     const forward = {
       host: parsed.host,
@@ -3577,6 +3578,9 @@ async function handleAudioProxy(req, res, targetUrl) {
       // (403 with an empty body), which surfaced as playback failures.
       forward['origin'] = 'https://www.youtube.com';
       forward['referer'] = 'https://www.youtube.com/';
+      forward['sec-fetch-mode'] = 'cors';
+      forward['sec-fetch-site'] = 'cross-site';
+      forward['sec-fetch-dest'] = 'video';
       const cParam = (parsed.searchParams.get('c') || '').toUpperCase();
       if (cParam === 'IOS') {
         forward['user-agent'] = 'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)';
@@ -3604,7 +3608,12 @@ async function handleAudioProxy(req, res, targetUrl) {
         proxyRes.destroy();
         return;
       }
-      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+      const respHeaders = Object.assign({}, proxyRes.headers);
+      respHeaders['access-control-allow-origin'] = '*';
+      respHeaders['access-control-allow-headers'] = '*';
+      respHeaders['access-control-allow-methods'] = 'GET, HEAD, OPTIONS';
+      delete respHeaders['content-security-policy'];
+      res.writeHead(proxyRes.statusCode, respHeaders);
       proxyRes.on('error', () => { try { res.destroy(); } catch (e) {} });
       proxyRes.pipe(res);
     });
@@ -8979,7 +8988,18 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (parsedUrl.pathname === '/api/mv-stream-info') {
-    const vid = (parsedUrl.query.id || '').trim();
+    let vid = (parsedUrl.query.id || '').trim();
+    const q = (parsedUrl.query.q || parsedUrl.query.title || '').trim();
+    const artist = (parsedUrl.query.artist || '').trim();
+    if ((!vid || !/^[a-zA-Z0-9_-]{11}$/.test(vid)) && (q || artist)) {
+      try {
+        const searchTarget = ((artist ? artist + ' - ' : '') + q).trim() + ' official music video';
+        const searchRaw = await executeYtDlp(['--no-config', '--flat-playlist', '-J', '--no-warnings', 'ytsearch1:' + searchTarget], 10000);
+        const parsedSearch = JSON.parse(searchRaw);
+        const cand = Array.isArray(parsedSearch?.entries) ? parsedSearch.entries[0] : null;
+        if (cand && cand.id && /^[a-zA-Z0-9_-]{11}$/.test(cand.id)) vid = cand.id;
+      } catch (_) {}
+    }
     if (!vid || !/^[a-zA-Z0-9_-]{11}$/.test(vid)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ success: false, error: 'Invalid YouTube id' }));
@@ -8988,16 +9008,16 @@ const server = http.createServer(async (req, res) => {
     const args = [
       '--no-config', '-g', '--no-warnings', '--no-playlist', '--no-check-certificates',
       '--js-runtimes', 'node', '--remote-components', 'ejs:github',
-      '--socket-timeout', '6', '--retries', '1',
-      '--extractor-args', 'youtube:player_client=web_embedded,android,tv',
-      '-f', 'bestvideo[ext=mp4][height<=480]/bestvideo[ext=mp4][height<=720]/bestvideo/best',
+      '--socket-timeout', '8', '--retries', '2',
+      '-f', 'bestvideo[ext=mp4][vcodec^=avc1][height<=480]/18/bestvideo[ext=mp4][vcodec^=avc1]/best[ext=mp4][height<=480]/best[height<=480]/best',
       '--', vUrl
     ];
     executeYtDlp(args, 15000, { quiet: true }).then((raw) => {
       const lines = raw.trim().split(/\r?\n/).map(l => l.trim()).filter(l => l.startsWith('http'));
       if (lines.length > 0) {
         const directUrl = lines[0];
-        const proxyUrl = 'http://127.0.0.1:' + PORT + '/api/audio-proxy?url=' + encodeURIComponent(directUrl);
+        const addr = server.address(); const curPort = (addr && typeof addr === 'object' && addr.port) ? addr.port : PORT;
+        const proxyUrl = 'http://127.0.0.1:' + curPort + '/api/audio-proxy?url=' + encodeURIComponent(directUrl);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ success: true, url: proxyUrl, rawUrl: directUrl }));
       }

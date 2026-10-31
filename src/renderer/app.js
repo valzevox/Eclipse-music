@@ -4595,6 +4595,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       }
 
       track._preloadedStreamUrl = data.proxyUrl || data.streamUrl;
+      if (data.resolvedId && /^[a-zA-Z0-9_-]{11}$/.test(data.resolvedId)) {
+        track._matchedYtId = data.resolvedId;
+      }
 
       if (hlsInstance) {
         hlsInstance.destroy();
@@ -7819,6 +7822,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     loading: false,
     extractYtId(track) {
       if (!track) return null;
+      if (track._matchedYtId && /^[a-zA-Z0-9_-]{11}$/.test(track._matchedYtId)) return track._matchedYtId;
       if (track.id && /^[a-zA-Z0-9_-]{11}$/.test(track.id)) return track.id;
       const str = track.url || '';
       const m = str.match(/(?:youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([a-zA-Z0-9_-]{11})/);
@@ -7826,13 +7830,10 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     },
     async showMv() {
       if (!state.currentTrack) return;
-      const vid = this.extractYtId(state.currentTrack);
-      if (!vid) {
-        if (typeof showToast === 'function') showToast('Track này chưa có Video YouTube');
-        return;
-      }
+      const track = state.currentTrack;
+      let vid = this.extractYtId(track);
       this.active = true;
-      this.videoId = vid;
+      this.videoId = vid || (track && track.id) || 'mv';
 
       if (el.btnAvVideo) el.btnAvVideo.classList.add('active');
       if (el.btnAvSong) el.btnAvSong.classList.remove('active');
@@ -7845,38 +7846,57 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       }
 
       if (el.mvVideo) {
-        // Chỉ fetch stream nếu đổi bài hoặc chưa có src
-        if (el.mvVideo.dataset.vid !== vid || !el.mvVideo.src) {
+        if (!el.mvVideo._hasListeners) {
+          el.mvVideo._hasListeners = true;
+          el.mvVideo.addEventListener('loadedmetadata', () => {
+            try {
+              const cur = el.nativeAudio ? (el.nativeAudio.currentTime || 0) : 0;
+              el.mvVideo.currentTime = cur;
+              if (state.isPlaying && !el.nativeAudio.paused) {
+                el.mvVideo.play().catch(() => {});
+              }
+            } catch (_) {}
+          });
+          el.mvVideo.addEventListener('error', () => {
+            const err = el.mvVideo.error;
+            console.error('MV Video decode error:', err ? err.code : 'unknown', err ? err.message : '');
+            if (typeof showToast === 'function') showToast('Không thể giải mã luồng video');
+          });
+        }
+
+        const trackKey = vid || ((track.title || '') + '|' + (track.artist || ''));
+        if (el.mvVideo.dataset.trackKey !== trackKey || !el.mvVideo.src) {
           if (el.mvLoadingOverlay) el.mvLoadingOverlay.classList.remove('hidden');
           this.loading = true;
           try {
             const token = (window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '';
             const port = state.serverPort || 38472;
-            const resp = await fetch(`http://127.0.0.1:${port}/api/mv-stream-info?id=${encodeURIComponent(vid)}&token=${encodeURIComponent(token)}`);
+            const resp = await fetch(`http://127.0.0.1:${port}/api/mv-stream-info?id=${encodeURIComponent(vid || '')}&title=${encodeURIComponent((track && track.title) || '')}&artist=${encodeURIComponent((track && track.artist) || '')}&token=${encodeURIComponent(token)}`);
             const data = await resp.json();
             if (data && data.success && data.url) {
-              el.mvVideo.dataset.vid = vid;
+              el.mvVideo.dataset.trackKey = trackKey;
+              el.mvVideo.dataset.vid = vid || (data.resolvedId || '');
               el.mvVideo.src = data.url;
               el.mvVideo.load();
             } else {
-              if (typeof showToast === 'function') showToast('Không thể tải luồng video');
+              if (typeof showToast === 'function') showToast(data && data.error ? `Lỗi MV: ${data.error}` : 'Không thể tải luồng video');
             }
           } catch (e) {
             try { console.error('MV fetch error:', e); } catch (_) {}
+            if (typeof showToast === 'function') showToast('Không thể kết nối máy chủ video');
           } finally {
             if (el.mvLoadingOverlay) el.mvLoadingOverlay.classList.add('hidden');
             this.loading = false;
           }
+        } else if (el.mvVideo.readyState >= 1) {
+          const cur = el.nativeAudio ? (el.nativeAudio.currentTime || 0) : 0;
+          try {
+            el.mvVideo.currentTime = cur;
+            if (state.isPlaying && !el.nativeAudio.paused) {
+              el.mvVideo.play().catch(() => {});
+            }
+          } catch (_) {}
         }
-
-        // Đồng bộ giây với audio
-        const cur = el.nativeAudio ? (el.nativeAudio.currentTime || 0) : 0;
-        try {
-          el.mvVideo.currentTime = cur;
-          if (state.isPlaying && !el.nativeAudio.paused) {
-            el.mvVideo.play().catch(() => {});
-          }
-        } catch (_) {}
       }
     },
     hideMv() {
@@ -7902,12 +7922,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     },
     onTrackChanged(track) {
       if (!this.active) return;
-      const vid = this.extractYtId(track);
-      if (vid) {
-        this.showMv();
-      } else {
-        this.hideMv();
-      }
+      this.showMv();
     },
     onPlay() {
       if (!this.active || !el.mvVideo) return;
