@@ -7860,7 +7860,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         el.nativeAudio.pause();
       }
 
-      const embedUrl = `https://www.youtube-nocookie.com/embed/${vid}?autoplay=1&enablejsapi=1&start=${cur}&rel=0`;
+      const embedUrl = `https://www.youtube.com/embed/${vid}?autoplay=1&enablejsapi=1&start=${cur}&rel=0&origin=https://www.youtube.com&widget_referrer=https://www.youtube.com`;
       if (el.mvIframe) {
         el.mvIframe.src = embedUrl;
       }

@@ -2293,6 +2293,17 @@ ipcMain.on('window-minimize', () => {
         }
         setupTray();
         try {
+          // Fix Error 153 for YouTube iframe embeds inside Electron
+          session.defaultSession.webRequest.onBeforeSendHeaders(
+            { urls: ['*://*.youtube.com/*', '*://*.youtube-nocookie.com/*'] },
+            (details, callback) => {
+              const h = details.requestHeaders || {};
+              h['Origin'] = 'https://www.youtube.com';
+              h['Referer'] = 'https://www.youtube.com/';
+              callback({ requestHeaders: h });
+            }
+          );
+
           session.defaultSession.webRequest.onBeforeSendHeaders(
             { urls: ['*://*.googlevideo.com/*'] },
             (details, callback) => {
@@ -2320,6 +2331,8 @@ ipcMain.on('window-minimize', () => {
           session.defaultSession.webRequest.onHeadersReceived(
             {
               urls: [
+                '*://*.youtube.com/*',
+                '*://*.youtube-nocookie.com/*',
                 '*://*.googlevideo.com/*',
                 '*://*.ytimg.com/*',
                 '*://*.ggpht.com/*',
@@ -2334,6 +2347,10 @@ ipcMain.on('window-minimize', () => {
             },
             (details, callback) => {
               const rh = Object.assign({}, details.responseHeaders || {});
+              delete rh['x-frame-options'];
+              delete rh['X-Frame-Options'];
+              delete rh['content-security-policy'];
+              delete rh['Content-Security-Policy'];
               delete rh['access-control-allow-origin'];
               delete rh['Access-Control-Allow-Origin'];
               rh['Access-Control-Allow-Origin'] = ['*'];
