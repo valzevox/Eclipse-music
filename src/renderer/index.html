@@ -2338,6 +2338,10 @@
           <span class="track-title" id="playbar-title">No track playing</span>
         </div>
         <span class="track-artist" id="playbar-artist">Select a track to listen</span>
+        <div class="audio-loading-pill hidden" id="audio-loading-pill">
+          <span class="loading-spinner-dot"></span>
+          <span class="loading-text" id="audio-loading-text">Đang kết nối luồng nhạc...</span>
+        </div>
       </div>
       <button class="btn-icon-pill" id="btn-toggle-fav" title="Favorite">
         <svg id="fav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path></svg>
@@ -2382,7 +2386,8 @@
         </button>
       </div>
 
-      <div class="scrubber-bar-wrapper">
+      <div class="scrubber-bar-wrapper" style="position: relative;">
+        <div class="scrubber-loading-bar hidden" id="scrubber-loading-bar"></div>
         <span class="time-label" id="time-current">0:00</span>
         <div class="scrubber-track-container" id="scrubber-track">
         </div>

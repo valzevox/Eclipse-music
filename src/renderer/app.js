@@ -4628,6 +4628,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
       applyAudioSettings();
     } catch (err) {
+      hideAudioLoadingState();
       if (err.name === 'AbortError') return;
       if (currentToken === state.loadToken) {
         console.warn('Track playback notice:', err);
@@ -7754,6 +7755,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     isPauseFading = false;
     state.isPlaying = true;
     document.body.classList.add('is-playing');
+    hideAudioLoadingState();
     setPlayPauseState(true, true);
     if (el.btnPlayPause) el.btnPlayPause.classList.remove('buffering');
     if (el.playbarSpinner) el.playbarSpinner.classList.add('hidden');
@@ -7953,6 +7955,15 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   };
 
   function togglePlayPause() {
+    if (state._isLoadingAudio) {
+      if (state.currentAbortController) {
+        try { state.currentAbortController.abort(); } catch (_) {}
+      }
+      hideAudioLoadingState();
+      updatePlayPauseButton(false, false);
+      showToast('Đã dừng kết nối bài hát', 'info');
+      return;
+    }
     if (!state.currentTrack) {
       startWaveIfIdle();
       return;
@@ -8317,6 +8328,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         updateMediaSession();
       }
       updateMediaPositionState();
+      hideAudioLoadingState();
       if (el.trackLoadingOverlay) el.trackLoadingOverlay.classList.add('hidden');
       hasDrawnPausedFrame = false;
       if (!animationFrameId) startVisualizers();
@@ -8957,11 +8969,12 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     if (hasBusy) beginBusy('import');
 
     try {
+      await new Promise(r => setTimeout(r, 600));
       const remaining = tracks.map((t, idx) => ({ t, idx })).filter(item => item.idx !== startIdx);
       const resolvedMap = new Map();
       let skippedCount = 0;
 
-      await pool(remaining, 4, async (item) => {
+      await pool(remaining, 2, async (item) => {
         if (currentAlbumPlayRunId !== runId) return;
         const resTrack = await resolveAlbumTrack(album, item.t);
         if (currentAlbumPlayRunId !== runId) return;
