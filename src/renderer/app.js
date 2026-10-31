@@ -5373,11 +5373,14 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           });
         }
 
-        if (state.trActive && state.currentTranslations && state.currentTranslations[index]) {
+        const trVal = (state.trActive && state.currentTranslations && state.currentTranslations[index]) || '';
+        const origText = (line.text || '').trim().toLowerCase();
+        const trClean = trVal.trim().toLowerCase();
+        if (trClean && trClean !== origText) {
           const trDiv = document.createElement('div');
           trDiv.className = 'lyric-translation';
           trDiv.dir = 'auto';
-          trDiv.textContent = state.currentTranslations[index];
+          trDiv.textContent = trVal;
           div.appendChild(trDiv);
         }
       }

@@ -7962,15 +7962,16 @@ function callTranslate(text, to) {
 function callRomanizeLine(line) {
   return new Promise((resolve) => {
     if (!line || !line.trim()) return resolve('');
-    if (!/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af\u0e00-\u0e7f]/.test(line)) {
-      return resolve(line);
+    // Only romanize lines containing non-Latin scripts (Japanese, Korean, Chinese, Thai, etc.)
+    if (!/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af\u0e00-\u0e7f\u0400-\u04ff]/.test(line)) {
+      return resolve('');
     }
     const u = 'https://translate.googleapis.com/translate_a/single?client=dict-chrome-ex&sl=auto&tl=en&dt=t&dt=rm&q=' + encodeURIComponent(line);
     const req = https.get(u, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 6000 }, (res) => {
       let b = '';
       res.on('data', chunk => b += chunk);
       res.on('end', () => {
-        if (res.statusCode !== 200) return resolve(line);
+        if (res.statusCode !== 200) return resolve('');
         try {
           const data = JSON.parse(b);
           let rm = '';
@@ -7981,14 +7982,19 @@ function callRomanizeLine(line) {
               }
             }
           }
-          resolve(rm || line);
+          const cleanRm = (rm || '').trim();
+          const cleanLine = line.trim();
+          if (cleanRm && cleanRm.toLowerCase() !== cleanLine.toLowerCase()) {
+            return resolve(cleanRm);
+          }
+          resolve('');
         } catch (_) {
-          resolve(line);
+          resolve('');
         }
       });
     });
-    req.on('error', () => resolve(line));
-    req.on('timeout', () => { req.destroy(); resolve(line); });
+    req.on('error', () => resolve(''));
+    req.on('timeout', () => { req.destroy(); resolve(''); });
   });
 }
 
