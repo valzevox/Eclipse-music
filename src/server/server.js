@@ -4338,6 +4338,10 @@ function fetchLyricsDirect(title, artist, duration = 0) {
 
     if (cleanTitle && cleanArtist) {
       directPairs.push({ title: cleanTitle, artist: cleanArtist });
+      const isAsian = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/.test(cleanTitle + ' ' + cleanArtist);
+      if (isAsian || cleanArtist.length > 2) {
+        directPairs.push({ title: cleanArtist, artist: cleanTitle });
+      }
     }
 
     const splitParts = (title || '').split(/\s*[-–—|:]\s*/);
@@ -4923,46 +4927,58 @@ function parseKaraokeToWords(karaokeStr) {
 }
 
 function fetchSyncLrc(title, artist, duration = 0) {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     const { cleanTitle, cleanArtist } = sanitizeForLyrics(title, artist);
     const t = cleanTitle || title || '';
     const a = cleanArtist || artist || '';
     if (!t) return resolve(null);
 
-    const durParam = (typeof duration === 'number' && duration > 10) ? `&duration=${Math.round(duration)}` : '';
-    const artistParam = a ? `&artist=${encodeURIComponent(a)}` : '';
-    const url = `https://api.synclrc.dev/lyrics?track=${encodeURIComponent(t)}${artistParam}${durParam}`;
+    const queryPair = (trackName, artistName) => new Promise((resPair) => {
+      const durParam = (typeof duration === 'number' && duration > 10) ? `&duration=${Math.round(duration)}` : '';
+      const artistParam = artistName ? `&artist=${encodeURIComponent(artistName)}` : '';
+      const url = `https://api.synclrc.dev/lyrics?track=${encodeURIComponent(trackName)}${artistParam}${durParam}`;
 
-    const req = https.get(url, {
-      headers: { 'User-Agent': 'EclipseMusic/1.0 (SyncLRC)' },
-      timeout: 6000
-    }, (res) => {
-      let d = '';
-      const dec = new StringDecoder('utf8');
-      res.on('data', c => d += dec.write(c));
-      res.on('end', () => {
-        try {
-          if (res.statusCode === 200) {
-            const j = JSON.parse(d);
-            if (j.instrumental) return resolve({ instrumental: true, syncedLyrics: '', plainLyrics: '', karaoke: '' });
-            const synced = j.synced || '';
-            const karaoke = j.karaoke || '';
-            const plain = j.plain || '';
-            if (synced || karaoke || plain) {
-              return resolve({
-                syncedLyrics: karaoke || synced || plain,
-                plainLyrics: plain,
-                karaoke: karaoke,
-                rawSynced: synced
-              });
+      const req = https.get(url, {
+        headers: { 'User-Agent': 'EclipseMusic/1.0 (SyncLRC)' },
+        timeout: 6000
+      }, (res) => {
+        let d = '';
+        const dec = new StringDecoder('utf8');
+        res.on('data', c => d += dec.write(c));
+        res.on('end', () => {
+          try {
+            if (res.statusCode === 200) {
+              const j = JSON.parse(d);
+              if (j.instrumental) return resPair({ instrumental: true, syncedLyrics: '', plainLyrics: '', karaoke: '' });
+              const synced = j.synced || '';
+              const karaoke = j.karaoke || '';
+              const plain = j.plain || '';
+              if (synced || karaoke || plain) {
+                return resPair({
+                  syncedLyrics: karaoke || synced || plain,
+                  plainLyrics: plain,
+                  karaoke: karaoke,
+                  rawSynced: synced
+                });
+              }
             }
-          }
-        } catch (_) {}
-        resolve(null);
+          } catch (_) {}
+          resPair(null);
+        });
       });
+      req.on('timeout', () => { req.destroy(); resPair(null); });
+      req.on('error', () => resPair(null));
     });
-    req.on('timeout', () => { req.destroy(); resolve(null); });
-    req.on('error', () => resolve(null));
+
+    let result = await queryPair(t, a);
+    if (!result && a && a.length > 1) {
+      // Swapped artist/title fallback for Asian songs / YouTube inverted metadata
+      result = await queryPair(a, t);
+    }
+    if (!result && a) {
+      result = await queryPair(t, '');
+    }
+    resolve(result);
   });
 }
 
@@ -4976,20 +4992,8 @@ function normalizeLyricMeta(str) {
 
 
 function isForeignScriptMismatch(reqTitle, reqArtist, text) {
-  if (!text || typeof text !== 'string') return false;
-  const meta = (reqTitle || '') + ' ' + (reqArtist || '');
-  const hasJapaneseInMeta = /[\u3040-\u30ff]/.test(meta);
-  const hasKoreanInMeta = /[\uac00-\ud7af]/.test(meta);
-  const hasChineseInMeta = /[\u4e00-\u9fff]/.test(meta);
-
-  // If text contains Japanese Hiragana/Katakana but meta has no Japanese
-  if (!hasJapaneseInMeta && /[\u3040-\u309f\u30a0-\u30ff]{2,}/.test(text)) {
-    return true;
-  }
-  // If text contains Korean Hangul but meta has no Korean
-  if (!hasKoreanInMeta && /[\uac00-\ud7af]{3,}/.test(text)) {
-    return true;
-  }
+  // Never discard valid Asian (Japanese, Korean, Chinese) or foreign lyrics
+  // when song/artist tags are Romanized or in English.
   return false;
 }
 
@@ -7955,10 +7959,66 @@ function callTranslate(text, to) {
   });
 }
 
+function callRomanizeLine(line) {
+  return new Promise((resolve) => {
+    if (!line || !line.trim()) return resolve('');
+    if (!/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af\u0e00-\u0e7f]/.test(line)) {
+      return resolve(line);
+    }
+    const u = 'https://translate.googleapis.com/translate_a/single?client=dict-chrome-ex&sl=auto&tl=en&dt=t&dt=rm&q=' + encodeURIComponent(line);
+    const req = https.get(u, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 6000 }, (res) => {
+      let b = '';
+      res.on('data', chunk => b += chunk);
+      res.on('end', () => {
+        if (res.statusCode !== 200) return resolve(line);
+        try {
+          const data = JSON.parse(b);
+          let rm = '';
+          if (Array.isArray(data[0])) {
+            for (const item of data[0]) {
+              if (item && typeof item[3] === 'string' && item[3]) {
+                rm = item[3];
+              }
+            }
+          }
+          resolve(rm || line);
+        } catch (_) {
+          resolve(line);
+        }
+      });
+    });
+    req.on('error', () => resolve(line));
+    req.on('timeout', () => { req.destroy(); resolve(line); });
+  });
+}
+
+async function callRomanizeLines(lines, concurrency = 5) {
+  const results = new Array(lines.length);
+  let idx = 0;
+  async function worker() {
+    while (idx < lines.length) {
+      const cur = idx++;
+      results[cur] = await callRomanizeLine(lines[cur]);
+    }
+  }
+  const workers = [];
+  for (let i = 0; i < Math.min(concurrency, lines.length); i++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+  return results;
+}
+
 async function handleTranslate(req, res, lines, to = 'en') {
   if (!Array.isArray(lines) || lines.length === 0) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ success: true, translations: [] }));
+  }
+
+  if (to === 'romaji' || to === 'rm') {
+    const romanized = await callRomanizeLines(lines);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ success: true, translations: romanized }));
   }
 
   const chunks = [];

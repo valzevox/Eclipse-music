@@ -2208,6 +2208,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   var TRANSLATION_LANGUAGES = [
+    { code: 'romaji', name: 'Romanized (Romaji / Pinyin / Romaja)', flag: '🔤' },
     { code: 'af', name: 'Afrikaans', flag: '🇿🇦' },
     { code: 'sq', name: 'Albanian', flag: '🇦🇱' },
     { code: 'am', name: 'Amharic', flag: '🇪🇹' },
