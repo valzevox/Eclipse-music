@@ -737,7 +737,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const favorites = backfillAddedAt(state.favorites, true);
     if (favorites !== state.favorites) {
       state.favorites = favorites;
-      localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+      localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites.map(sanitizeTrackForStorage)));
     }
     let playlistsChanged = false;
     for (const pl of state.playlists) {
@@ -898,7 +898,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       normalizeTrackMeta(t);
       if (t.title !== oldT || t.artist !== oldA) favChanged = true;
     }
-    if (favChanged) localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+    if (favChanged) localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites.map(sanitizeTrackForStorage)));
 
     let plChanged = false;
     for (const pl of (state.playlists || [])) {
@@ -2672,7 +2672,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       };
 
       if (updateArr(state.history)) localStorage.setItem('devsize_history', JSON.stringify(state.history));
-      if (updateArr(state.favorites)) localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+      if (updateArr(state.favorites)) localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites.map(sanitizeTrackForStorage)));
       if (updateArr(state.queue)) renderQueueView();
 
       if (Array.isArray(state.playlists)) {
@@ -4517,7 +4517,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     loadSponsorBlockSegments(track);
 
     try {
-      if (track._preloadedStreamUrl) {
+      if (track._preloadedStreamUrl && !track._preloadedStreamUrl.includes('/api/audio-proxy') && (!track._preloadedStreamUrlExpires || Date.now() < track._preloadedStreamUrlExpires)) {
         if (currentToken !== state.loadToken) return;
         if (hlsInstance) {
           try { hlsInstance.destroy(); } catch (_) {}
@@ -9062,7 +9062,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
                 }
               });
               if (favAdded) {
-                localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+                localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites.map(sanitizeTrackForStorage)));
                 if (typeof updateFavoritesBadge === 'function') updateFavoritesBadge();
                 if (typeof updateFavoriteIcon === 'function') updateFavoriteIcon();
                 if (state.currentView === 'favorites' && typeof renderFavoritesView === 'function') renderFavoritesView();
@@ -10625,7 +10625,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           added++;
         }
       });
-      localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+      localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites.map(sanitizeTrackForStorage)));
       updateFavoritesBadge();
       updateFavoriteIcon();
       if (state.currentView === 'favorites' && typeof renderFavoritesView === 'function') renderFavoritesView();
@@ -11812,7 +11812,7 @@ function renderClickableArtists(container, rawArtist) {
       state.favorites.unshift(stampAddedAt(track));
     }
     
-    localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+    localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites.map(sanitizeTrackForStorage)));
     updateFavoritesBadge();
     updateFavoriteIcon();
     if (state.currentView === 'favorites') renderFavoritesView();
@@ -11854,8 +11854,17 @@ function renderClickableArtists(container, rawArtist) {
     return sortTracks(tracks, getTrackSortMode(kind));
   }
 
+  function sanitizeTrackForStorage(track) {
+    if (!track || typeof track !== 'object') return track;
+    const clone = { ...track };
+    delete clone._preloadedStreamUrl;
+    delete clone._preloadedStreamUrlExpires;
+    delete clone._errorRetryStage;
+    return clone;
+  }
+
   function stampAddedAt(track) {
-    return { ...track, addedAt: Date.now() };
+    return sanitizeTrackForStorage({ ...track, addedAt: Date.now() });
   }
 
   function renderFavoritesView() {
@@ -11869,7 +11878,7 @@ function renderClickableArtists(container, rawArtist) {
         if (t.title !== ot || t.artist !== oa) favChanged = true;
       });
       if (favChanged) {
-        try { localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites)); } catch (_) {}
+        try { localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites.map(sanitizeTrackForStorage))); } catch (_) {}
       }
     }
     const query = el.favoritesSearchInput ? el.favoritesSearchInput.value.trim().toLowerCase() : '';
@@ -12746,7 +12755,7 @@ function renderClickableArtists(container, rawArtist) {
       const savedScroll = el.mainContent ? el.mainContent.scrollTop : 0;
       const [moved] = state.favorites.splice(fromIdx, 1);
       state.favorites.splice(toIdx, 0, moved);
-      localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+      localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites.map(sanitizeTrackForStorage)));
       if (el.favoritesSubtitle) {
         el.favoritesSubtitle.textContent = `${state.favorites.length} tracks saved`;
       }
@@ -20098,7 +20107,7 @@ function bindCoverHoldZoom(wrapEl) {
           }
         }
         if (addedFav) {
-          localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+          localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites.map(sanitizeTrackForStorage)));
           updateFavoritesBadge();
           updateFavoriteIcon();
           if (state.currentView === 'favorites') renderFavoritesView();
@@ -20231,7 +20240,7 @@ function bindCoverHoldZoom(wrapEl) {
         const existingMap = new Set(state.favorites.map(f => getTrackCanonicalId(f) || f.id));
         const newFavs = foundTracks.filter(t => !existingMap.has(getTrackCanonicalId(t) || t.id));
         state.favorites.push(...newFavs.map(stampAddedAt));
-        localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+        localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites.map(sanitizeTrackForStorage)));
         if (typeof updateFavoritesBadge === 'function') updateFavoritesBadge();
         if (typeof updateFavoriteIcon === 'function') updateFavoriteIcon();
         if (state.currentView === 'favorites' && typeof renderFavoritesView === 'function') renderFavoritesView();
@@ -20657,7 +20666,7 @@ function bindCoverHoldZoom(wrapEl) {
             }
           }
           if (addedFav) {
-            localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+            localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites.map(sanitizeTrackForStorage)));
             updateFavoritesBadge();
             updateFavoriteIcon();
             if (state.currentView === 'favorites') renderFavoritesView();
@@ -21083,7 +21092,7 @@ function bindCoverHoldZoom(wrapEl) {
           const existingMap = new Set(state.favorites.map(f => getTrackCanonicalId(f) || f.id));
           const newFavs = foundTracks.filter(t => !existingMap.has(getTrackCanonicalId(t) || t.id));
           state.favorites.push(...newFavs.map(stampAddedAt));
-          localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+          localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites.map(sanitizeTrackForStorage)));
           if (typeof updateFavoritesBadge === 'function') updateFavoritesBadge();
           if (typeof updateFavoriteIcon === 'function') updateFavoriteIcon();
           if (state.currentView === 'favorites' && typeof renderFavoritesView === 'function') renderFavoritesView();
@@ -21142,7 +21151,7 @@ function bindCoverHoldZoom(wrapEl) {
         const existingMap = new Set(state.favorites.map(f => getTrackCanonicalId(f) || f.id));
         const newFavs = foundTracks.filter(t => !existingMap.has(getTrackCanonicalId(t) || t.id));
         state.favorites.push(...newFavs.map(stampAddedAt));
-        localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+        localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites.map(sanitizeTrackForStorage)));
         if (typeof updateFavoritesBadge === 'function') updateFavoritesBadge();
         if (typeof updateFavoriteIcon === 'function') updateFavoriteIcon();
         if (state.currentView === 'favorites' && typeof renderFavoritesView === 'function') renderFavoritesView();
@@ -21245,7 +21254,7 @@ function bindCoverHoldZoom(wrapEl) {
           updateProgress(importedCount);
         }
         if (addedFav) {
-          localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites));
+          localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites.map(sanitizeTrackForStorage)));
           updateFavoritesBadge();
           updateFavoriteIcon();
           if (state.currentView === 'favorites') renderFavoritesView();
