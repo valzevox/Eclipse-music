@@ -7850,7 +7850,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           if (el.mvLoadingOverlay) el.mvLoadingOverlay.classList.remove('hidden');
           this.loading = true;
           try {
-            const resp = await fetch('http://127.0.0.1:38472/api/mv-stream-info?id=' + encodeURIComponent(vid));
+            const token = (window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '';
+            const port = state.serverPort || 38472;
+            const resp = await fetch(`http://127.0.0.1:${port}/api/mv-stream-info?id=${encodeURIComponent(vid)}&token=${encodeURIComponent(token)}`);
             const data = await resp.json();
             if (data && data.success && data.url) {
               el.mvVideo.dataset.vid = vid;

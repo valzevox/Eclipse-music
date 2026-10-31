@@ -8989,7 +8989,8 @@ const server = http.createServer(async (req, res) => {
       '--no-config', '-g', '--no-warnings', '--no-playlist', '--no-check-certificates',
       '--js-runtimes', 'node', '--remote-components', 'ejs:github',
       '--socket-timeout', '6', '--retries', '1',
-      '-f', 'bestvideo[height<=480][ext=mp4]/bestvideo[height<=720][ext=mp4]/bestvideo/best',
+      '--extractor-args', 'youtube:player_client=web_embedded,android,tv',
+      '-f', 'bestvideo[ext=mp4][height<=480]/bestvideo[ext=mp4][height<=720]/bestvideo/best',
       '--', vUrl
     ];
     executeYtDlp(args, 15000, { quiet: true }).then((raw) => {
