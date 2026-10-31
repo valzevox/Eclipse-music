@@ -10764,3 +10764,40 @@ body.perf .np-queue-panel { transition: none; }
   font-weight: 500;
   color: rgba(255, 255, 255, 0.85);
 }
+
+
+/* OTA Update Progress Bar */
+.update-progress-wrap {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.update-progress-wrap.hidden {
+  display: none !important;
+}
+.update-progress-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+  position: relative;
+}
+.update-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--md-sys-color-primary, #C3B1FF);
+  border-radius: 999px;
+  transition: width 0.15s ease;
+}
+.update-progress-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant, #CAC4D0);
+  min-width: 42px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

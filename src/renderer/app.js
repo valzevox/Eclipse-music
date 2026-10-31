@@ -18906,10 +18906,17 @@ function bindCoverHoldZoom(wrapEl) {
 
     if (api && api.onUpdateProgress) {
       api.onUpdateProgress((d) => {
+        const pct = Math.min(100, Math.max(0, Math.round(d?.percent || 0)));
+        const wrap = document.getElementById('update-progress-wrap');
         const fill = document.getElementById('update-progress-fill');
         const label = document.getElementById('update-progress-label');
-        if (fill) fill.style.width = (d?.percent || 0) + '%';
-        if (label) label.textContent = (d?.percent || 0) + '%';
+        const spinnerLabel = document.getElementById('update-spinner-label');
+        if (wrap) wrap.classList.remove('hidden');
+        if (fill) fill.style.width = pct + '%';
+        if (label) label.textContent = pct + '%';
+        if (spinnerLabel) {
+          spinnerLabel.textContent = pct >= 100 ? 'Installing & restarting Eclipse...' : `Downloading update (${pct}%)...`;
+        }
       });
     }
 
@@ -18918,36 +18925,17 @@ function bindCoverHoldZoom(wrapEl) {
       btnUpdateNow.addEventListener('click', () => {
         const sheet = document.getElementById('update-sheet-card');
         const spinnerBox = document.getElementById('update-center-spinner');
+        const spinnerLabel = document.getElementById('update-spinner-label');
+        const wrap = document.getElementById('update-progress-wrap');
         if (sheet) sheet.classList.add('leaving');
         if (spinnerBox) spinnerBox.classList.remove('hidden');
+        if (spinnerLabel) spinnerLabel.textContent = 'Preparing update...';
+        if (wrap) wrap.classList.remove('hidden');
 
-        if (isUpdateDownloaded) {
-          setTimeout(() => {
-            if (window.electronAPI && window.electronAPI.installUpdateNow) {
-              window.electronAPI.installUpdateNow();
-            } else if (window.electronAPI && window.electronAPI.updateAction) {
-              window.electronAPI.updateAction('now');
-            }
-          }, 900);
-          return;
-        }
-
-        if (!canNativeInstall) {
-          if (latestUpdateInfo?.htmlUrl) {
-            window.open(latestUpdateInfo.htmlUrl, '_blank');
-          } else {
-            try {
-              if (window.electronAPI && window.electronAPI.installUpdateNow) {
-                window.electronAPI.installUpdateNow();
-              }
-            } catch (_) {}
-          }
-          return;
-        }
-
-        isWaitingToRestart = true;
-        if (api && api.updateAction) {
-          api.updateAction('now');
+        if (window.electronAPI && window.electronAPI.installUpdateNow) {
+          window.electronAPI.installUpdateNow();
+        } else if (window.electronAPI && window.electronAPI.updateAction) {
+          window.electronAPI.updateAction('now');
         }
       });
     }
