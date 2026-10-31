@@ -1,4 +1,4 @@
-﻿const http = require('http');
+const http = require('http');
 const https = require('https');
 const keepAliveHttpsAgent = new https.Agent({
   keepAlive: true,
@@ -4876,6 +4876,96 @@ async function getMusixmatchToken() {
 
 const fetchLrcLib = fetchLyricsDirect;
 
+function parseKaraokeToWords(karaokeStr) {
+  if (!karaokeStr) return [];
+  const lines = karaokeStr.split('\n');
+  const result = [];
+  const lrcRegex = /^\[(\d+):(\d+(\.\d+)?)\](.*)$/;
+  const tagRegex = /<(\d+):(\d+(?:\.\d+)?)>/g;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const m = lrcRegex.exec(trimmed);
+    if (!m) continue;
+    const min = parseInt(m[1], 10);
+    const sec = parseFloat(m[2]);
+    const lineStart = min * 60 + sec;
+    const rest = m[4];
+
+    const tags = [];
+    let tm;
+    while ((tm = tagRegex.exec(rest)) !== null) {
+      tags.push({ time: parseInt(tm[1], 10) * 60 + parseFloat(tm[2]), endIdx: tm.index + tm[0].length });
+    }
+
+    const words = [];
+    for (let i = 0; i < tags.length; i++) {
+      const cur = tags[i];
+      const nextIdx = (i + 1 < tags.length) ? rest.indexOf('<', cur.endIdx) : rest.length;
+      const wText = rest.substring(cur.endIdx, nextIdx === -1 ? rest.length : nextIdx);
+      const wEnd = (i + 1 < tags.length) ? tags[i + 1].time : lineStart + 4.0;
+      if (wText.trim()) {
+        words.push({ text: wText.trim(), start: cur.time, end: Math.max(wEnd, cur.time + 0.1) });
+      }
+    }
+
+    if (words.length > 0) {
+      result.push({
+        start: lineStart,
+        end: words[words.length - 1].end,
+        text: words.map(w => w.text).join(' '),
+        words: words
+      });
+    }
+  }
+  return result;
+}
+
+function fetchSyncLrc(title, artist, duration = 0) {
+  return new Promise((resolve) => {
+    const { cleanTitle, cleanArtist } = sanitizeForLyrics(title, artist);
+    const t = cleanTitle || title || '';
+    const a = cleanArtist || artist || '';
+    if (!t) return resolve(null);
+
+    const durParam = (typeof duration === 'number' && duration > 10) ? `&duration=${Math.round(duration)}` : '';
+    const artistParam = a ? `&artist=${encodeURIComponent(a)}` : '';
+    const url = `https://api.synclrc.dev/lyrics?track=${encodeURIComponent(t)}${artistParam}${durParam}`;
+
+    const req = https.get(url, {
+      headers: { 'User-Agent': 'EclipseMusic/1.0 (SyncLRC)' },
+      timeout: 6000
+    }, (res) => {
+      let d = '';
+      const dec = new StringDecoder('utf8');
+      res.on('data', c => d += dec.write(c));
+      res.on('end', () => {
+        try {
+          if (res.statusCode === 200) {
+            const j = JSON.parse(d);
+            if (j.instrumental) return resolve({ instrumental: true, syncedLyrics: '', plainLyrics: '', karaoke: '' });
+            const synced = j.synced || '';
+            const karaoke = j.karaoke || '';
+            const plain = j.plain || '';
+            if (synced || karaoke || plain) {
+              return resolve({
+                syncedLyrics: karaoke || synced || plain,
+                plainLyrics: plain,
+                karaoke: karaoke,
+                rawSynced: synced
+              });
+            }
+          }
+        } catch (_) {}
+        resolve(null);
+      });
+    });
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.on('error', () => resolve(null));
+  });
+}
+
 function normalizeLyricMeta(str) {
   return String(str || '')
     .toLowerCase()
@@ -5969,6 +6059,11 @@ async function handleLyrics(req, res, title, artist, allowOnline = true, source 
         const yt = await fetchYoutubeLyrics(title, artist, videoId);
         rawLyrics = yt ? (yt.syncedLyrics || yt.plainLyrics || '') : '';
         successfulBackend = 'youtube';
+      } else if (normSource === 'synclrc') {
+        const sl = await fetchSyncLrc(effTitle, effArtist, duration);
+        if (sl?.instrumental) return sendInstrumental();
+        rawLyrics = sl ? (sl.syncedLyrics || sl.plainLyrics || '') : '';
+        successfulBackend = 'synclrc';
       } else if (normSource === 'lrclib') {
         const lrc = await fetchLyricsDirect(effTitle, effArtist, duration);
         if (lrc?.instrumental) return sendInstrumental();
@@ -6016,6 +6111,23 @@ async function handleLyrics(req, res, title, artist, allowOnline = true, source 
               successfulBackend = 'nhaccuatui';
             } else if (nct?.plainLyrics) {
               plainFallback = plainFallback || nct.plainLyrics;
+            }
+          } catch (e) {}
+        }
+
+        // Priority 2.5: SyncLRC (High-quality Word/Synced LRC Provider)
+        if (!rawLyrics) {
+          try {
+            const sl = await fetchSyncLrc(effTitle, effArtist, duration);
+            if (sl && sl.instrumental) {
+              return sendInstrumental();
+            }
+            const slText = typeof sl === 'string' ? sl : (sl?.syncedLyrics || sl?.plainLyrics || '');
+            if (slText && /\[\d{2}:\d{2}/.test(slText)) {
+              rawLyrics = slText;
+              successfulBackend = 'synclrc';
+            } else if (slText) {
+              plainFallback = plainFallback || slText;
             }
           } catch (e) {}
         }
@@ -9386,15 +9498,34 @@ const server = http.createServer(async (req, res) => {
     const title = parsedUrl.query.title || '';
     const artist = parsedUrl.query.artist || '';
     const duration = parseFloat(parsedUrl.query.duration) || 0;
+    const wordSource = parsedUrl.query.wordSource || 'auto';
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Type', 'application/json');
-    try {
-      const lines = await fetchNetEaseWords(title, artist, duration);
-      if (lines && lines.length > 0) {
+    if (wordSource === 'auto' || wordSource === 'synclrc') {
+      try {
+        const sl = await fetchSyncLrc(title, artist, duration);
+        if (sl && sl.karaoke) {
+          const lines = parseKaraokeToWords(sl.karaoke);
+          if (lines && lines.length > 0) {
+            res.writeHead(200);
+            return res.end(JSON.stringify({ success: true, lines: lines, provider: 'synclrc' }));
+          }
+        }
+      } catch (_) {}
+      if (wordSource === 'synclrc') {
         res.writeHead(200);
-        return res.end(JSON.stringify({ success: true, lines: lines }));
+        return res.end(JSON.stringify({ success: false, lines: [] }));
       }
-    } catch (_) {}
+    }
+    if (wordSource === 'auto' || wordSource === 'netease') {
+      try {
+        const lines = await fetchNetEaseWords(title, artist, duration);
+        if (lines && lines.length > 0) {
+          res.writeHead(200);
+          return res.end(JSON.stringify({ success: true, lines: lines, provider: 'netease' }));
+        }
+      } catch (_) {}
+    }
     res.writeHead(200);
     return res.end(JSON.stringify({ success: false, lines: [] }));
   }
@@ -9448,7 +9579,7 @@ function startServer(port = PORT) {
   });
 }
 
-module.exports = { matchAndResolveTrack, handleLyrics, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc };
+module.exports = { matchAndResolveTrack, handleLyrics, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchSyncLrc, parseKaraokeToWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc };
 
 if (require.main === module) {
   startServer();

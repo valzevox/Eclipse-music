@@ -4915,7 +4915,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
     try {
       const duration = (state.currentTrack && state.currentTrack.duration) || (el.nativeAudio && el.nativeAudio.duration) || 0;
-      const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/lyrics-words?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist)}&duration=${encodeURIComponent(duration || '')}`);
+      const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/lyrics-words?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist)}&duration=${encodeURIComponent(duration || '')}&wordSource=${encodeURIComponent(wordSource)}`);
       const data = await res.json();
 
       if (token !== state.loadToken || !state.currentTrack || (((state.currentTrack.id) || `${artist}:${title}`) !== trackId)) return;
@@ -18424,8 +18424,8 @@ function bindCoverHoldZoom(wrapEl) {
   const lyricsSourceLabel = document.getElementById('lyrics-source-label');
   const lyricsSourceMenu = document.getElementById('lyrics-source-menu');
 
-  const VALID_LYRICS_SOURCES = ['auto', 'nhaccuatui', 'zingmp3', 'lrclib', 'musixmatch', 'kugou', 'netease', 'youtube', 'genius'];
-  const LYRICS_SOURCE_NAMES = { auto: 'Auto', custom: 'Custom', plain: 'Genius', nhaccuatui: 'NhacCuaTui', zingmp3: 'Zing MP3', lrclib: 'LRCLIB', musixmatch: 'Musixmatch', kugou: 'Kugou', netease: 'NetEase', youtube: 'YouTube', genius: 'Genius' };
+  const VALID_LYRICS_SOURCES = ['auto', 'nhaccuatui', 'zingmp3', 'synclrc', 'lrclib', 'musixmatch', 'kugou', 'netease', 'youtube', 'genius'];
+  const LYRICS_SOURCE_NAMES = { auto: 'Auto', custom: 'Custom', plain: 'Genius', nhaccuatui: 'NhacCuaTui', zingmp3: 'Zing MP3', synclrc: 'SyncLRC', lrclib: 'LRCLIB', musixmatch: 'Musixmatch', kugou: 'Kugou', netease: 'NetEase', youtube: 'YouTube', genius: 'Genius' };
 
   function getTrackLyricsOffsetSec() {
     if (!state.currentTrack) return 0;
