@@ -118,6 +118,64 @@ function downloadFile(url, dest, onProgress) {
   });
 }
 
+
+function cleanOldVersionArtifacts(currentVer) {
+  let freed = 0;
+  const localAppData = process.env.LOCALAPPDATA;
+  if (localAppData) {
+    const updaterPending = path.join(localAppData, 'eclipse-updater', 'pending');
+    if (fs.existsSync(updaterPending)) {
+      try {
+        const files = fs.readdirSync(updaterPending);
+        for (const f of files) {
+          const p = path.join(updaterPending, f);
+          try {
+            const stat = fs.statSync(p);
+            freed += stat.size;
+            fs.unlinkSync(p);
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+    const updaterDir = path.join(localAppData, 'eclipse-updater');
+    if (fs.existsSync(updaterDir)) {
+      try {
+        const files = fs.readdirSync(updaterDir);
+        for (const f of files) {
+          if (/\.exe$/i.test(f) || /\.blockmap$/i.test(f)) {
+            const p = path.join(updaterDir, f);
+            try {
+              const stat = fs.statSync(p);
+              freed += stat.size;
+              fs.unlinkSync(p);
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+    }
+  }
+
+  // Clean old installer files from temp directory
+  try {
+    const tempDir = app.getPath('temp');
+    if (fs.existsSync(tempDir)) {
+      const files = fs.readdirSync(tempDir);
+      for (const f of files) {
+        if (/^(?:eclipse|Eclipse)-.*(?:\.exe|\.tmp)$/i.test(f)) {
+          const p = path.join(tempDir, f);
+          try {
+            const stat = fs.statSync(p);
+            freed += stat.size;
+            fs.unlinkSync(p);
+          } catch (_) {}
+        }
+      }
+    }
+  } catch (_) {}
+
+  return freed;
+}
+
 function launchInstallerAndExit(installerPath) {
   if (process.platform === 'win32') {
     try {
@@ -163,6 +221,15 @@ function initUpdater(getWindow) {
   let manualCheck = false;
   let isDownloading = false;
   let currentUpdate = null;
+
+  try { ipcMain.removeHandler('clean-old-versions'); } catch (_) {}
+  ipcMain.handle('clean-old-versions', () => {
+    return cleanOldVersionArtifacts(pkg.version || app.getVersion());
+  });
+
+  setTimeout(() => {
+    try { cleanOldVersionArtifacts(pkg.version || app.getVersion()); } catch (_) {}
+  }, 3500);
 
   try { ipcMain.removeHandler('get-app-version'); } catch (_) {}
   ipcMain.handle('get-app-version', () => pkg.version || app.getVersion());

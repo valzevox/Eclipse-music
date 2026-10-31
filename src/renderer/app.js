@@ -25045,6 +25045,9 @@ function bindCoverHoldZoom(wrapEl) {
       const startedAt = Date.now();
       try {
         await window.electronAPI.clearCache();
+        if (window.electronAPI.cleanOldVersions) {
+          await window.electronAPI.cleanOldVersions();
+        }
       } catch (err) {
         console.warn('clearCache failed', err);
       }
