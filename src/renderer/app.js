@@ -696,6 +696,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     trActive: (localStorage.getItem('riff_tr_enabled') === 'true' && (localStorage.getItem('riff_tr_active') === 'true' || localStorage.getItem('riff_tr_auto') === 'true')),
     currentTranslations: null,
     isTvKaraokeOpen: false,
+    isFloatingLyricsOpen: false,
                           audioSettings: savedSound.audioSettings,
                           hqEnabled: savedSound.hqEnabled,
                           hqSettings: savedSound.hqSettings,
@@ -3415,7 +3416,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             state.nextTrackPrefetched = true;
             prefetchNextQueueTrack();
           }
-          if (state.isRightPanelOpen || state.isTvKaraokeOpen) {
+          if (state.isRightPanelOpen || state.isTvKaraokeOpen || state.isFloatingLyricsOpen) {
             updateSyncedLyricsHighlight(cur);
           }
         }
@@ -6118,9 +6119,66 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     return Math.max(0, top - (parentH / 2) + (lineH / 2));
   }
 
+  function sendFloatingLyricsUpdate(currentTime) {
+    if (!state.isFloatingLyricsOpen || !window.electronAPI || !window.electronAPI.updateFloatingLyrics) return;
+    const cur = typeof currentTime === 'number' ? currentTime : (el.nativeAudio ? el.nativeAudio.currentTime || 0 : 0);
+
+    if (state.syncedLyrics && state.syncedLyrics.length > 0) {
+      let activeIndex = -1;
+      const validLines = [];
+      for (let i = 0; i < state.syncedLyrics.length; i++) {
+        const startTime = getLineStartTime(i);
+        if (startTime >= 0) validLines.push({ time: startTime, index: i });
+      }
+      for (let i = 0; i < validLines.length; i++) {
+        const current = validLines[i];
+        const next = validLines[i + 1];
+        const nextTime = next ? next.time : Infinity;
+        if (cur >= current.time && cur < nextTime) {
+          activeIndex = current.index;
+          break;
+        }
+      }
+
+      if (activeIndex >= 0) {
+        const curLine = state.syncedLyrics[activeIndex];
+        const nextLine = state.syncedLyrics[activeIndex + 1];
+        const curLineTime = getLineStartTime(activeIndex);
+        const nextLineTime = getLineEndTime(activeIndex);
+        const lineDur = Math.max(0.5, nextLineTime - curLineTime);
+        const progress = Math.min(Math.max((cur - curLineTime) / lineDur, 0), 1);
+        const cleanCur = (curLine.text || '').replace(/<[^>]+>/g, '').trim();
+        const cleanNext = nextLine ? (nextLine.text || '').replace(/<[^>]+>/g, '').trim() : '';
+
+        const trCur = (state.trActive && state.currentTranslations && state.currentTranslations[activeIndex]) || '';
+        const displayNext = trCur ? `[${trCur}] ${cleanNext}` : cleanNext;
+
+        window.electronAPI.updateFloatingLyrics({
+          current: cleanCur || (state.currentTrack ? state.currentTrack.title : 'Eclipse'),
+          next: displayNext,
+          progress: progress * 100,
+          isPlaying: state.isPlaying
+        });
+        return;
+      }
+    }
+
+    if (state.currentTrack) {
+      window.electronAPI.updateFloatingLyrics({
+        current: state.currentTrack.title || 'Eclipse',
+        next: state.currentTrack.artist || '',
+        progress: 0,
+        isPlaying: state.isPlaying
+      });
+    }
+  }
+
   function updateSyncedLyricsHighlight(currentTime) {
     if (typeof updateMiniLyricsHighlight === 'function') updateMiniLyricsHighlight(currentTime);
-    if (state.syncedLyrics.length === 0 || !state.isWindowVisible) return;
+    if (state.isFloatingLyricsOpen) {
+      sendFloatingLyricsUpdate(currentTime);
+    }
+    if (state.syncedLyrics.length === 0 || (!state.isWindowVisible && !state.isFloatingLyricsOpen)) return;
     let activeIdx = -1;
     let activeIndex = -1;
 
@@ -19328,10 +19386,32 @@ function bindCoverHoldZoom(wrapEl) {
       e.stopPropagation();
       if (window.electronAPI && window.electronAPI.toggleFloatingLyrics) {
         const isOpen = await window.electronAPI.toggleFloatingLyrics();
-        btnFloatingLyrics.classList.toggle('active', isOpen);
+        state.isFloatingLyricsOpen = !!isOpen;
+        btnFloatingLyrics.classList.toggle('active', !!isOpen);
+        if (isOpen && typeof sendFloatingLyricsUpdate === 'function') {
+          sendFloatingLyricsUpdate();
+        }
         showToast(isOpen ? 'Floating lyrics opened' : 'Floating lyrics closed', 'info');
       }
     });
+
+    if (window.electronAPI && window.electronAPI.onFloatingLyricsState) {
+      window.electronAPI.onFloatingLyricsState((isOpen) => {
+        state.isFloatingLyricsOpen = !!isOpen;
+        btnFloatingLyrics.classList.toggle('active', !!isOpen);
+        if (isOpen && typeof sendFloatingLyricsUpdate === 'function') {
+          sendFloatingLyricsUpdate();
+        }
+      });
+    }
+
+    if (window.electronAPI && window.electronAPI.onFloatingLyricsRequestSync) {
+      window.electronAPI.onFloatingLyricsRequestSync(() => {
+        if (typeof sendFloatingLyricsUpdate === 'function') {
+          sendFloatingLyricsUpdate();
+        }
+      });
+    }
   }
 
   const btnSkipSilence = document.getElementById('btn-skip-silence');

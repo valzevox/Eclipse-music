@@ -564,6 +564,12 @@ ipcMain.handle('toggle-floating-lyrics', () => {
   }
 });
 
+ipcMain.on('floating-lyrics-ready', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('floating-lyrics-request-sync');
+  }
+});
+
 ipcMain.on('floating-lyrics-update', (event, data) => {
   if (floatingLyricsWindow && !floatingLyricsWindow.isDestroyed()) {
     floatingLyricsWindow.webContents.send('floating-lyrics-data', data);

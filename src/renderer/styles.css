@@ -2438,6 +2438,13 @@ body.perf .artist-tab-pane:not(.hidden) { animation: none !important; }
   color: var(--md-sys-color-on-primary) !important;
 }
 
+.right-panel .lyrics-action-btn.active,
+.right-panel.lyrics-empty .lyrics-action-btn.active {
+  background: var(--md-sys-color-primary, #a8c7fa) !important;
+  color: var(--md-sys-color-on-primary, #042e6f) !important;
+  box-shadow: 0 0 12px rgba(168, 199, 250, 0.45);
+}
+
 .right-panel .lyrics-action-btn:active,
 .right-panel.lyrics-empty .lyrics-action-btn:active {
   transform: none !important;
