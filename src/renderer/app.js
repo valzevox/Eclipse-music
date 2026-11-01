@@ -18806,7 +18806,7 @@ function bindCoverHoldZoom(wrapEl) {
   (function initUpdateUI() {
     const api = window.electronAPI;
     const $ = (id) => document.getElementById(id);
-    let currentAppVersion = '1.3.0';
+    let currentAppVersion = '1.3.1';
     if (api && api.getAppVersion) {
       api.getAppVersion().then((v) => {
         if (v) {
