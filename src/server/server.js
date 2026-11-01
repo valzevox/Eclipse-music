@@ -98,7 +98,7 @@ const I18N_FIX = {
 };
 
 function i18nValueBroken(v) {
-  return typeof v !== 'string' || !v || v.indexOf('') !== -1;
+  return typeof v !== 'string' || !v || v.indexOf('\ufffd') !== -1;
 }
 const logger = require('../shared/logger');
 const { getSystemAudioOutputInfo } = require('../shared/audio-output');

@@ -5682,6 +5682,10 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       }
       if (el._i18n_orig_attrs[attr]) list.add(el._i18n_orig_attrs[attr]);
     });
+    document.querySelectorAll('.nav-item[title]').forEach(el => {
+      if (!el.dataset.origTitle) el.dataset.origTitle = el.getAttribute('title') || '';
+      if (el.dataset.origTitle) list.add(el.dataset.origTitle);
+    });
     return Array.from(list);
   }
 
@@ -5714,6 +5718,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         if (el._i18n_orig_attrs && el._i18n_orig_attrs[attr]) {
           el.setAttribute(attr, el._i18n_orig_attrs[attr]);
         }
+      });
+      document.querySelectorAll('.nav-item[title]').forEach(el => {
+        if (el.dataset.origTitle) el.setAttribute('title', el.dataset.origTitle);
       });
       return;
     }
@@ -5793,6 +5800,11 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       if (origVal && translations[origVal]) {
         el.setAttribute(attr, translations[origVal]);
       }
+    });
+    document.querySelectorAll('.nav-item[title]').forEach(el => {
+      if (!el.dataset.origTitle) el.dataset.origTitle = el.getAttribute('title') || '';
+      const orig = el.dataset.origTitle;
+      if (orig && translations[orig]) el.setAttribute('title', translations[orig]);
     });
   }
   window.collectI18n = collectI18n;
@@ -18389,6 +18401,36 @@ function bindCoverHoldZoom(wrapEl) {
       msg: 'Changes will take effect after restarting the app',
       cancel: 'Cancel',
       restart: 'Restart'
+    },
+    vi: {
+      title: 'Yêu cầu khởi động lại',
+      msg: 'Các thay đổi sẽ có hiệu lực sau khi khởi động lại ứng dụng',
+      cancel: 'Hủy',
+      restart: 'Khởi động lại'
+    },
+    ja: {
+      title: '再起動が必要です',
+      msg: '変更はアプリを再起動した後に有効になります',
+      cancel: 'キャンセル',
+      restart: '再起動'
+    },
+    ko: {
+      title: '재시작 필요',
+      msg: '변경 사항은 앱을 다시 시작한 후 적용됩니다',
+      cancel: '취소',
+      restart: '재시작'
+    },
+    'zh-CN': {
+      title: '需要重启',
+      msg: '更改将在重启应用后生效',
+      cancel: '取消',
+      restart: '重启'
+    },
+    'zh-TW': {
+      title: '需要重啟',
+      msg: '變更將在重啟應用後生效',
+      cancel: '取消',
+      restart: '重啟'
     },
     ru: {
       title: 'Необходимо перезагрузить приложение',
