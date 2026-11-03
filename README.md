@@ -207,7 +207,7 @@ Pull requests are welcome. Please verify all changes locally, ensure code passes
 
 ## Support
 
-You can support ongoing development via [Ko-fi](https://ko-fi.com/rootlesszen). Repository stars on GitHub are also appreciated.
+You can support ongoing development via [Ko-fi](https://ko-fi.com/m1n6). Repository stars on GitHub are also appreciated.
 
 ## Disclaimer
 
