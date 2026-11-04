@@ -633,33 +633,35 @@ const verifyGoogleVideoStream = verifyStreamPlayable;
 async function fetchDirectYoutubeStreamServer(videoId, quality = 'medium') {
   const vid = extractYtIdFromAny(videoId);
   if (!vid) return null;
+  const visitorData = '';
   const clients = [
     {
-      clientName: 'ANDROID_VR',
-      clientVersion: '1.60.19',
-      androidSdkVersion: 34,
-      userAgent: 'com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 14; eureka-user Build/SQ3A.220605.009.A1) gzip',
-      osName: 'Android',
-      osVersion: '14'
-    },
-    {
-      clientName: 'ANDROID_TESTSUITE',
-      clientVersion: '1.9',
-      androidSdkVersion: 34,
-      userAgent: 'com.google.android.youtube/1.9 (Linux; U; Android 14; en_US) gzip',
-      osName: 'Android',
-      osVersion: '14'
-    },
-    {
       clientName: 'IOS',
-      clientVersion: '20.03.02',
+      clientVersion: '20.10.4',
       deviceMake: 'Apple',
       deviceModel: 'iPhone16,2',
-      userAgent: 'com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X;)',
+      userAgent: 'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)',
       osName: 'iOS',
-      osVersion: '18.2.1.22C161'
+      osVersion: '18.3.2.22D60'
+    },
+    {
+      clientName: 'ANDROID_MUSIC',
+      clientVersion: '7.27.52',
+      androidSdkVersion: 34,
+      userAgent: 'com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 14; en_US; Quest 3) gzip',
+      host: 'music.youtube.com'
     }
   ];
+
+  const authHeaders = getYtAuthHeaders('https://www.youtube.com');
+  if (authHeaders) {
+    clients.unshift({
+      clientName: 'TVHTML5',
+      clientVersion: '7.20250312.16.00',
+      userAgent: 'Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.5) AppleWebKit/537.36 (KHTML, like Gecko) 85.0.4183.93/6.5 TV Safari/537.36',
+      extraHeaders: authHeaders
+    });
+  }
 
   const queryClient = (c) => new Promise((resolve, reject) => {
     const clientPayload = {
@@ -668,31 +670,38 @@ async function fetchDirectYoutubeStreamServer(videoId, quality = 'medium') {
       hl: 'en',
       gl: 'US'
     };
+    if (visitorData && !c.extraHeaders) clientPayload.visitorData = visitorData;
     if (c.androidSdkVersion) clientPayload.androidSdkVersion = c.androidSdkVersion;
     if (c.deviceMake) clientPayload.deviceMake = c.deviceMake;
     if (c.deviceModel) clientPayload.deviceModel = c.deviceModel;
     if (c.osName) clientPayload.osName = c.osName;
     if (c.osVersion) clientPayload.osVersion = c.osVersion;
 
+    const ctx = { client: clientPayload };
+    if (c.embedded) ctx.thirdParty = { embedUrl: 'https://www.youtube.com/' };
+
     const bodyPayload = JSON.stringify({
       videoId: vid,
-      context: { client: clientPayload },
+      context: ctx,
       contentCheckOk: true,
       racyCheckOk: true
     });
 
+    const reqHeaders = Object.assign({
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(bodyPayload),
+      'User-Agent': c.userAgent,
+      'X-Goog-Api-Format-Version': '2'
+    }, c.extraHeaders || (visitorData ? { 'X-Goog-Visitor-Id': visitorData } : {}));
+
     const req = https.request({
-      hostname: 'www.youtube.com',
+      hostname: c.host || 'www.youtube.com',
       path: '/youtubei/v1/player?prettyPrint=false',
       method: 'POST',
       agent: keepAliveHttpsAgent,
       family: 4,
-      timeout: 2800,
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(bodyPayload),
-        'User-Agent': c.userAgent
-      }
+      timeout: 2200,
+      headers: reqHeaders
     }, (res) => {
       let raw = '';
       res.setEncoding('utf8');
@@ -701,21 +710,29 @@ async function fetchDirectYoutubeStreamServer(videoId, quality = 'medium') {
         if (res.statusCode !== 200) return reject(new Error('status ' + res.statusCode));
         try {
           const data = JSON.parse(raw);
-          const formats = [
-            ...((data.streamingData && data.streamingData.adaptiveFormats) || []),
-            ...((data.streamingData && data.streamingData.formats) || [])
-          ];
-          const audioFormats = formats.filter(f => f && f.url && typeof f.mimeType === 'string' && f.mimeType.startsWith('audio/'));
+          if (data.playabilityStatus && data.playabilityStatus.status !== 'OK') {
+            return reject(new Error('playability: ' + (data.playabilityStatus.status || 'UNPLAYABLE')));
+          }
+          const adaptive = (data.streamingData && data.streamingData.adaptiveFormats) || [];
+          const muxed = (data.streamingData && data.streamingData.formats) || [];
+          const allFormats = [...adaptive, ...muxed];
+          const audioFormats = allFormats.filter(f => f && f.url && !f.signatureCipher && !f.cipher && typeof f.mimeType === 'string' && f.mimeType.startsWith('audio/'));
           if (audioFormats.length > 0) {
+            let pool = audioFormats;
             if (quality === 'low') {
-              audioFormats.sort((a, b) => (a.bitrate || 0) - (b.bitrate || 0));
-              return resolve(audioFormats[0].url);
+              pool.sort((a, b) => (a.bitrate || 0) - (b.bitrate || 0));
+            } else if (quality === 'high' || quality === 'max') {
+              pool.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+            } else {
+              const m4a = audioFormats.filter(f => f.mimeType.includes('mp4') || f.mimeType.includes('m4a'));
+              const webm = audioFormats.filter(f => f.mimeType.includes('webm') || f.mimeType.includes('opus'));
+              pool = m4a.length > 0 ? m4a : webm.length > 0 ? webm : audioFormats;
+              pool.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
             }
-            const m4a = audioFormats.filter(f => f.mimeType.includes('mp4') || f.mimeType.includes('m4a'));
-            const pool = m4a.length > 0 ? m4a : audioFormats;
-            pool.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
             return resolve(pool[0].url);
           }
+          const itag18 = muxed.find(f => f && f.itag === 18 && f.url && !f.signatureCipher && !f.cipher);
+          if (itag18) return resolve(itag18.url);
           reject(new Error('no audio formats'));
         } catch (e) {
           reject(e);
@@ -3528,12 +3545,135 @@ async function handleDownloadedTrack(req, res, name) {
   }
 }
 
-async function handleAudioProxy(req, res, targetUrl) {
+function googleVideoUserAgent(parsed) {
+  const c = (parsed && parsed.searchParams && parsed.searchParams.get('c') || '').toUpperCase();
+  if (c === 'ANDROID_MUSIC') return 'com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 14; en_US; sdk_gphone64_x86_64 Build/UE1A.230829.036) gzip';
+  return 'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)';
+}
+
+
+
+
+
+
+
+async function handleGoogleVideoChunkedProxy(req, res, targetUrl, initialUrl) {
+  let parsed;
+  try { parsed = new URL(targetUrl); } catch (_) { res.writeHead(400); return res.end('Invalid url'); }
+  const ua = googleVideoUserAgent(parsed);
+  const CHUNK = 1536 * 1024;
+  const mime = (parsed.searchParams.get('mime') || 'audio/mp4').replace(/%2F/i, '/');
+  let total = parseInt(parsed.searchParams.get('clen') || '0', 10) || ytContentLengthByUrl.get(targetUrl) || 0;
+
+  const rm = /bytes=(\d*)-(\d*)/i.exec(req.headers.range || '');
+  let start = rm && rm[1] !== '' ? parseInt(rm[1], 10) : 0;
+  let reqEnd = rm && rm[2] !== '' ? parseInt(rm[2], 10) : null;
+  const hadRange = Boolean(rm);
+
+  let aborted = false;
+  let curReq = null;
+  res.on('close', () => { aborted = true; try { curReq && curReq.destroy(); } catch (_) {} });
+
+  const fetchChunk = (pos, end, useQuery, urlStr) => new Promise((resolve, reject) => {
+    let u = urlStr;
+    const headers = { 'User-Agent': ua, 'Accept': '*/*', 'Accept-Language': 'en-US,en;q=0.9' };
+    if (useQuery) {
+      const uu = new URL(urlStr);
+      uu.searchParams.set('range', `${pos}-${end}`);
+      u = uu.toString();
+    } else {
+      headers['Range'] = `bytes=${pos}-${end}`;
+    }
+    const r = https.request(u, { method: 'GET', family: 4, agent: keepAliveHttpsAgent, headers, timeout: 20000 }, (pr) => {
+      if ([301, 302, 303, 307, 308].includes(pr.statusCode) && pr.headers.location) {
+        pr.resume();
+        return resolve({ redirect: new URL(pr.headers.location, u).toString() });
+      }
+      resolve({ pr });
+    });
+    curReq = r;
+    r.on('timeout', () => r.destroy(new Error('chunk timeout')));
+    r.on('error', reject);
+    r.end();
+  });
+
+  const getChunk = async (pos, end, state) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      for (const useQuery of [false, true]) {
+        if (aborted) throw new Error('aborted');
+        let out;
+        try { out = await fetchChunk(pos, end, useQuery, state.url); } catch (e) { continue; }
+        if (out.redirect) { state.url = out.redirect; try { out = await fetchChunk(pos, end, useQuery, state.url); } catch (e) { continue; } }
+        if (out.pr && (out.pr.statusCode === 206 || out.pr.statusCode === 200)) return out.pr;
+        if (out.pr) out.pr.resume();
+      }
+    }
+    throw new Error('chunk refused');
+  };
+
+  const state = { url: targetUrl };
+  try {
+    if (!total) {
+      
+
+      const pr0 = await getChunk(start, start + 1, state);
+      const cr = /\/(\d+)\s*$/.exec(pr0.headers['content-range'] || '');
+      pr0.destroy();
+      if (cr) total = parseInt(cr[1], 10);
+    }
+    if (total && start >= total) { res.writeHead(416, { 'Content-Range': `bytes */${total}`, 'Access-Control-Allow-Origin': '*' }); return res.end(); }
+    const finalEnd = total ? Math.min(reqEnd === null ? total - 1 : reqEnd, total - 1) : (reqEnd === null ? start + CHUNK * 64 : reqEnd);
+
+    const headers = {
+      'Content-Type': mime,
+      'Accept-Ranges': 'bytes',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': '*',
+      'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges'
+    };
+    if (total) headers['Content-Length'] = String(finalEnd - start + 1);
+    if (hadRange && total) { headers['Content-Range'] = `bytes ${start}-${finalEnd}/${total}`; res.writeHead(206, headers); }
+    else res.writeHead(200, headers);
+    if (req.method === 'HEAD') return res.end();
+
+    let pos = start;
+    let first = true;
+    while (pos <= finalEnd && !aborted) {
+      const end = Math.min(pos + CHUNK - 1, finalEnd);
+      let pr;
+      try { pr = await getChunk(pos, end, state); }
+      catch (e) {
+        if (first) { evictStreamCache(initialUrl); evictStreamCache(targetUrl); }
+        try { res.destroy(); } catch (_) {}
+        return;
+      }
+      first = false;
+      let got = 0;
+      await new Promise((resolve) => {
+        pr.on('data', (d) => { got += d.length; if (!res.write(d)) { pr.pause(); res.once('drain', () => pr.resume()); } });
+        pr.on('end', resolve);
+        pr.on('error', resolve);
+        pr.on('aborted', resolve);
+        res.once('close', resolve);
+      });
+      if (got === 0) { evictStreamCache(initialUrl); evictStreamCache(targetUrl); break; }
+      pos += got;
+      if (!total && got < (end - (pos - got) + 1)) break;
+    }
+    if (!res.writableEnded) res.end();
+  } catch (e) {
+    evictStreamCache(initialUrl);
+    if (!res.headersSent) { res.writeHead(502, { 'Access-Control-Allow-Origin': '*' }); res.end('Proxy error'); }
+    else { try { res.destroy(); } catch (_) {} }
+  }
+}
+
+async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl = null) {
+  const initialUrl = origUrl || targetUrl;
   if (!targetUrl) {
     res.writeHead(400);
     return res.end('Missing url');
   }
-
   try {
     let parsed;
     try {
@@ -3546,52 +3686,25 @@ async function handleAudioProxy(req, res, targetUrl) {
       res.writeHead(400);
       return res.end('Unsupported protocol');
     }
-    const isLocalOrPrivateName = parsed.hostname === 'localhost' || parsed.hostname.endsWith('.localhost') || parsed.hostname.endsWith('.local') || parsed.hostname.endsWith('.internal');
-    if (isLocalOrPrivateName || (net.isIP(parsed.hostname) && isPrivateIp(parsed.hostname))) {
-      res.writeHead(403);
-      return res.end('Blocked target');
-    }
-    const isKnownAudioHost = /(?:^|\.)(?:googlevideo\.com|sndcdn\.com|bcbits\.com)$/i.test(parsed.hostname);
-    if (!isKnownAudioHost && parsed.protocol !== 'https:' && (await isPrivateHost(parsed.hostname))) {
-      res.writeHead(403);
-      return res.end('Blocked target');
-    }
-    const client = parsed.protocol === 'https:' ? https : http;
     const hostLower = (parsed.hostname || '').toLowerCase();
-
-    const forward = {
-      host: parsed.host,
-      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36'
-    };
-    for (const key of ['accept', 'accept-language']) {
-      if (req.headers[key] !== undefined) forward[key] = req.headers[key];
+    if (hostLower === 'localhost' || hostLower === '127.0.0.1' || hostLower === '::1') {
+      res.writeHead(403);
+      return res.end('Blocked target');
     }
-    if (req.headers['range'] !== undefined) {
-      forward['Range'] = req.headers['range'];
+
+    const client = parsed.protocol === 'https:' ? https : http;
+    const forward = { host: parsed.host };
+    for (const key of ['range', 'accept', 'accept-language']) {
+      if (req.headers[key] !== undefined) forward[key] = req.headers[key];
     }
 
     if (hostLower.endsWith('googlevideo.com')) {
       if (!forward['range']) {
         forward['range'] = 'bytes=0-';
       }
-      // googlevideo rejects requests without a YouTube origin/referer pair
-      // (403 with an empty body), which surfaced as playback failures.
-      forward['origin'] = 'https://www.youtube.com';
-      forward['referer'] = 'https://www.youtube.com/';
-      forward['sec-fetch-mode'] = 'cors';
-      forward['sec-fetch-site'] = 'cross-site';
-      forward['sec-fetch-dest'] = 'video';
       const cParam = (parsed.searchParams.get('c') || '').toUpperCase();
-      if (cParam === 'IOS') {
-        forward['user-agent'] = 'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)';
-      } else if (cParam === 'ANDROID_VR') {
-        forward['user-agent'] = 'com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip';
-      } else if (cParam.startsWith('ANDROID')) {
-        forward['user-agent'] = 'com.google.android.youtube/19.44.38 (Linux; U; Android 14; en_US; sdk_gphone64_x86_64 Build/UE1A.230829.036) gzip';
-      } else {
-        forward['user-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36';
-      }
-      if ((cParam === 'WEB' || cParam === 'WEB_REMIX' || cParam === 'TVHTML5') && hasYtLoginCookies()) {
+      forward['user-agent'] = googleVideoUserAgent(parsed);
+      if ((cParam === 'WEB' || cParam === 'WEB_REMIX' || cParam === 'TVHTML5') && fs.existsSync(YT_COOKIES_FILE)) {
         const authHdrs = getYtAuthHeaders();
         if (authHdrs && authHdrs.Cookie) forward['cookie'] = authHdrs.Cookie;
       }
@@ -3599,32 +3712,61 @@ async function handleAudioProxy(req, res, targetUrl) {
       forward['user-agent'] = req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
     }
 
+    const isGv = hostLower.endsWith('googlevideo.com');
     const proxyReq = client.request(targetUrl, {
       method: req.method,
       family: 4,
+      agent: isGv ? false : (parsed.protocol === 'https:' ? keepAliveHttpsAgent : undefined),
       headers: forward
     }, (proxyRes) => {
       if (res.writableEnded) {
         proxyRes.destroy();
         return;
       }
-      const respHeaders = Object.assign({}, proxyRes.headers);
-      respHeaders['access-control-allow-origin'] = '*';
-      respHeaders['access-control-allow-headers'] = '*';
-      respHeaders['access-control-allow-methods'] = 'GET, HEAD, OPTIONS';
-      delete respHeaders['content-security-policy'];
-      res.writeHead(proxyRes.statusCode, respHeaders);
-      proxyRes.on('error', () => { try { res.destroy(); } catch (e) {} });
+      if ([301, 302, 303, 307, 308].includes(proxyRes.statusCode) && proxyRes.headers.location && redirectsLeft > 0) {
+        proxyRes.resume();
+        const nextUrl = new URL(proxyRes.headers.location, targetUrl).toString();
+        return handleAudioProxy(req, res, nextUrl, redirectsLeft - 1, initialUrl);
+      }
+      if (proxyRes.statusCode >= 400) {
+        evictStreamCache(initialUrl);
+        evictStreamCache(targetUrl);
+        proxyRes.resume();
+        res.writeHead(502, { 'Access-Control-Allow-Origin': '*' });
+        return res.end('Upstream error');
+      }
+      const outHeaders = Object.assign({}, proxyRes.headers);
+      delete outHeaders['access-control-allow-origin'];
+      delete outHeaders['Access-Control-Allow-Origin'];
+      delete outHeaders['access-control-allow-credentials'];
+      delete outHeaders['x-frame-options'];
+      outHeaders['Access-Control-Allow-Origin'] = '*';
+      outHeaders['Access-Control-Allow-Headers'] = '*';
+      outHeaders['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range, Accept-Ranges';
+
+      res.writeHead(proxyRes.statusCode || 200, outHeaders);
+      proxyRes.on('aborted', () => {
+        evictStreamCache(initialUrl);
+        evictStreamCache(targetUrl);
+      });
+      proxyRes.on('error', () => {
+        evictStreamCache(initialUrl);
+        evictStreamCache(targetUrl);
+        try { res.destroy(); } catch (e) {}
+      });
       proxyRes.pipe(res);
     });
 
-    proxyReq.setTimeout(60000, () => {
+    proxyReq.setTimeout(30000, () => {
+      evictStreamCache(initialUrl);
       proxyReq.destroy(new Error('Proxy timeout'));
     });
 
-    proxyReq.on('error', (e) => {
+    proxyReq.on('error', () => {
+      evictStreamCache(initialUrl);
+      evictStreamCache(targetUrl);
       if (!res.headersSent) {
-        res.writeHead(502);
+        res.writeHead(502, { 'Access-Control-Allow-Origin': '*' });
         res.end('Proxy error');
       } else {
         try { res.destroy(); } catch (err) {}
@@ -3634,8 +3776,9 @@ async function handleAudioProxy(req, res, targetUrl) {
     req.on('error', () => { try { proxyReq.destroy(); } catch (e) {} });
     req.pipe(proxyReq);
   } catch (e) {
+    evictStreamCache(initialUrl);
     if (!res.headersSent) {
-      res.writeHead(500);
+      res.writeHead(500, { 'Access-Control-Allow-Origin': '*' });
       res.end('Proxy failed');
     }
   }

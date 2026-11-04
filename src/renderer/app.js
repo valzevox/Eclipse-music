@@ -4335,21 +4335,49 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   let preloadedTrack10sFired = false;
+  function warmUpNextAudioBuffer(streamUrl) {
+    if (!streamUrl || typeof streamUrl !== 'string' || streamUrl.includes('.m3u8')) return;
+    fetch(streamUrl, { headers: { 'Range': 'bytes=0-262143' } }).catch(() => {});
+  }
+
   async function preloadNextTrackStream() {
     if (!state.queue || state.queueIndex < 0) return;
     const nextTrack = state.queue[state.queueIndex + 1];
-    if (nextTrack && !nextTrack._preloadedStreamUrl && !nextTrack.isCached && nextTrack.platform !== 'local') {
-      const qQuality = encodeURIComponent(localStorage.getItem('riff_audio_quality') || 'medium');
-      const qFallback = encodeURIComponent(nextTrack.searchQuery || ((nextTrack.artist ? nextTrack.artist + ' - ' : '') + nextTrack.title));
-      const fetchUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?id=${encodeURIComponent(nextTrack.id || '')}&url=${encodeURIComponent(nextTrack.url || '')}&platform=${encodeURIComponent(nextTrack.platform || 'youtube')}&q=${qFallback}&quality=${qQuality}&token=${encodeURIComponent((window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '')}`;
-      try {
-        const res = await fetch(fetchUrl);
-        const data = await res.json();
-        if (data && data.success && data.streamUrl) {
-          nextTrack._preloadedStreamUrl = data.proxyUrl || data.streamUrl;
-        }
-      } catch (_) {}
+    if (!nextTrack || nextTrack.isCached || nextTrack.platform === 'local') return;
+    const curQuality = localStorage.getItem('riff_audio_quality') || 'medium';
+    if (nextTrack._preloadedStreamUrl && nextTrack._preloadedStreamQuality === curQuality) {
+      warmUpNextAudioBuffer(nextTrack._preloadedStreamUrl);
+      return;
     }
+    try {
+      const rawId = String(nextTrack.id || '').trim();
+      const isRealYtId = /^[a-zA-Z0-9_-]{11}$/.test(rawId) && !/^(cand_|dz_|it_|sp_|ym_|alb_|local_|track_)/i.test(rawId);
+      if (!isRealYtId && nextTrack.platform !== 'soundcloud' && (nextTrack.title || nextTrack.artist)) {
+        const q = ((nextTrack.artist ? nextTrack.artist + ' - ' : '') + (nextTrack.title || '')).trim();
+        if (q) {
+          const sRes = await fetch(`http://127.0.0.1:${state.serverPort}/api/search?q=${encodeURIComponent(q)}&platform=ytmusic&limit=1`);
+          const sData = await sRes.json();
+          const hit = sData && Array.isArray(sData.tracks) && sData.tracks[0];
+          if (hit && hit.id && /^[a-zA-Z0-9_-]{11}$/.test(hit.id)) {
+            nextTrack.id = hit.id;
+            nextTrack.url = hit.url || `https://www.youtube.com/watch?v=${hit.id}`;
+            if (!nextTrack.thumbnail && hit.thumbnail) nextTrack.thumbnail = hit.thumbnail;
+          }
+        }
+      }
+      const qQuality = encodeURIComponent(curQuality);
+      const qFallback = encodeURIComponent(nextTrack.searchQuery || ((nextTrack.artist ? nextTrack.artist + ' - ' : '') + (nextTrack.title || '')));
+      const tokenParam = (window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '';
+      const fetchUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?id=${encodeURIComponent(nextTrack.id || '')}&url=${encodeURIComponent(nextTrack.url || '')}&platform=${encodeURIComponent(nextTrack.platform || 'ytmusic')}&title=${encodeURIComponent(nextTrack.title || '')}&artist=${encodeURIComponent(nextTrack.artist || '')}&duration=${encodeURIComponent(nextTrack.duration || 0)}&q=${qFallback}&quality=${qQuality}&token=${encodeURIComponent(tokenParam)}`;
+      const res = await fetch(fetchUrl);
+      const data = await res.json();
+      if (data && data.success && (data.proxyUrl || data.streamUrl)) {
+        const chosenUrl = data.proxyUrl || data.streamUrl;
+        nextTrack._preloadedStreamUrl = chosenUrl;
+        nextTrack._preloadedStreamQuality = curQuality;
+        warmUpNextAudioBuffer(chosenUrl);
+      }
+    } catch (_) {}
   }
 
   
@@ -4598,7 +4626,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     loadSponsorBlockSegments(track);
 
     try {
-      if (track._preloadedStreamUrl && !track._preloadedStreamUrl.includes('/api/audio-proxy') && (!track._preloadedStreamUrlExpires || Date.now() < track._preloadedStreamUrlExpires)) {
+      if (track._preloadedStreamUrl && (!track._preloadedStreamUrlExpires || Date.now() < track._preloadedStreamUrlExpires)) {
         if (currentToken !== state.loadToken) return;
         if (hlsInstance) {
           try { hlsInstance.destroy(); } catch (_) {}
@@ -4643,7 +4671,8 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
       const qQuality = encodeURIComponent(localStorage.getItem('riff_audio_quality') || 'medium');
       const qSearch = encodeURIComponent(track.searchQuery || ((track.artist ? track.artist + ' - ' : '') + track.title));
-      const streamInfoUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?url=${encodeURIComponent(resolvedUrl || '')}&id=${encodeURIComponent(resolvedId || '')}&platform=${track.platform || state.platform}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&thumbnail=${encodeURIComponent(track.thumbnail || '')}&quality=${qQuality}&q=${qSearch}&token=${encodeURIComponent((window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '')}`;
+      const streamInfoPlatform = (state.platform === 'soundcloud' && (!track.url || !track.url.includes('youtube.com'))) ? 'soundcloud' : (track.platform || state.platform || 'ytmusic');
+      const streamInfoUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?url=${encodeURIComponent(resolvedUrl || '')}&id=${encodeURIComponent(resolvedId || '')}&platform=${encodeURIComponent(streamInfoPlatform)}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&thumbnail=${encodeURIComponent(track.thumbnail || '')}&quality=${qQuality}&q=${qSearch}&token=${encodeURIComponent((window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '')}`;
       let res;
       try {
         res = await fetch(streamInfoUrl, { signal });
@@ -12690,15 +12719,9 @@ function renderClickableArtists(container, rawArtist) {
     }
   }
 
-  function proxiedThumb(src, track) {
+  function proxiedThumb(src) {
     if (!src || typeof src !== 'string') return '';
-    if (src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('file:') || src.startsWith('http://127.0.0.1')) return src;
-    const port = (state && state.serverPort) || 38472;
-    let url = 'http://127.0.0.1:' + port + '/api/image-proxy?url=' + encodeURIComponent(src);
-    if (track && track.artist && track.title) {
-      url += '&artist=' + encodeURIComponent(track.artist) + '&title=' + encodeURIComponent(track.title);
-    }
-    return url;
+    return src;
   }
 
   function getTrackThumbUrl(track) {
@@ -12706,7 +12729,12 @@ function renderClickableArtists(container, rawArtist) {
     const o = getTrackArt(track).cover;
     if (o) return proxiedThumb(o, track);
     if (track.localThumbnail) return track.localThumbnail;
-    return proxiedThumb(track.thumbnail || track.cover || track.image || track.artworkUrl || '', track);
+    const base = track.thumbnail || track.cover || track.image || track.artworkUrl || '';
+    if (base) return proxiedThumb(base, track);
+    if (track.id && /^[a-zA-Z0-9_-]{11}$/.test(track.id)) {
+      return `https://i.ytimg.com/vi/${track.id}/hqdefault.jpg`;
+    }
+    return '';
   }
 
   function renderPlaylistCover(container, playlist, size = 64) {
@@ -18334,6 +18362,10 @@ function bindCoverHoldZoom(wrapEl) {
           btn.classList.add('selected');
           uiLangDropdown.classList.remove('open');
           if (item.code === prevLang) return;
+          if (window.electronAPI && window.electronAPI.storageSaveSync && window.__RIFF_STORAGE_MAP__) {
+            window.__RIFF_STORAGE_MAP__['riff_ui_lang'] = item.code;
+            window.electronAPI.storageSaveSync(window.__RIFF_STORAGE_MAP__);
+          }
           applyI18n(item.code);
           showLangRestartDialog(item.code);
         });
@@ -18467,6 +18499,9 @@ function bindCoverHoldZoom(wrapEl) {
 
   if (btnConfirmLangRestart) {
     btnConfirmLangRestart.addEventListener('click', () => {
+      if (window.electronAPI && window.electronAPI.storageSaveSync && window.__RIFF_STORAGE_MAP__) {
+        try { window.electronAPI.storageSaveSync(window.__RIFF_STORAGE_MAP__); } catch (_) {}
+      }
       if (window.electronAPI && window.electronAPI.restartApp) {
         window.electronAPI.restartApp();
       } else {
