@@ -5750,8 +5750,10 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   syncDocumentDirection(savedUiLang);
   if (savedUiLang !== 'en') {
     applyI18n(savedUiLang);
-    setTimeout(() => applyI18n(savedUiLang), 1000);
-    setTimeout(() => applyI18n(savedUiLang), 3500);
+    setTimeout(() => {
+      const current = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
+      if (current !== 'en') applyI18n(current).catch(() => {});
+    }, 1200);
   }
 
   function collectI18n() {
@@ -5794,12 +5796,23 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     lang = lang || localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
     localStorage.setItem('riff_ui_lang', lang);
     localStorage.setItem('eclipse_ui_lang', lang);
+    if (window.electronAPI && window.electronAPI.storageSaveSync && window.__RIFF_STORAGE_MAP__) {
+      window.__RIFF_STORAGE_MAP__['riff_ui_lang'] = lang;
+      window.__RIFF_STORAGE_MAP__['eclipse_ui_lang'] = lang;
+      try { window.electronAPI.storageSaveSync(window.__RIFF_STORAGE_MAP__); } catch (_) {}
+    }
     syncDocumentDirection(lang);
 
     const found = TRANSLATION_LANGUAGES.find(l => l.code === lang);
     const uiLangLabel = document.getElementById('ui-lang-label');
     if (uiLangLabel && found) {
       uiLangLabel.textContent = `${found.flag} ${found.name} (${found.code})`;
+    }
+    const uiLangMenu = document.getElementById('ui-lang-menu');
+    if (uiLangMenu) {
+      uiLangMenu.querySelectorAll('.m3-dropdown-option').forEach(o => {
+        o.classList.toggle('selected', o.dataset.value === lang);
+      });
     }
 
     if (lang === 'en') {
@@ -5930,10 +5943,10 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   window.collectI18n = collectI18n;
   window.applyI18n = applyI18n;
 
-  if (savedUiLang !== 'en') {
-    setTimeout(() => applyI18n(savedUiLang).catch(() => {}), 5000);
-    setTimeout(() => applyI18n(savedUiLang).catch(() => {}), 12000);
-  }
+  setTimeout(() => {
+    const cur = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
+    if (cur !== 'en') applyI18n(cur).catch(() => {});
+  }, 4000);
 
   let i18nApplyTimer = null;
   function scheduleI18nApply() {
@@ -18446,21 +18459,27 @@ function bindCoverHoldZoom(wrapEl) {
         }
         btn.addEventListener('click', async (e) => {
           e.stopPropagation();
+          const targetCode = item.code;
           const prevLang = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
-          localStorage.setItem('riff_ui_lang', item.code);
-          localStorage.setItem('eclipse_ui_lang', item.code);
+          
+          localStorage.setItem('riff_ui_lang', targetCode);
+          localStorage.setItem('eclipse_ui_lang', targetCode);
           if (uiLangLabel) uiLangLabel.textContent = text;
-          uiLangMenu.querySelectorAll('.m3-dropdown-option').forEach(o => o.classList.remove('selected'));
-          btn.classList.add('selected');
+          uiLangMenu.querySelectorAll('.m3-dropdown-option').forEach(o => {
+            o.classList.toggle('selected', o.dataset.value === targetCode);
+          });
           uiLangDropdown.classList.remove('open');
-          if (item.code === prevLang) return;
+          
           if (window.electronAPI && window.electronAPI.storageSaveSync && window.__RIFF_STORAGE_MAP__) {
-            window.__RIFF_STORAGE_MAP__['riff_ui_lang'] = item.code;
-            window.__RIFF_STORAGE_MAP__['eclipse_ui_lang'] = item.code;
-            window.electronAPI.storageSaveSync(window.__RIFF_STORAGE_MAP__);
+            window.__RIFF_STORAGE_MAP__['riff_ui_lang'] = targetCode;
+            window.__RIFF_STORAGE_MAP__['eclipse_ui_lang'] = targetCode;
+            try { window.electronAPI.storageSaveSync(window.__RIFF_STORAGE_MAP__); } catch (_) {}
           }
-          applyI18n(item.code);
-          showLangRestartDialog(item.code);
+          
+          applyI18n(targetCode);
+          if (targetCode !== prevLang) {
+            showLangRestartDialog(targetCode);
+          }
         });
         frag.appendChild(btn);
       });
