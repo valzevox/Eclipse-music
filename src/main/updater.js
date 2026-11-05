@@ -31,17 +31,25 @@ function isNewer(latest, current) {
 function findMatchingAsset(assets = [], platform = process.platform, arch = process.arch) {
   if (!Array.isArray(assets) || assets.length === 0) return null;
   if (platform === 'win32') {
-    const x64Exe = assets.find(a => /\.exe$/i.test(a.name) && /x64/i.test(a.name) && !/ia32/i.test(a.name));
-    if (x64Exe) return x64Exe;
-    const anyExe = assets.find(a => /\.exe$/i.test(a.name) && !/ia32/i.test(a.name) && !/blockmap/i.test(a.name));
-    if (anyExe) return anyExe;
+    const is64 = arch === 'x64' || arch === 'arm64' || !!process.env.ProgramFiles;
+    if (is64) {
+      const win64 = assets.find(a => /x64\.exe$/i.test(a.name)) || assets.find(a => /win\.exe$/i.test(a.name));
+      if (win64) return win64;
+    } else {
+      const win32 = assets.find(a => /ia32\.exe$/i.test(a.name));
+      if (win32) return win32;
+    }
     return assets.find(a => /\.exe$/i.test(a.name) && !/blockmap/i.test(a.name)) || null;
   }
   if (platform === 'linux') {
-    return assets.find(a => /\.AppImage$/i.test(a.name)) || null;
+    return assets.find(a => /\.AppImage$/i.test(a.name)) || assets.find(a => /\.deb$/i.test(a.name)) || null;
   }
   if (platform === 'darwin') {
-    return assets.find(a => /\.dmg$/i.test(a.name) && (arch === 'arm64' ? /arm64/i.test(a.name) : /x64/i.test(a.name))) || assets.find(a => /\.dmg$/i.test(a.name)) || null;
+    const isArm = arch === 'arm64';
+    if (isArm) {
+      return assets.find(a => /arm64\.dmg$/i.test(a.name)) || assets.find(a => /\.dmg$/i.test(a.name)) || null;
+    }
+    return assets.find(a => /x64\.dmg$/i.test(a.name)) || assets.find(a => /\.dmg$/i.test(a.name)) || null;
   }
   return null;
 }
@@ -296,13 +304,29 @@ function initUpdater(getWindow) {
   });
 
   const doInstallNow = async () => {
-    if (!currentUpdate) {
-      shell.openExternal(releasesUrl);
-      return;
+    if (!currentUpdate || !currentUpdate.downloadUrl) {
+      // Re-fetch latest to ensure asset is resolved
+      try {
+        const res = await fetch('https://api.github.com/repos/valzevox/Eclipse-music/releases/latest', {
+          headers: { 'User-Agent': 'Eclipse-Player' }
+        });
+        if (res.ok) {
+          const json = await res.json();
+          const target = findMatchingAsset(json.assets || []);
+          if (target && target.browser_download_url) {
+            currentUpdate = {
+              version: (json.tag_name || '').replace(/^v/i, ''),
+              downloadUrl: target.browser_download_url,
+              assetName: target.name,
+              assetSize: target.size || 0
+            };
+          }
+        }
+      } catch (_) {}
     }
 
-    if (!currentUpdate.downloadUrl) {
-      shell.openExternal(currentUpdate.htmlUrl || releasesUrl);
+    if (!currentUpdate || !currentUpdate.downloadUrl) {
+      shell.openExternal(releasesUrl);
       return;
     }
 
