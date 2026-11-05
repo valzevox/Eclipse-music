@@ -1525,19 +1525,8 @@
                   <span class="setting-name">Discord Rich Presence</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 8px;">
-                  <button class="btn-outline-pill" id="btn-discord-reconnect" type="button" style="padding: 4px 10px; font-size: calc(12px * var(--font-scale, 1));">Reconnect</button>
                   <button class="effect-switch-btn active" id="btn-discord-rpc"><span class="thumb"></span></button>
                 </div>
-              </div>
-              <div style="display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 0 4px;">
-                <span style="font-size: 12px; color: var(--md-sys-color-outline); white-space: nowrap;">Client ID:</span>
-                <input type="text" id="input-discord-client-id" class="text-input" placeholder="1564857196334940162 (Eclipse ID)" style="font-size: 12px; padding: 4px 8px; flex: 1; border-radius: 8px; background: var(--bg-surface-2, rgba(255,255,255,0.06)); border: 1px solid var(--border-color, rgba(255,255,255,0.1)); color: inherit;">
-                <button type="button" class="btn-outline-pill" id="btn-discord-save-client-id" style="padding: 4px 10px; font-size: 12px;">Save</button>
-              </div>
-              <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px; padding: 0 4px;">
-                <span style="font-size: 12px; color: var(--md-sys-color-outline); white-space: nowrap;">Share Web URL:</span>
-                <input type="text" id="input-eclipse-share-url" class="text-input" placeholder="https://eclipse-player.vercel.app/share/" style="font-size: 12px; padding: 4px 8px; flex: 1; border-radius: 8px; background: var(--bg-surface-2, rgba(255,255,255,0.06)); border: 1px solid var(--border-color, rgba(255,255,255,0.1)); color: inherit;">
-                <button type="button" class="btn-outline-pill" id="btn-eclipse-save-share-url" style="padding: 4px 10px; font-size: 12px;">Save</button>
               </div>
             </div>
 
@@ -1832,6 +1821,21 @@
                   </div>
                 </div>
                 <button class="btn-outline-pill" id="btn-import-json-playlists" style="padding: 6px 14px; font-size: calc(12px * var(--font-scale, 1)); flex-shrink: 0;">Import</button>
+              </div>
+            </div>
+
+            <div class="setting-item" id="auto-save-profile-item">
+              <div class="setting-item-top" style="align-items: center; justify-content: space-between;">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                  <div style="width: 32px; height: 32px; border-radius: 50%; background: var(--md-sys-color-surface-container-high); display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-primary);">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                  </div>
+                  <div style="display: flex; flex-direction: column;">
+                    <span class="setting-name">Auto-save Profile (Playlists & Settings)</span>
+                    <span style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">Profile is automatically remembered and restored on restart & updates</span>
+                  </div>
+                </div>
+                <span class="chip" style="font-size: 11px; padding: 2px 10px; background: rgba(76, 175, 80, 0.15); color: #4CAF50; border: 1px solid rgba(76, 175, 80, 0.3); border-radius: 999px;">Active</span>
               </div>
             </div>
 

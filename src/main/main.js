@@ -162,48 +162,64 @@ function runGUI() {
 
   const PRIMARY_STORAGE_FILE = path.join(__dirname, '../storage.json');
   const FALLBACK_STORAGE_FILE = path.join(app.getPath('userData'), 'storage.json');
+  const AUTOSAVE_PROFILE_FILE = path.join(
+    process.platform === 'win32'
+      ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Eclipse')
+      : process.platform === 'darwin'
+      ? path.join(os.homedir(), 'Library', 'Application Support', 'Eclipse')
+      : path.join(os.homedir(), '.config', 'eclipse'),
+    'profile-autosave.json'
+  );
 
   function getActiveStorageFile() {
     return FALLBACK_STORAGE_FILE;
   }
 
   function readStorageDiskSync() {
-    const file = getActiveStorageFile();
-    try {
-      if (fs.existsSync(file)) {
-        const raw = fs.readFileSync(file, 'utf8').trim();
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) return parsed;
-        }
-      }
-      if (fs.existsSync(PRIMARY_STORAGE_FILE)) {
-        const raw = fs.readFileSync(PRIMARY_STORAGE_FILE, 'utf8').trim();
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
-            writeStorageDiskSync(parsed);
-            return parsed;
+    const candidates = [
+      FALLBACK_STORAGE_FILE,
+      AUTOSAVE_PROFILE_FILE,
+      path.join(app.getPath('appData'), 'riff', 'storage.json'),
+      path.join(process.env.LOCALAPPDATA || '', 'Eclipse', 'storage.json'),
+      path.join(process.env.LOCALAPPDATA || '', 'Riff', 'profile-autosave.json'),
+      path.join(process.env.LOCALAPPDATA || '', 'Riff', 'storage.json'),
+      PRIMARY_STORAGE_FILE
+    ];
+
+    for (const file of candidates) {
+      try {
+        if (file && fs.existsSync(file)) {
+          const raw = fs.readFileSync(file, 'utf8').trim();
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+              writeStorageDiskSync(parsed);
+              return parsed;
+            }
           }
         }
+      } catch (e) {
+        console.warn('[eclipse] storage read warning for', file, e.message);
       }
-    } catch (e) {
-      console.warn('[eclipse] storage.json read warning:', e.message);
     }
     return null;
   }
 
   function writeStorageDiskSync(data) {
     if (!data || typeof data !== 'object') return;
-    const file = getActiveStorageFile();
-    const tmpFile = file + '.tmp';
-    try {
-      fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), 'utf8');
-      fs.renameSync(tmpFile, file);
-    } catch (_) {
+    const targets = [FALLBACK_STORAGE_FILE, AUTOSAVE_PROFILE_FILE];
+    for (const file of targets) {
       try {
-        fs.writeFileSync(FALLBACK_STORAGE_FILE, JSON.stringify(data, null, 2), 'utf8');
-      } catch (_) {}
+        const dir = path.dirname(file);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        const tmpFile = file + '.tmp';
+        fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), 'utf8');
+        fs.renameSync(tmpFile, file);
+      } catch (_) {
+        try {
+          fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
+        } catch (_) {}
+      }
     }
   }
 
@@ -1413,7 +1429,7 @@ ipcMain.on('window-minimize', () => {
           const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
           const r = await dialog.showSaveDialog(win, {
             title: 'Export Eclipse account',
-            defaultPath: 'riff-account.rfacc',
+            defaultPath: 'eclipse-account.rfacc',
             filters: [{ name: 'Eclipse Account (.rfacc)', extensions: ['rfacc'] }]
           });
           if (r.canceled || !r.filePath) return { canceled: true };
