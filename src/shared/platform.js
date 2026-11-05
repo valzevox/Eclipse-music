@@ -5,15 +5,15 @@ const path = require('path');
 const IS_WIN = process.platform === 'win32';
 
 const DEFAULT_DATA_DIR = IS_WIN
-  ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Riff')
+  ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Eclipse')
   : process.platform === 'darwin'
-  ? path.join(os.homedir(), 'Library', 'Application Support', 'Riff')
+  ? path.join(os.homedir(), 'Library', 'Application Support', 'Eclipse')
   : path.join(os.homedir(), '.cache', 'devsize');
 
 const CONFIG_DIR = IS_WIN
-  ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Riff')
+  ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Eclipse')
   : process.platform === 'darwin'
-  ? path.join(os.homedir(), 'Library', 'Application Support', 'Riff')
+  ? path.join(os.homedir(), 'Library', 'Application Support', 'Eclipse')
   : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'devsize');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 
@@ -27,7 +27,7 @@ function readConfig() {
 }
 
 function resolveDataDir() {
-  const override = process.env.RIFF_DATA_DIR;
+  const override = process.env.ECLIPSE_DATA_DIR || process.env.RIFF_DATA_DIR;
   if (override && override.trim()) {
     try { return path.resolve(override.trim()); } catch (e) {}
   }
