@@ -325,13 +325,62 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const i18nSessionMap = new Map();
 
+  function loadCachedI18nDict(lang) {
+    if (!lang || lang === 'en') return null;
+    if (i18nSessionMap.has(lang) && i18nSessionMap.get(lang).size > 0) {
+      return i18nSessionMap.get(lang);
+    }
+    let dictObj = null;
+    try {
+      const raw = localStorage.getItem('eclipse_i18n_cache_' + lang) || localStorage.getItem('riff_i18n_cache_' + lang);
+      if (raw) dictObj = JSON.parse(raw);
+    } catch (_) {}
+
+    if ((!dictObj || Object.keys(dictObj).length === 0) && window.electronAPI && typeof window.electronAPI.getI18nDictSync === 'function') {
+      try {
+        dictObj = window.electronAPI.getI18nDictSync(lang);
+      } catch (_) {}
+    }
+
+    if (dictObj && typeof dictObj === 'object') {
+      const map = new Map(Object.entries(dictObj));
+      i18nSessionMap.set(lang, map);
+      try {
+        localStorage.setItem('eclipse_i18n_cache_' + lang, JSON.stringify(dictObj));
+      } catch (_) {}
+      return map;
+    }
+    return null;
+  }
+
+  function saveI18nCache(lang) {
+    if (!lang || lang === 'en') return;
+    const dict = i18nSessionMap.get(lang);
+    if (!dict) return;
+    const obj = {};
+    for (const [k, v] of dict.entries()) {
+      obj[k] = v;
+    }
+    try {
+      localStorage.setItem('eclipse_i18n_cache_' + lang, JSON.stringify(obj));
+    } catch (_) {}
+  }
+
+  const initialSavedLang = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
+  if (initialSavedLang !== 'en') {
+    loadCachedI18nDict(initialSavedLang);
+  }
+
   function t(str) {
     if (!str || typeof str !== 'string') return str;
-    const lang = localStorage.getItem('riff_ui_lang') || 'en';
+    const lang = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
     if (lang === 'en') return str;
-    const dict = i18nSessionMap.get(lang);
+    let dict = i18nSessionMap.get(lang);
+    if (!dict || dict.size === 0) {
+      dict = loadCachedI18nDict(lang);
+    }
     if (dict && dict.has(str)) return dict.get(str);
-    if (state.serverPort) {
+    if (typeof state !== 'undefined' && state && state.serverPort) {
       fetch(`http://127.0.0.1:${state.serverPort}/api/i18n-batch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -340,6 +389,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (data && data.success && data.translations && data.translations[0]) {
           if (!i18nSessionMap.has(lang)) i18nSessionMap.set(lang, new Map());
           i18nSessionMap.get(lang).set(str, data.translations[0]);
+          saveI18nCache(lang);
         }
       }).catch(() => {});
     }
@@ -350,7 +400,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   function tSet(el, str) {
     if (!el) return;
     el.textContent = t(str);
-    const lang = localStorage.getItem('riff_ui_lang') || 'en';
+    const lang = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
     if (lang === 'en') return;
     const dict = i18nSessionMap.get(lang);
     if (dict && dict.has(str)) return;
@@ -923,6 +973,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (window.electronAPI && window.electronAPI.getServerPort) {
     try {
       state.serverPort = await window.electronAPI.getServerPort();
+      const currentLang = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
+      if (currentLang !== 'en') {
+        if (typeof applyI18n === 'function') applyI18n(currentLang).catch(() => {});
+      }
     } catch (e) {
       console.warn('Failed to get server port:', e);
     }
@@ -5692,16 +5746,20 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     '.dialog-card span:not([class])'
   ].join(', ');
 
-  const savedUiLang = localStorage.getItem('riff_ui_lang') || 'en';
+  const savedUiLang = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
   syncDocumentDirection(savedUiLang);
   if (savedUiLang !== 'en') {
     applyI18n(savedUiLang);
-    setTimeout(() => applyI18n(savedUiLang), 1500);
+    setTimeout(() => applyI18n(savedUiLang), 1000);
+    setTimeout(() => applyI18n(savedUiLang), 3500);
   }
 
   function collectI18n() {
     const list = new Set();
     document.querySelectorAll(AUTO_I18N_SELECTORS).forEach(elNode => {
+      if (elNode.children && elNode.children.length > 0 && !elNode.hasAttribute('data-i18n')) {
+        return;
+      }
       if (!elNode.dataset.i18nOrig) {
         elNode.dataset.i18nOrig = elNode.textContent.trim();
       }
@@ -5733,9 +5791,10 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   }
 
   async function applyI18n(lang) {
-    syncDocumentDirection(lang);
-    lang = lang || localStorage.getItem('riff_ui_lang') || 'en';
+    lang = lang || localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
     localStorage.setItem('riff_ui_lang', lang);
+    localStorage.setItem('eclipse_ui_lang', lang);
+    syncDocumentDirection(lang);
 
     const found = TRANSLATION_LANGUAGES.find(l => l.code === lang);
     const uiLangLabel = document.getElementById('ui-lang-label');
@@ -5768,10 +5827,59 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       return;
     }
 
-    if (!i18nSessionMap.has(lang)) {
-      i18nSessionMap.set(lang, new Map());
+    let dict = i18nSessionMap.get(lang);
+    if (!dict || dict.size === 0) {
+      dict = loadCachedI18nDict(lang) || new Map();
+      i18nSessionMap.set(lang, dict);
     }
-    const dict = i18nSessionMap.get(lang);
+
+    function updateDOMWithDict() {
+      const translations = {};
+      for (const [k, v] of dict.entries()) {
+        translations[k] = v;
+      }
+
+      document.querySelectorAll(AUTO_I18N_SELECTORS).forEach(elNode => {
+        if (elNode.children && elNode.children.length > 0 && !elNode.hasAttribute('data-i18n')) {
+          return;
+        }
+        if (!elNode.dataset.i18nOrig) elNode.dataset.i18nOrig = elNode.textContent.trim();
+        if (!elNode.dataset.origText) elNode.dataset.origText = elNode.dataset.i18nOrig;
+        const key = elNode.dataset.i18nOrig || elNode.dataset.origText;
+        if (!key) return;
+        const next = translations[key];
+        if (next && elNode.textContent !== next) {
+          elNode.textContent = next;
+          elNode.dataset.i18nShown = next;
+        }
+      });
+
+      document.querySelectorAll('input[placeholder], textarea[placeholder]').forEach(input => {
+        if (!input.dataset.origPlaceholder) input.dataset.origPlaceholder = input.placeholder;
+        if (input.dataset.origPlaceholder) {
+          const next = translations[input.dataset.origPlaceholder];
+          if (next && input.placeholder !== next) input.placeholder = next;
+        }
+      });
+
+      document.querySelectorAll('[data-i18n-attr]').forEach(el => {
+        const attr = el.getAttribute('data-i18n-attr') || 'placeholder';
+        if (!el._i18n_orig_attrs) el._i18n_orig_attrs = {};
+        if (!el._i18n_orig_attrs[attr]) el._i18n_orig_attrs[attr] = el.getAttribute(attr) || '';
+        const origVal = el._i18n_orig_attrs[attr];
+        if (origVal && translations[origVal]) {
+          el.setAttribute(attr, translations[origVal]);
+        }
+      });
+
+      document.querySelectorAll('.nav-item[title]').forEach(el => {
+        if (!el.dataset.origTitle) el.dataset.origTitle = el.getAttribute('title') || '';
+        const orig = el.dataset.origTitle;
+        if (orig && translations[orig]) el.setAttribute('title', translations[orig]);
+      });
+    }
+
+    updateDOMWithDict();
 
     const texts = collectI18n();
     const commonToasts = [
@@ -5789,78 +5897,47 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       if (!texts.includes(ct)) texts.push(ct);
     }
 
-    const missing = texts.filter(s => !dict.has(s));
+    const missing = texts.filter(s => typeof s === 'string' && s.trim() && !dict.has(s));
     if (missing.length > 0) {
       try {
-        const port = state.serverPort || 38472;
-        const res = await fetch(`http://127.0.0.1:${port}/api/i18n-batch`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ target: lang, texts: missing })
-        });
-        const data = await res.json();
-        if (data && data.success && Array.isArray(data.translations)) {
-          missing.forEach((str, i) => {
-            if (data.translations[i]) {
-              dict.set(str, data.translations[i]);
-            }
+        const port = (typeof state !== 'undefined' && state && state.serverPort) || (window.electronAPI && window.electronAPI.getServerPort ? await window.electronAPI.getServerPort() : 38472);
+        if (port) {
+          const res = await fetch(`http://127.0.0.1:${port}/api/i18n-batch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target: lang, texts: missing })
           });
+          const data = await res.json();
+          if (data && data.success && Array.isArray(data.translations)) {
+            let hasNew = false;
+            missing.forEach((str, i) => {
+              if (data.translations[i]) {
+                dict.set(str, data.translations[i]);
+                hasNew = true;
+              }
+            });
+            if (hasNew) {
+              saveI18nCache(lang);
+              updateDOMWithDict();
+            }
+          }
         }
       } catch (e) {
         console.warn('applyI18n fetch error:', e);
       }
     }
-
-    const translations = {};
-    for (const [k, v] of dict.entries()) {
-      translations[k] = v;
-    }
-
-    document.querySelectorAll(AUTO_I18N_SELECTORS).forEach(elNode => {
-      if (!elNode.dataset.i18nOrig) elNode.dataset.i18nOrig = elNode.textContent.trim();
-      if (!elNode.dataset.origText) elNode.dataset.origText = elNode.dataset.i18nOrig;
-      const key = elNode.dataset.i18nOrig || elNode.dataset.origText;
-      if (!key) return;
-      if (elNode.dataset.i18nShown !== undefined && elNode.textContent !== elNode.dataset.i18nShown) return;
-      const next = translations[key] || key;
-      if (elNode.textContent !== next) elNode.textContent = next;
-      elNode.dataset.i18nShown = next;
-    });
-
-    document.querySelectorAll('input[placeholder], textarea[placeholder]').forEach(input => {
-      if (!input.dataset.origPlaceholder) input.dataset.origPlaceholder = input.placeholder;
-      if (input.dataset.origPlaceholder) {
-        const next = translations[input.dataset.origPlaceholder] || input.dataset.origPlaceholder;
-        if (input.placeholder !== next) input.placeholder = next;
-      }
-    });
-
-    document.querySelectorAll('[data-i18n-attr]').forEach(el => {
-      const attr = el.getAttribute('data-i18n-attr') || 'placeholder';
-      if (!el._i18n_orig_attrs) el._i18n_orig_attrs = {};
-      if (!el._i18n_orig_attrs[attr]) el._i18n_orig_attrs[attr] = el.getAttribute(attr) || '';
-      const origVal = el._i18n_orig_attrs[attr];
-      if (origVal && translations[origVal]) {
-        el.setAttribute(attr, translations[origVal]);
-      }
-    });
-    document.querySelectorAll('.nav-item[title]').forEach(el => {
-      if (!el.dataset.origTitle) el.dataset.origTitle = el.getAttribute('title') || '';
-      const orig = el.dataset.origTitle;
-      if (orig && translations[orig]) el.setAttribute('title', translations[orig]);
-    });
   }
   window.collectI18n = collectI18n;
   window.applyI18n = applyI18n;
 
   if (savedUiLang !== 'en') {
-    setTimeout(() => applyI18n(savedUiLang).catch(() => {}), 4000);
+    setTimeout(() => applyI18n(savedUiLang).catch(() => {}), 5000);
     setTimeout(() => applyI18n(savedUiLang).catch(() => {}), 12000);
   }
 
   let i18nApplyTimer = null;
   function scheduleI18nApply() {
-    const lang = localStorage.getItem('riff_ui_lang') || 'en';
+    const lang = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
     if (lang === 'en') return;
     if (i18nApplyTimer) clearTimeout(i18nApplyTimer);
     i18nApplyTimer = setTimeout(() => {
@@ -18369,8 +18446,9 @@ function bindCoverHoldZoom(wrapEl) {
         }
         btn.addEventListener('click', async (e) => {
           e.stopPropagation();
-          const prevLang = localStorage.getItem('riff_ui_lang') || 'en';
+          const prevLang = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
           localStorage.setItem('riff_ui_lang', item.code);
+          localStorage.setItem('eclipse_ui_lang', item.code);
           if (uiLangLabel) uiLangLabel.textContent = text;
           uiLangMenu.querySelectorAll('.m3-dropdown-option').forEach(o => o.classList.remove('selected'));
           btn.classList.add('selected');
@@ -18378,6 +18456,7 @@ function bindCoverHoldZoom(wrapEl) {
           if (item.code === prevLang) return;
           if (window.electronAPI && window.electronAPI.storageSaveSync && window.__RIFF_STORAGE_MAP__) {
             window.__RIFF_STORAGE_MAP__['riff_ui_lang'] = item.code;
+            window.__RIFF_STORAGE_MAP__['eclipse_ui_lang'] = item.code;
             window.electronAPI.storageSaveSync(window.__RIFF_STORAGE_MAP__);
           }
           applyI18n(item.code);
@@ -18513,7 +18592,10 @@ function bindCoverHoldZoom(wrapEl) {
 
   if (btnConfirmLangRestart) {
     btnConfirmLangRestart.addEventListener('click', () => {
+      const cur = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
       if (window.electronAPI && window.electronAPI.storageSaveSync && window.__RIFF_STORAGE_MAP__) {
+        window.__RIFF_STORAGE_MAP__['riff_ui_lang'] = cur;
+        window.__RIFF_STORAGE_MAP__['eclipse_ui_lang'] = cur;
         try { window.electronAPI.storageSaveSync(window.__RIFF_STORAGE_MAP__); } catch (_) {}
       }
       if (window.electronAPI && window.electronAPI.restartApp) {

@@ -164,15 +164,7 @@ function runGUI() {
   const FALLBACK_STORAGE_FILE = path.join(app.getPath('userData'), 'storage.json');
 
   function getActiveStorageFile() {
-    if (process.platform === 'darwin' || app.isPackaged) {
-      return FALLBACK_STORAGE_FILE;
-    }
-    try {
-      fs.accessSync(path.dirname(PRIMARY_STORAGE_FILE), fs.constants.W_OK);
-      return PRIMARY_STORAGE_FILE;
-    } catch (_) {
-      return FALLBACK_STORAGE_FILE;
-    }
+    return FALLBACK_STORAGE_FILE;
   }
 
   function readStorageDiskSync() {
@@ -185,8 +177,18 @@ function runGUI() {
           if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) return parsed;
         }
       }
+      if (fs.existsSync(PRIMARY_STORAGE_FILE)) {
+        const raw = fs.readFileSync(PRIMARY_STORAGE_FILE, 'utf8').trim();
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+            writeStorageDiskSync(parsed);
+            return parsed;
+          }
+        }
+      }
     } catch (e) {
-      console.warn('[riff] storage.json read warning:', e.message);
+      console.warn('[eclipse] storage.json read warning:', e.message);
     }
     return null;
   }
@@ -640,6 +642,28 @@ ipcMain.on('window-minimize', () => {
       ipcMain.handle('get-server-port', () => serverPort);
       ipcMain.handle('get-server-token', () => getServerToken());
       ipcMain.on('get-server-token-sync', (event) => { event.returnValue = getServerToken(); });
+      ipcMain.on('get-i18n-dict-sync', (event, lang) => {
+        try {
+          const safeLang = String(lang || 'en').replace(/[^a-zA-Z0-9_-]/g, '');
+          const file = path.join(DATA_DIR, 'i18n', safeLang + '.json');
+          if (fs.existsSync(file)) {
+            event.returnValue = JSON.parse(fs.readFileSync(file, 'utf8'));
+            return;
+          }
+        } catch (_) {}
+        event.returnValue = null;
+      });
+      ipcMain.handle('get-i18n-dict', async (event, lang) => {
+        try {
+          const safeLang = String(lang || 'en').replace(/[^a-zA-Z0-9_-]/g, '');
+          const file = path.join(DATA_DIR, 'i18n', safeLang + '.json');
+          if (fs.existsSync(file)) {
+            const raw = await fs.promises.readFile(file, 'utf8');
+            return JSON.parse(raw);
+          }
+        } catch (_) {}
+        return null;
+      });
       let activeProxyAuth = null;
       app.on('login', (event, webContents, request, authInfo, callback) => {
         if (authInfo.isProxy && activeProxyAuth) {
@@ -1262,6 +1286,13 @@ ipcMain.on('window-minimize', () => {
       });
 
       ipcMain.on('restart-app', () => {
+        if (storageFlushTimer) {
+          clearTimeout(storageFlushTimer);
+          storageFlushTimer = null;
+        }
+        if (latestStorageSnapshot) {
+          writeStorageDiskSync(latestStorageSnapshot);
+        }
         app.relaunch();
         app.exit(0);
       });

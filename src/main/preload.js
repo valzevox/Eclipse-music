@@ -131,4 +131,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   storageInitSync: () => ipcRenderer.sendSync('storage-get-all-sync'),
   storageSaveBatch: (data) => ipcRenderer.send('storage-save-batch', data),
   storageSaveSync: (data) => ipcRenderer.sendSync('storage-save-sync'),
+  getI18nDictSync: (lang) => ipcRenderer.sendSync('get-i18n-dict-sync', lang),
+  getI18nDict: (lang) => ipcRenderer.invoke('get-i18n-dict', lang),
 });
