@@ -9823,14 +9823,14 @@ body.perf .bulk-select-bar {
 #update-modal.ota-update-backdrop {
   position: fixed !important;
   inset: 0 !important;
-  z-index: 99990 !important;
-  background: rgba(6, 6, 9, 0.58) !important;
-  backdrop-filter: blur(18px) saturate(1.15) !important;
-  -webkit-backdrop-filter: blur(18px) saturate(1.15) !important;
+  z-index: 999998 !important;
+  background: rgba(0, 0, 0, 0.72) !important;
+  backdrop-filter: blur(16px) saturate(140%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(140%) !important;
   display: flex !important;
-  align-items: flex-end !important;
+  align-items: center !important;
   justify-content: center !important;
-  padding: 0 !important;
+  padding: 24px !important;
   opacity: 1;
   transition: opacity 280ms cubic-bezier(0.2, 0, 0, 1);
 }
@@ -9848,20 +9848,29 @@ body.perf #update-modal.ota-update-backdrop {
   transition: opacity 220ms ease, visibility 0s linear 220ms;
 }
 .ota-update-sheet {
-  --ota-bg: var(--md-sys-color-surface-container-low-solid, #17161B);
-  --ota-ear: 32px;
+  --ota-bg: var(--md-sys-color-surface-container-high, #1A1922);
   position: relative;
-  width: min(540px, calc(100vw - 64px));
+  width: 100%;
+  max-width: 480px;
+  max-height: 85vh;
   background: var(--ota-bg);
   color: var(--md-sys-color-on-surface, #F3EFF7);
-  border-radius: 34px 34px 0 0;
-  padding: 24px 28px 26px 28px;
+  border-radius: 28px !important;
+  padding: 24px !important;
   box-sizing: border-box;
-  box-shadow: none !important;
-  border: none !important;
-  transform: translateY(0) scale(1);
-  transform-origin: bottom center;
-  transition: transform 360ms cubic-bezier(0.22, 1.15, 0.36, 1), opacity 240ms ease;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7) !important;
+  transform: scale(1) translateY(0);
+  transition: transform 300ms cubic-bezier(0.22, 1.15, 0.36, 1), opacity 240ms ease;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+#update-modal.ota-update-backdrop.hidden .ota-update-sheet,
+.ota-update-sheet.leaving {
+  transform: scale(0.92) translateY(20px) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 body.perf .ota-update-sheet {
   transition: none !important;
