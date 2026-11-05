@@ -223,18 +223,52 @@ Eclipse is an independent, 100% ad-free, open-source project. If Eclipse brings 
 
 <p align="left">
   <a href="https://ko-fi.com/m1n698" target="_blank">
-    <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white" alt="Support on Ko-fi">
+    <img src="https://img.shields.io/badge/Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white" alt="Support on Ko-fi">
+  </a>
+  &nbsp;
+  <a href="https://paypal.me/giaminhvovan" target="_blank">
+    <img src="https://img.shields.io/badge/PayPal-00457C?style=for-the-badge&logo=paypal&logoColor=white" alt="PayPal">
   </a>
   &nbsp;
   <a href="https://zypage.com/m1n6" target="_blank">
-    <img src="https://img.shields.io/badge/Donate-ZyPage-6366F1?style=for-the-badge&logo=linktree&logoColor=white" alt="m1n6 on ZyPage">
+    <img src="https://img.shields.io/badge/ZyPage-6366F1?style=for-the-badge&logo=linktree&logoColor=white" alt="ZyPage">
   </a>
 </p>
 
+### 🌍 International Payment
 - ☕ **Ko-fi:** [ko-fi.com/m1n698](https://ko-fi.com/m1n698)
-- 💳 **ZyPage:** [m1n6 on ZyPage](https://zypage.com/m1n6)
+- 💳 **PayPal:** `giaminhvovan@gmail.com` ([paypal.me](https://paypal.me/giaminhvovan))
+- 🔗 **ZyPage:** [m1n6 on ZyPage](https://zypage.com/m1n6)
 
-Every contribution helps keep development active, cover infrastructure, and push new features. A star ⭐ on GitHub is also deeply appreciated!
+### 🏦 Vietnam Banking & E-Wallets (MoMo / ZaloPay / VietQR)
+Chuyển khoản nhanh Napas 24/7 từ mọi ứng dụng ngân hàng, MoMo hoặc ZaloPay:
+- **Ngân hàng:** MBBank (Ngân hàng TMCP Quân Đội)
+- **Số tài khoản:** `57995999`
+- **Chủ tài khoản:** `VO VAN GIA MINH`
+
+<details>
+<summary><b>📱 Bấm để mở mã QR Ngân hàng (VietQR / Napas 247)</b></summary>
+<br>
+
+<p align="left">
+  <img src="assets/donate-vietqr.jpg" width="260" alt="VietQR MBBank - VO VAN GIA MINH" style="border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);" />
+</p>
+
+</details>
+
+### 🪙 Cryptocurrency & Web3 Wallet
+Ủng hộ trực tiếp qua các mạng Crypto hoặc Binance Web3 Wallet:
+- 🌐 **Binance Web3 Wallet:** [Web3 Wallet Link 1](https://s.binance.com/LZt9c3yD) &nbsp;·&nbsp; [Web3 Wallet Link 2](https://s.binance.com/kVjamXez)
+- 🟡 **BNB Smart Chain (BEP20)** *(LTC / ETH / BTC / BNB / BSC Tokens)*:  
+  ```text
+  0x37d1e10a2ba7f99ba758b644510c73ef16d5dd77
+  ```
+- 🔴 **Tron (TRC20)** *(USDT / TRX)*:  
+  ```text
+  TL4eNxibcgmSx3RsnMN3QLZcLnKcXFAS27
+  ```
+
+Every contribution helps keep development active, maintain dependencies, and ship regular updates. A star ⭐ on GitHub is also deeply appreciated!
 
 ## Disclaimer
 
