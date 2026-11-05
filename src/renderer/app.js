@@ -24725,41 +24725,263 @@ function bindCoverHoldZoom(wrapEl) {
     return card;
   }
 
-  async function renderTrending() {
+  let currentTrendingCategory = 'trending';
+  let trendingHeroTimer = null;
+  let trendingHeroIndex = 0;
+  let trendingChipsBound = false;
+
+  function renderTrendingShimmer(heroWrap, row) {
+    if (heroWrap) {
+      heroWrap.innerHTML = '<div class="trending-shimmer-hero"></div>';
+    }
+    if (row) {
+      let shimmerHtml = '';
+      for (let i = 0; i < 9; i++) {
+        shimmerHtml += '<div class="trending-shimmer-item"></div>';
+      }
+      row.innerHTML = shimmerHtml;
+    }
+  }
+
+  function renderTrendingHeroSpotlight(heroWrap, tracks) {
+    if (!heroWrap) return;
+    if (trendingHeroTimer) {
+      clearInterval(trendingHeroTimer);
+      trendingHeroTimer = null;
+    }
+    const spotlightTracks = (tracks || []).slice(0, 5);
+    if (spotlightTracks.length === 0) {
+      heroWrap.innerHTML = '';
+      heroWrap.style.display = 'none';
+      return;
+    }
+    heroWrap.style.display = '';
+
+    if (trendingHeroIndex >= spotlightTracks.length) trendingHeroIndex = 0;
+
+    function renderSlide(idx) {
+      const track = spotlightTracks[idx];
+      if (!track) return;
+      const thumb = (typeof getTrackThumbUrl === 'function' ? getTrackThumbUrl(track) : '') || track.thumbnail || track.cover || '';
+      const title = track.title || 'Untitled';
+      const artist = track.artist || track.uploader || 'Unknown artist';
+      const isCur = state.currentTrack && (state.currentTrack.id === track.id || (state.currentTrack.title === track.title && state.currentTrack.artist === track.artist));
+      const isPlay = isCur && state.isPlaying;
+
+      let dotsHtml = '';
+      spotlightTracks.forEach((_, dIdx) => {
+        dotsHtml += `<div class="trending-hero-dot${dIdx === idx ? ' active' : ''}" data-idx="${dIdx}"></div>`;
+      });
+
+      heroWrap.innerHTML = `
+        <div class="trending-hero-card">
+          <div class="trending-hero-backdrop" style="background-image: url('${thumb}');"></div>
+          <div class="trending-hero-gradient"></div>
+          <div class="trending-hero-left" id="trending-hero-play-trigger">
+            <img src="${thumb}" alt="${escapeHtml(title)}" draggable="false" />
+            <div class="hero-play-badge">
+              <div class="hero-play-badge-btn">
+                ${isPlay
+                  ? '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>'
+                  : '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style="margin-left: 2px;"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>'
+                }
+              </div>
+            </div>
+          </div>
+          <div class="trending-hero-info">
+            <div class="trending-hero-tag">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c1 4 5 5.5 5 10a5 5 0 0 1-10 0c0-2 1-3 2-4 0 2 1 3 2 3 0-3-1-6 1-9z"/></svg>
+              <span>#${idx + 1} Spotlight</span>
+            </div>
+            <div class="trending-hero-title" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
+            <div class="trending-hero-artist" title="${escapeHtml(artist)}">${escapeHtml(artist)}</div>
+            <div class="trending-hero-actions">
+              <button type="button" class="trending-hero-play-btn" id="trending-hero-btn-play">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                <span>${isPlay ? (window.t ? t('Pause') : 'Pause') : (window.t ? t('Play now') : 'Play now')}</span>
+              </button>
+              <button type="button" class="trending-hero-radio-btn" id="trending-hero-btn-radio">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"></circle><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"></path></svg>
+                <span>${window.t ? t('Radio') : 'Radio'}</span>
+              </button>
+            </div>
+          </div>
+          <div class="trending-hero-dots-wrap" id="trending-hero-dots-wrap">
+            ${dotsHtml}
+          </div>
+        </div>
+      `;
+
+      const playTrigger = heroWrap.querySelector('#trending-hero-play-trigger');
+      const btnPlay = heroWrap.querySelector('#trending-hero-btn-play');
+      const btnRadio = heroWrap.querySelector('#trending-hero-btn-radio');
+      const dotsWrap = heroWrap.querySelector('#trending-hero-dots-wrap');
+
+      const handlePlay = () => {
+        if (isCur) {
+          if (typeof togglePlayPause === 'function') togglePlayPause();
+        } else {
+          state.isRadioQueue = false;
+          playTrack(track, [...spotlightTracks], idx);
+        }
+      };
+
+      if (playTrigger) playTrigger.addEventListener('click', handlePlay);
+      if (btnPlay) btnPlay.addEventListener('click', handlePlay);
+      if (btnRadio) {
+        btnRadio.addEventListener('click', () => {
+          if (typeof startRadioForTrack === 'function') {
+            startRadioForTrack(track);
+          } else {
+            handlePlay();
+          }
+        });
+      }
+
+      if (dotsWrap) {
+        dotsWrap.querySelectorAll('.trending-hero-dot').forEach(d => {
+          d.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const targetIdx = parseInt(d.dataset.idx, 10);
+            if (!isNaN(targetIdx) && targetIdx !== idx) {
+              trendingHeroIndex = targetIdx;
+              renderSlide(targetIdx);
+            }
+          });
+        });
+      }
+    }
+
+    renderSlide(trendingHeroIndex);
+
+    let isHovered = false;
+    heroWrap.onmouseenter = () => { isHovered = true; };
+    heroWrap.onmouseleave = () => { isHovered = false; };
+
+    trendingHeroTimer = setInterval(() => {
+      if (isHovered || !heroWrap.isConnected) return;
+      trendingHeroIndex = (trendingHeroIndex + 1) % spotlightTracks.length;
+      renderSlide(trendingHeroIndex);
+    }, 5500);
+  }
+
+  function renderTrendingRankedGrid(row, tracks) {
+    if (!row) return;
+    row.innerHTML = '';
+    const filteredTracks = (tracks || []).filter(t => !isTrackBlocked(t) && !isArtistBlocked(t.artist));
+    if (filteredTracks.length === 0) {
+      row.innerHTML = '<div class="empty-hint" style="grid-column: 1 / -1; padding: 24px;">No tracks available</div>';
+      return;
+    }
+
+    const frag = document.createDocumentFragment();
+    filteredTracks.forEach((track, idx) => {
+      const card = document.createElement('div');
+      card.className = 'trending-rank-card';
+      const isCur = state.currentTrack && (state.currentTrack.id === track.id || (state.currentTrack.title === track.title && state.currentTrack.artist === track.artist));
+      if (isCur && state.isPlaying) {
+        card.classList.add('active-playing');
+      }
+
+      const thumb = (typeof getTrackThumbUrl === 'function' ? getTrackThumbUrl(track) : '') || track.thumbnail || track.cover || '';
+      const title = track.title || 'Untitled';
+      const artist = track.artist || track.uploader || 'Unknown artist';
+      const rankNum = idx + 1;
+      let rankClass = '';
+      if (rankNum === 1) rankClass = ' top-1';
+      else if (rankNum === 2) rankClass = ' top-2';
+      else if (rankNum === 3) rankClass = ' top-3';
+
+      card.innerHTML = `
+        <div class="trending-rank-badge${rankClass}">${rankNum}</div>
+        <div class="trending-rank-thumb">
+          <img src="${thumb}" alt="${escapeHtml(title)}" loading="lazy" draggable="false" />
+          <div class="rank-play-hover">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="margin-left: 2px;"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+          </div>
+        </div>
+        <div class="trending-rank-text">
+          <div class="trending-rank-title" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
+          <div class="trending-rank-artist" title="${escapeHtml(artist)}">${escapeHtml(artist)}</div>
+        </div>
+      `;
+
+      card.addEventListener('click', () => {
+        state.isRadioQueue = false;
+        playTrack(track, [...filteredTracks], idx);
+      });
+
+      card.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof showTrackContextMenu === 'function') {
+          showTrackContextMenu(e, track, filteredTracks, idx);
+        }
+      });
+
+      frag.appendChild(card);
+    });
+
+    row.appendChild(frag);
+    bindHorizontalWheel(row);
+    requestAnimationFrame(() => updateRowFade(row));
+  }
+
+  function bindTrendingFilterChips() {
+    if (trendingChipsBound) return;
+    const chipsContainer = document.getElementById('trending-filter-chips');
+    if (!chipsContainer) return;
+    trendingChipsBound = true;
+
+    chipsContainer.querySelectorAll('.trending-chip').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const type = btn.dataset.type || 'trending';
+        if (type === currentTrendingCategory) return;
+        currentTrendingCategory = type;
+        chipsContainer.querySelectorAll('.trending-chip').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderTrending(type, true);
+      });
+    });
+  }
+
+  async function renderTrending(targetCategory = null, forceRefresh = false) {
     const sec = document.getElementById('sp-trend-sec');
+    const heroWrap = document.getElementById('trending-hero-wrap');
     const row = document.getElementById('sp-trend');
     if (!sec || !row) return;
+
     if (!getAdv('my_wave', true)) {
       sec.hidden = true;
       return;
     }
     sec.hidden = false;
 
+    bindTrendingFilterChips();
+
+    const category = targetCategory || currentTrendingCategory || 'trending';
+    const cacheKey = 'riff_trending_cache_' + category;
+
     let hasCachedTracks = false;
-    const cached = safeJson('riff_trending_cache', null);
-    if (cached && Array.isArray(cached.tracks) && cached.tracks.length > 0) {
-      renderTrendingCards(row, cached.tracks);
+    const cached = safeJson(cacheKey, null);
+    if (!forceRefresh && cached && Array.isArray(cached.tracks) && cached.tracks.length > 0) {
+      renderTrendingHeroSpotlight(heroWrap, cached.tracks);
+      renderTrendingRankedGrid(row, cached.tracks);
       hasCachedTracks = true;
     } else {
-      row.innerHTML = `
-        <div class="m3-spinner-container" style="margin: 24px auto; grid-column: 1 / -1;">
-          <svg class="m3-circular-progress" viewBox="0 0 48 48">
-            <circle class="m3-spinner-track" cx="24" cy="24" r="18" fill="none" stroke-width="4"></circle>
-            <circle class="m3-spinner-head" cx="24" cy="24" r="18" fill="none" stroke-width="4"></circle>
-          </svg>
-        </div>
-      `;
+      renderTrendingShimmer(heroWrap, row);
     }
 
     try {
       const port = state.serverPort || 38472;
-      const res = await fetch(`http://127.0.0.1:${port}/api/trending`);
+      const res = await fetch(`http://127.0.0.1:${port}/api/trending?category=${encodeURIComponent(category)}`);
       const data = await res.json();
       if (data && data.success && Array.isArray(data.tracks) && data.tracks.length > 0) {
         try {
-          localStorage.setItem('riff_trending_cache', JSON.stringify({ ts: Date.now(), tracks: data.tracks }));
+          localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), tracks: data.tracks }));
         } catch (_) {}
-        renderTrendingCards(row, data.tracks);
+        renderTrendingHeroSpotlight(heroWrap, data.tracks);
+        renderTrendingRankedGrid(row, data.tracks);
         sec.hidden = false;
       } else if (!hasCachedTracks) {
         sec.hidden = true;
@@ -24769,26 +24991,6 @@ function bindCoverHoldZoom(wrapEl) {
         sec.hidden = true;
       }
     }
-  }
-
-  function renderTrendingCards(row, tracks) {
-    row.innerHTML = '';
-    const filteredTracks = (tracks || []).filter(t => !isTrackBlocked(t) && !isArtistBlocked(t.artist));
-    filteredTracks.forEach((track, idx) => {
-      const card = spCard({
-        cover: (typeof getTrackThumbUrl === 'function' ? getTrackThumbUrl(track) : '') || track.thumbnail || track.cover || '',
-        title: track.title || 'Untitled',
-        sub: track.artist || track.uploader || 'Unknown artist',
-        isExplicit: isTrackExplicit(track),
-        onClick: () => {
-          state.isRadioQueue = false;
-          playTrack(track, [...filteredTracks], idx);
-        }
-      });
-      row.appendChild(card);
-    });
-    bindHorizontalWheel(row);
-    requestAnimationFrame(() => updateRowFade(row));
   }
 
   const MIX_KEY = 'riff_daily_mixes';

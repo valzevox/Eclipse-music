@@ -1,60 +1,55 @@
-# Kế hoạch Tích hợp Trình phát MV (Song/Video Switcher) vào Eclipse
+# Kế Hoạch Nâng Cấp Trending Feed & Khám Phá — Eclipse PC
 
 ## 1. Mục tiêu
-Mang trải nghiệm chuyển đổi **Bài hát / MV** (tương tự Pear Desktop `video-toggle`) vào giao diện Native Material 3 của Eclipse:
-- Nhấn **MV**: Hiển thị video ca nhạc YouTube ngay tại giao diện Now Playing, đồng bộ giây phát hiện tại.
-- Nhấn **Song**: Quay về chế độ tiết kiệm tài nguyên (Audio native + Lời bài hát karaoke Zing MP3/LRC).
-- Tự động điều khiển Play/Pause/Seek đồng bộ giữa native audio và video player.
+Hiện đại hóa toàn diện giao diện & trải nghiệm mục **Trending (Thịnh hành)** trên Eclipse PC theo tiêu chuẩn thiết kế Material 3 Expressive & Fluid UI:
+- **Hero Spotlight Carousel**: Trình diễn các ca khúc trending thịnh hành nhất với banner tràn viền, ảnh phân giải cao, auto-scroll mượt, nút nghe tức thì và ambient glow.
+- **Compact Ranked Chart (Lưới xếp hạng phân cột có số thứ tự)**: Thay thế danh sách card 1 hàng ngang phẳng bằng lưới 3–4 hàng dạng cột (#1, #2, #3, ...) với snap scroll thông minh.
+- **Chips Category Bar**: Thanh lọc thể loại / xu hướng (`Thịnh hành`, `Bảng xếp hạng`, `Mới phát hành`).
+- **Shimmer Skeleton Loader**: Hiệu ứng skeleton pulse mượt mà khi đang tải dữ liệu thay cho spinner đơn điệu.
+- **Fluid Micro-interactions**: Gradient ánh sáng theo bài hát, hiệu ứng hover scale spring bezier.
 
 ---
 
-## 2. Thiết kế Kỹ thuật
-
-```mermaid
-flowchart TD
-    A[Người dùng nhấn nút Song / Video] -->|Chế độ MV| B[Lấy currentTime từ nativeAudio]
-    B --> C[Tạm dừng nativeAudio]
-    C --> D[Hiển thị khung MV Player tại Now Playing]
-    D --> E[Gọi YouTube IFrame Player API phát từ currentTime]
-    
-    A -->|Chế độ Song| F[Lấy currentTime từ MV Player]
-    F --> G[Ẩn khung MV Player]
-    G --> H[Gán currentTime cho nativeAudio và tiếp tục phát]
-```
-
-### Thành phần can thiệp:
-1. **`src/renderer/index.html`**:
-   - Thêm nút switcher `[ Âm nhạc | MV ]` trên thanh Now Playing bar và màn hình chi tiết bài hát (Now Playing View).
-   - Thêm container `#nowPlayingVideoContainer` chứa khung chiếu video YouTube (ẩn mặc định).
-
-2. **`src/renderer/app.js`**:
-   - Tích hợp YouTube IFrame Player API (`YT.Player`).
-   - Hàm `switchPlaybackMode(mode: 'audio' | 'video')`:
-     - Đồng bộ mượt mà timestamp giữa `<audio id="nativeAudio">` và `YT.Player`.
-     - Đồng bộ trạng thái Play/Pause: khi bấm nút Play ở dưới bottom bar, video trong khung cũng Play/Pause tương ứng.
-     - Đồng bộ Next/Previous bài hát: tự load videoId bài mới vào player khi chuyển bài.
-
-3. **`src/renderer/styles.css` / CSS tokens**:
-   - Định dạng khung MV Player bo góc Material 3, tỉ lệ 16:9, responsive theo kích thước cửa sổ.
-   - Hiệu ứng chuyển cảnh mượt giữa Album Art và MV Player.
+## 2. Phạm vi thay đổi (Disjoint Scope)
+- `src/renderer/index.html`: Thêm container cấu trúc cho Category Chips & Trending Chart Grid.
+- `src/renderer/style.css`: Hệ thống CSS cho Hero Spotlight Carousel, Ranked Item Card, Grouped Border Shapes, Category Chips và Skeleton Shimmer.
+- `src/renderer/app.js`: Logic render carousel tự động, tính toán snap layout, fetch đa danh mục, và binding điều khiển phát nhạc.
+- `src/server/server.js`: Mở rộng `/api/trending` hỗ trợ query phân loại (`trending`, `charts`, `new_releases`).
 
 ---
 
-## 3. Các bước triển khai (Phase Breakdown)
+## 3. Các giai đoạn triển khai (Phases)
 
-1. **Bước 1: Khởi tạo UI Container & Switcher Button**
-   - Thêm nút chuyển chế độ Song/Video với icon trực quan.
-   - Đặt khung video vào vị trí Cover Art của màn hình Now Playing.
+### Giai đoạn 1: Mở rộng Server Backend (`src/server/server.js`)
+- Bổ sung tham số `category` cho endpoint `/api/trending` (`type=trending|top|new_releases`).
+- Cache theo từng category (`ts`, `tracks`) với TTL 2 giờ để phản hồi tức thì.
+- Giữ vững cơ chế bảo mật token & fallback dữ liệu an toàn.
 
-2. **Bước 2: Tích hợp YouTube IFrame Player API & Logic Sync**
-   - Khởi tạo controller player nhúng `https://www.youtube-nocookie.com/embed/...`.
-   - Viết logic 2 chiều: `Audio -> Video` và `Video -> Audio`.
+### Giai đoạn 2: Khung giao diện HTML & CSS (`index.html` & `style.css`)
+- **Category Chips Bar**: Thiết kế thanh chips bo tròn pill mượt mà trên đầu phần Thịnh hành.
+- **Hero Carousel Component**:
+  - Container tỷ lệ vàng, bo góc `24px`, ambient backlight theo màu bìa.
+  - Controls chuyển slide (dot indicators + nút Previous / Next dạng kính mờ glassmorphism).
+- **Ranked Chart Grid**:
+  - Lưới `grid-template-rows: repeat(3, auto)` hoặc `repeat(4, auto)` cuộn ngang.
+  - Huy hiệu thứ hạng `rank-badge` (#1 - #3 màu nhấn đặc biệt, #4+ màu tinh tế).
+  - Khung bao cụm 3-4 bài hát có đường bo liên kết mềm mại.
+- **Shimmer Keyframes**:
+  - Animation `shimmerWave` gradient trượt từ trái sang phải cho cả banner và list item.
 
-3. **Bước 3: Kiểm thử đồng bộ & Ngoại lệ**
-   - Bài hát không phải YouTube (nhạc local offline) -> tự động ẩn nút MV.
-   - Thử nghiệm seek thanh thời gian, đổi bài trong playlist, tua bài.
-   - Chạy automated syntax & unit tests.
+### Giai đoạn 3: Logic Renderer & Animations (`src/renderer/app.js`)
+- Tạo hàm `renderTrendingHeroCarousel(tracks)`:
+  - Tự động chuyển card mỗi 5 giây; tạm dừng khi chuột rê vào (hover) hoặc khi đang cuộn.
+  - Nút Play trực tiếp phát nguyên danh sách từ vị trí đang chọn.
+- Tạo hàm `renderTrendingRankedGrid(tracks)`:
+  - Hiển thị thứ hạng từ 1 đến N.
+  - Phím tắt / chuột cuộn ngang mượt mà với thanh fade ở 2 rìa (`updateRowFade`).
+- Tạo hàm `renderTrendingShimmer()`:
+  - Hiển thị khung giả lập ngay lập tức trước khi có dữ liệu từ server hoặc cache.
+- Tích hợp bộ lọc Chips:
+  - Khi người dùng click chip, chuyển đổi danh sách với hiệu ứng cross-fade mượt (150ms).
 
-4. **Bước 4: Build & Đóng gói binary v1.2.0**
-   - Chạy `npm run dist -- --dir`.
-   - Đẩy commit & tag lên Git.
+### Giai đoạn 4: Đánh giá & Kiểm chứng (Verification Gate)
+- `node -c src/renderer/app.js` và `node -c src/server/server.js` thoát code 0.
+- Khởi động app thử nghiệm, kiểm tra giao diện không vỡ layout ở mọi độ phân giải (800x600 đến 4K).
+- Thao tác chuyển category, hover, phát nhạc từ banner và chart hoạt động chuẩn xác.

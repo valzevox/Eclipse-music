@@ -10879,3 +10879,404 @@ body.perf .np-queue-panel { transition: none; }
   color: var(--md-sys-color-primary, #C3B1FF) !important;
   animation: loadingDotPulse 0.8s infinite alternate;
 }
+
+/* ==========================================================================
+   TRENDING FEED & CHARTS (M3 EXPRESSIVE & FLUID UI)
+   ========================================================================== */
+.trending-header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0 0 16px;
+}
+.trending-header-bar h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+.trending-filter-chips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.trending-filter-chips::-webkit-scrollbar {
+  display: none;
+}
+.trending-chip {
+  border: 1px solid var(--md-sys-color-outline-variant, rgba(255, 255, 255, 0.12));
+  background: color-mix(in srgb, var(--md-sys-color-surface-container) 60%, transparent);
+  color: var(--md-sys-color-on-surface-variant);
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+  white-space: nowrap;
+  user-select: none;
+}
+.trending-chip:hover {
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+  transform: translateY(-1px);
+}
+.trending-chip.active {
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  border-color: var(--md-sys-color-primary);
+  font-weight: 600;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--md-sys-color-primary) 30%, transparent);
+}
+
+.trending-feed-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Hero Spotlight Banner */
+.trending-hero-wrap {
+  position: relative;
+  width: 100%;
+  border-radius: 24px;
+  overflow: hidden;
+  background: var(--md-sys-color-surface-container-low, #1e1e24);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--md-sys-color-outline-variant, rgba(255, 255, 255, 0.08));
+  transition: opacity 0.25s ease;
+}
+.trending-hero-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 220px;
+  padding: 24px 32px;
+  gap: 28px;
+  background-size: cover;
+  background-position: center;
+  overflow: hidden;
+}
+.trending-hero-backdrop {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  filter: blur(48px) saturate(1.8) brightness(0.4);
+  transform: scale(1.15);
+  z-index: 0;
+  opacity: 0.85;
+  transition: opacity 0.4s ease;
+}
+.trending-hero-gradient {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(10, 10, 14, 0.94) 0%, rgba(10, 10, 14, 0.72) 48%, rgba(10, 10, 14, 0.4) 100%);
+  z-index: 1;
+}
+.trending-hero-left {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 160px;
+  width: 160px;
+  height: 160px;
+  aspect-ratio: 1;
+  border-radius: 18px;
+  overflow: hidden;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  cursor: pointer;
+}
+.trending-hero-left img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.trending-hero-left .hero-play-badge {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  transition: opacity 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.trending-hero-card:hover .hero-play-badge {
+  opacity: 1;
+}
+.hero-play-badge-btn {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  transform: scale(0.9);
+  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.trending-hero-card:hover .hero-play-badge-btn {
+  transform: scale(1);
+}
+.trending-hero-info {
+  position: relative;
+  z-index: 2;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+}
+.trending-hero-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--md-sys-color-primary, #d0bcff);
+  background: color-mix(in srgb, var(--md-sys-color-primary) 15%, transparent);
+  padding: 4px 10px;
+  border-radius: 999px;
+  width: fit-content;
+}
+.trending-hero-title {
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.25;
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trending-hero-artist {
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.78);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trending-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+.trending-hero-play-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 20px;
+  border-radius: 999px;
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  font-weight: 600;
+  font-size: 14px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.trending-hero-play-btn:hover {
+  transform: scale(1.04);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--md-sys-color-primary) 40%, transparent);
+}
+.trending-hero-radio-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 16px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-weight: 500;
+  font-size: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.trending-hero-radio-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  transform: scale(1.02);
+}
+.trending-hero-dots-wrap {
+  position: absolute;
+  bottom: 16px;
+  right: 24px;
+  z-index: 3;
+  display: flex;
+  gap: 6px;
+}
+.trending-hero-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.3);
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.trending-hero-dot.active {
+  width: 22px;
+  background: var(--md-sys-color-primary);
+}
+
+/* Ranked Chart Grid */
+.trending-chart-section {
+  position: relative;
+  width: 100%;
+}
+.trending-chart-grid {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(3, 68px);
+  grid-auto-columns: minmax(310px, 340px);
+  gap: 10px 18px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  scroll-behavior: smooth;
+  overscroll-behavior-x: contain;
+  padding: 4px 2px 8px;
+}
+.trending-chart-grid::-webkit-scrollbar {
+  display: none;
+}
+.trending-rank-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 68px;
+  padding: 6px 14px 6px 8px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--md-sys-color-surface-container) 45%, transparent);
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 30%, transparent);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+  min-width: 0;
+  user-select: none;
+}
+.trending-rank-card:hover {
+  background: var(--md-sys-color-surface-container-high);
+  border-color: color-mix(in srgb, var(--md-sys-color-primary) 35%, transparent);
+  transform: translateY(-1px);
+}
+.trending-rank-badge {
+  font-size: 15px;
+  font-weight: 800;
+  width: 24px;
+  text-align: center;
+  flex-shrink: 0;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.trending-rank-badge.top-1 {
+  color: #ffd700;
+  text-shadow: 0 0 10px rgba(255, 215, 0, 0.4);
+}
+.trending-rank-badge.top-2 {
+  color: #c0c0c0;
+  text-shadow: 0 0 8px rgba(192, 192, 192, 0.3);
+}
+.trending-rank-badge.top-3 {
+  color: #cd7f32;
+  text-shadow: 0 0 8px rgba(205, 127, 50, 0.3);
+}
+.trending-rank-thumb {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  flex: 0 0 52px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--md-sys-color-surface-container-high);
+}
+.trending-rank-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+.trending-rank-thumb .rank-play-hover {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transition: opacity 0.18s;
+  color: #fff;
+}
+.trending-rank-card:hover .trending-rank-thumb .rank-play-hover {
+  opacity: 1;
+}
+.trending-rank-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+}
+.trending-rank-title {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--md-sys-color-on-surface);
+}
+.trending-rank-artist {
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trending-rank-card.active-playing {
+  background: color-mix(in srgb, var(--md-sys-color-primary-container) 60%, transparent);
+  border-color: var(--md-sys-color-primary);
+}
+.trending-rank-card.active-playing .trending-rank-title {
+  color: var(--md-sys-color-primary);
+}
+
+/* Shimmer Skeleton Loaders */
+.trending-shimmer-hero {
+  width: 100%;
+  height: 220px;
+  border-radius: 24px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.03) 25%, rgba(255, 255, 255, 0.08) 50%, rgba(255, 255, 255, 0.03) 75%);
+  background-size: 200% 100%;
+  animation: shimmerWave 1.6s infinite;
+}
+.trending-shimmer-grid {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(3, 68px);
+  grid-auto-columns: minmax(310px, 340px);
+  gap: 10px 18px;
+  overflow-x: hidden;
+  padding: 4px 2px 8px;
+}
+.trending-shimmer-item {
+  height: 68px;
+  border-radius: 14px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.02) 25%, rgba(255, 255, 255, 0.06) 50%, rgba(255, 255, 255, 0.02) 75%);
+  background-size: 200% 100%;
+  animation: shimmerWave 1.6s infinite;
+}
+@keyframes shimmerWave {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}

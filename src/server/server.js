@@ -2375,13 +2375,13 @@ async function handleVibeRecommendations(req, res, payload) {
   }
 }
 
-let serverTrendingCache = { ts: 0, tracks: [] };
+let serverTrendingCacheMap = new Map();
 
-function fetchItunesTopSongs(limit = 24) {
+function fetchItunesFeed(feedPath = 'topsongs', limit = 30) {
   return new Promise((resolve) => {
-    const req = https.get('https://itunes.apple.com/us/rss/topsongs/limit=' + limit + '/json', {
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
-      timeout: 6000
+    const req = https.get(`https://itunes.apple.com/us/rss/${feedPath}/limit=${limit}/json`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 'Accept': 'application/json' },
+      timeout: 7000
     }, (res) => {
       let body = '';
       res.on('data', chunk => { body += chunk; });
@@ -2414,16 +2414,33 @@ function fetchItunesTopSongs(limit = 24) {
   });
 }
 
+function fetchItunesTopSongs(limit = 30) {
+  return fetchItunesFeed('topsongs', limit);
+}
+
 async function handleTrending(req, res) {
-  if (serverTrendingCache.tracks.length > 0 && Date.now() - serverTrendingCache.ts < 2 * 3600 * 1000) {
+  const parsedUrl = url.parse(req.url, true);
+  const type = String(parsedUrl.query.type || parsedUrl.query.category || 'trending').toLowerCase().trim();
+  const cached = serverTrendingCacheMap.get(type);
+  if (cached && Array.isArray(cached.tracks) && cached.tracks.length > 0 && Date.now() - cached.ts < 2 * 3600 * 1000) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success: true, tracks: serverTrendingCache.tracks }));
+    res.end(JSON.stringify({ success: true, type, tracks: cached.tracks }));
     return;
   }
-  let tracks = await fetchItunesTopSongs(24);
+
+  let tracks = [];
+  if (type === 'charts') {
+    tracks = await fetchItunesFeed('topsongs', 32);
+  } else if (type === 'new_releases') {
+    tracks = await fetchItunesFeed('topalbums', 32);
+  } else {
+    tracks = await fetchItunesFeed('topsongs', 32);
+  }
+
   if (!tracks || tracks.length === 0) {
     try {
-      const raw = await executeYtDlp(['--no-config', '--flat-playlist', '-J', '--no-warnings', 'ytsearch20:top hits music chart'], 12000);
+      const q = type === 'new_releases' ? 'new music release' : (type === 'charts' ? 'top hits chart' : 'trending music official');
+      const raw = await executeYtDlp(['--no-config', '--flat-playlist', '-J', '--no-warnings', `ytsearch28:${q}`], 12000);
       const parsed = JSON.parse(raw);
       const entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
       tracks = entries.map(item => ({
@@ -2438,12 +2455,13 @@ async function handleTrending(req, res) {
       })).filter(t => t.title && (t.id || t.artist));
     } catch (_) { tracks = []; }
   }
+
   if (tracks && tracks.length > 0) {
-    serverTrendingCache = { ts: Date.now(), tracks };
-    boundMap(serverTrendingCache, 35);
+    serverTrendingCacheMap.set(type, { ts: Date.now(), tracks });
   }
+
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ success: true, tracks: tracks || [] }));
+  res.end(JSON.stringify({ success: true, type, tracks: tracks || [] }));
 }
 
 function scoreImportedCandidate(targetTitle, targetArtist, targetDur, cand) {
