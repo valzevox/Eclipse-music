@@ -5687,6 +5687,38 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     }).observe(el.lyricsContainer);
   }
 
+  function isDynamicNode(el) {
+    if (!el || !(el instanceof Element)) return true;
+    if (el.closest('#player-bar') ||
+        el.closest('#right-panel-header') ||
+        el.closest('#right-panel-title') ||
+        el.closest('#right-panel-artist') ||
+        el.id === 'right-panel-title' ||
+        el.id === 'right-panel-artist' ||
+        el.id === 'playbar-title' ||
+        el.id === 'playbar-artist' ||
+        el.id === 'playlist-detail-title' ||
+        el.id === 'playlist-detail-count' ||
+        el.id === 'playlist-detail-desc' ||
+        el.id === 'album-title' ||
+        el.id === 'album-artist' ||
+        el.id === 'album-track-count' ||
+        el.id === 'artist-header-name' ||
+        el.closest('#playlist-track-list') ||
+        el.closest('#album-track-list') ||
+        el.closest('#queue-list') ||
+        el.closest('.tracks-list') ||
+        el.closest('.track-row') ||
+        el.closest('.lyrics-lines-container') ||
+        el.classList.contains('track-title') ||
+        el.classList.contains('track-artist') ||
+        el.classList.contains('track-row-title') ||
+        el.classList.contains('track-row-artist')) {
+      return true;
+    }
+    return false;
+  }
+
   const AUTO_I18N_SELECTORS = [
     '[data-i18n]',
     '.setting-name',
@@ -5695,7 +5727,6 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     '.rail-drawer-title',
     '.home-pane-label',
     '.view-header h2',
-    '.view-subtitle',
     '.dialog-header h3',
     '.modal-title',
     '.btn-pill-primary > span',
@@ -5707,9 +5738,6 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     'button.btn-text:not(:has(*))',
     'button.btn-text-error:not(:has(*))',
     'button.theme-mode-btn:not(:has(*))',
-    'h2',
-    'h3',
-    'p',
     'label:not(:has(*))',
     '.setting-item-top > span:not([class])',
     '.setting-hints > span:not([class])',
@@ -5759,6 +5787,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   function collectI18n() {
     const list = new Set();
     document.querySelectorAll(AUTO_I18N_SELECTORS).forEach(elNode => {
+      if (isDynamicNode(elNode)) return;
       if (elNode.children && elNode.children.length > 0 && !elNode.hasAttribute('data-i18n')) {
         return;
       }
@@ -5817,6 +5846,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
     if (lang === 'en') {
       document.querySelectorAll(AUTO_I18N_SELECTORS).forEach(elNode => {
+        if (isDynamicNode(elNode)) return;
         if (elNode.dataset.i18nOrig) {
           elNode.textContent = elNode.dataset.i18nOrig;
           elNode.dataset.i18nShown = elNode.textContent;
@@ -5853,6 +5883,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       }
 
       document.querySelectorAll(AUTO_I18N_SELECTORS).forEach(elNode => {
+        if (isDynamicNode(elNode)) return;
         if (elNode.children && elNode.children.length > 0 && !elNode.hasAttribute('data-i18n')) {
           return;
         }
