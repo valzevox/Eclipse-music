@@ -171,14 +171,13 @@
         <div class="sidebar-bottom-spacer"></div>
 
         
-        <button class="rail-icon-btn" id="btn-sidebar-donate" title="Ủng hộ Eclipse (Donate)" style="margin-bottom: 6px; color: #ff5e5b;">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M18 8h1a4 4 0 0 1 0 8h-1"></path>
-            <path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"></path>
-            <line x1="6" y1="1" x2="6" y2="4"></line>
-            <line x1="10" y1="1" x2="10" y2="4"></line>
-            <line x1="14" y1="1" x2="14" y2="4"></line>
-          </svg>
+        
+        <button class="nav-item" id="btn-sidebar-donate" title="Ủng hộ Eclipse (Donate)" style="cursor: pointer;">
+          <div class="nav-indicator" style="color: #ff5e5b;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+            </svg>
+          </div>
         </button>
         <button class="nav-item" data-view="settings" id="nav-settings" title="Settings">
           <div class="nav-indicator">
@@ -2216,16 +2215,13 @@
             </div>
 
             
+            
             <div class="setting-item" style="border: 1px solid rgba(255, 94, 91, 0.25); background: linear-gradient(135deg, rgba(255, 94, 91, 0.08), rgba(255, 255, 255, 0.02));">
               <div class="setting-item-top" style="align-items: center; justify-content: space-between;">
                 <div style="display: flex; align-items: center; gap: 12px;">
                   <div style="width: 36px; height: 36px; border-radius: 50%; background: rgba(255, 94, 91, 0.15); display: flex; align-items: center; justify-content: center; color: #ff5e5b;">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M18 8h1a4 4 0 0 1 0 8h-1"></path>
-                      <path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"></path>
-                      <line x1="6" y1="1" x2="6" y2="4"></line>
-                      <line x1="10" y1="1" x2="10" y2="4"></line>
-                      <line x1="14" y1="1" x2="14" y2="4"></line>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
                     </svg>
                   </div>
                   <div style="display: flex; flex-direction: column;">
@@ -2233,30 +2229,11 @@
                     <span style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">Mời dev một ly cà phê qua VietQR, PayPal hoặc Crypto</span>
                   </div>
                 </div>
-                <button class="btn-pill-primary" id="btn-settings-open-donate" type="button" style="padding: 6px 16px; background: #ff5e5b; color: #fff; font-weight: 600;">Ủng hộ ngay ☕</button>
+                <button class="btn-pill-primary" id="btn-settings-open-donate" type="button" style="padding: 6px 16px; background: #ff5e5b; color: #fff; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+                  <span>Ủng hộ ngay</span>
+                </button>
               </div>
-            </div>
-
-            <div class="setting-item">
-              <div class="setting-item-top" style="align-items: center; justify-content: space-between;">
-                <span class="setting-name">Keyboard shortcuts</span>
-                <button class="btn-outline-pill" id="btn-open-shortcuts" style="padding: 6px 14px; font-size: calc(12px * var(--font-scale, 1));">Keyboard shortcuts</button>
-              </div>
-            </div>
-
-            <div class="setting-item">
-              <div class="setting-item-top" style="align-items: center; justify-content: space-between;">
-                <span class="setting-name">Diagnostics</span>
-                <button class="btn-outline-pill" id="btn-copy-diagnostics" style="padding: 6px 14px; font-size: calc(12px * var(--font-scale, 1));">Copy diagnostics</button>
-              </div>
-            </div>
-
-            <div class="setting-item">
-              <div class="setting-item-top" style="align-items: center; justify-content: space-between;">
-                <span class="setting-name">Logs</span>
-                <button class="btn-outline-pill" id="btn-open-logs" style="padding: 6px 14px; font-size: calc(12px * var(--font-scale, 1));">Open logs folder</button>
-              </div>
-            </div>
             </div>
           </div>
 
@@ -3876,29 +3853,39 @@
   <script src="update-notifier.js"></script>
   <script src="app.js"></script>
 
+    
     <!-- Donate Modal -->
-    <div class="modal-backdrop hidden" id="donate-modal" style="z-index: 99999;">
+    <div class="modal-backdrop hidden" id="donate-modal">
       <div class="dialog-card donate-modal-card" style="width: 480px; max-width: 94vw; max-height: 90vh; overflow-y: auto; padding: 24px; border-radius: 24px; box-shadow: 0 16px 40px rgba(0,0,0,0.45); background: var(--bg-surface-1, #1e1f2b);">
         <div style="display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px;">
           <div style="display: flex; align-items: center; gap: 12px;">
             <div style="width: 42px; height: 42px; border-radius: 12px; background: rgba(255, 94, 91, 0.15); color: #ff5e5b; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8h1a4 4 0 0 1 0 8h-1"></path><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"></path><line x1="6" y1="1" x2="6" y2="4"></line><line x1="10" y1="1" x2="10" y2="4"></line><line x1="14" y1="1" x2="14" y2="4"></line></svg>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
             </div>
             <div>
               <h3 style="margin: 0; font-size: 18px; font-weight: 700; color: var(--md-sys-color-on-surface);">Ủng hộ Eclipse</h3>
               <span id="donate-modal-subtitle" style="font-size: 13px; color: var(--md-sys-color-outline);">Mời lập trình viên ly cà phê để tiếp tục duy trì app</span>
             </div>
           </div>
-          <button class="btn-text" id="btn-close-donate-modal" type="button" style="padding: 6px; border-radius: 50%; min-width: auto;">
+          <button class="btn-text" id="btn-close-donate-modal" type="button" style="padding: 6px; border-radius: 50%; min-width: auto; cursor: pointer;">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
           </button>
         </div>
 
         <!-- Mode Tabs -->
         <div class="sp-modes" id="donate-tabs" style="margin-bottom: 18px; display: flex; gap: 6px; background: var(--bg-surface-2, rgba(255,255,255,0.06)); padding: 4px; border-radius: 14px;">
-          <button type="button" class="sp-mode-btn active" data-tab="vietqr" style="flex: 1; padding: 8px 10px; border-radius: 10px; font-size: 12px; font-weight: 600;">🏦 VietQR / MB</button>
-          <button type="button" class="sp-mode-btn" data-tab="intl" style="flex: 1; padding: 8px 10px; border-radius: 10px; font-size: 12px; font-weight: 600;">💳 PayPal & Ko-fi</button>
-          <button type="button" class="sp-mode-btn" data-tab="crypto" style="flex: 1; padding: 8px 10px; border-radius: 10px; font-size: 12px; font-weight: 600;">🪙 Crypto / Web3</button>
+          <button type="button" class="sp-mode-btn active" data-tab="vietqr" style="flex: 1; padding: 8px 6px; border-radius: 10px; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M3 10h18M5 10v11M9 10v11M15 10v11M19 10v11M12 2L2 7h20L12 2z"/></svg>
+            <span>VietQR / MB</span>
+          </button>
+          <button type="button" class="sp-mode-btn" data-tab="intl" style="flex: 1; padding: 8px 6px; border-radius: 10px; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+            <span>PayPal & Ko-fi</span>
+          </button>
+          <button type="button" class="sp-mode-btn" data-tab="crypto" style="flex: 1; padding: 8px 6px; border-radius: 10px; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><line x1="12" y1="6" x2="12" y2="8"/><line x1="12" y1="16" x2="12" y2="18"/></svg>
+            <span>Crypto / Web3</span>
+          </button>
         </div>
 
         <!-- Tab 1: VietQR -->
@@ -3911,7 +3898,7 @@
             <div><strong>Chủ tài khoản:</strong> VO VAN GIA MINH</div>
             <div style="display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 6px;">
               <span style="font-family: monospace; font-size: 15px; font-weight: 700; background: var(--bg-surface-2, rgba(255,255,255,0.08)); padding: 4px 12px; border-radius: 8px;">57995999</span>
-              <button class="btn-outline-pill" id="btn-copy-stk" type="button" style="padding: 4px 10px; font-size: 12px;">Copy STK</button>
+              <button class="btn-outline-pill" id="btn-copy-stk" type="button" style="padding: 4px 10px; font-size: 12px; cursor: pointer;">Copy STK</button>
             </div>
           </div>
           <span style="font-size: 11px; color: var(--md-sys-color-outline);">Chuyển nhanh Napas 24/7 từ mọi ứng dụng ngân hàng, MoMo, ZaloPay</span>
@@ -3920,38 +3907,44 @@
         <!-- Tab 2: International -->
         <div class="donate-tab-content hidden" id="donate-tab-intl">
           <div style="display: flex; flex-direction: column; gap: 10px;">
-            <a href="https://paypal.me/giaminhvovan" target="_blank" class="btn-outline-pill" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; text-decoration: none; color: inherit; border-radius: 14px;">
-              <div style="display: flex; align-items: center; gap: 10px;">
-                <span style="font-size: 20px;">🅿️</span>
-                <div style="text-align: left;">
-                  <div style="font-weight: 600;">PayPal</div>
+            <button type="button" class="btn-outline-pill donate-ext-btn" data-url="https://paypal.me/giaminhvovan" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; width: 100%; border-radius: 14px; cursor: pointer; text-align: left; background: transparent; color: inherit;">
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="width: 32px; height: 32px; border-radius: 8px; background: rgba(0, 112, 186, 0.15); color: #0070ba; display: flex; align-items: center; justify-content: center;">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.78.78 0 0 1 .77-.642h7.02c3.488 0 5.86 1.488 5.438 5.166-.356 3.104-2.316 4.887-5.32 4.887H9.76l-1.196 7.558a.777.777 0 0 1-.768.648h-.72z"/></svg>
+                </div>
+                <div>
+                  <div style="font-weight: 600; font-size: 13px;">PayPal</div>
                   <div style="font-size: 11px; color: var(--md-sys-color-outline);">giaminhvovan@gmail.com</div>
                 </div>
               </div>
               <span class="btn-pill-primary" style="padding: 4px 12px; font-size: 12px; pointer-events: none;">Mở link</span>
-            </a>
+            </button>
 
-            <a href="https://ko-fi.com/m1n698" target="_blank" class="btn-outline-pill" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; text-decoration: none; color: inherit; border-radius: 14px;">
-              <div style="display: flex; align-items: center; gap: 10px;">
-                <span style="font-size: 20px;">☕</span>
-                <div style="text-align: left;">
-                  <div style="font-weight: 600;">Ko-fi (Buy Me a Coffee)</div>
+            <button type="button" class="btn-outline-pill donate-ext-btn" data-url="https://ko-fi.com/m1n698" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; width: 100%; border-radius: 14px; cursor: pointer; text-align: left; background: transparent; color: inherit;">
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="width: 32px; height: 32px; border-radius: 8px; background: rgba(255, 94, 91, 0.15); color: #ff5e5b; display: flex; align-items: center; justify-content: center;">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M23.881 8.948c-.773-4.085-4.859-4.593-4.859-4.593H.723c-.604 0-.679.798-.679.798s-.082 7.324-.022 11.822c.164 2.424 2.586 2.672 2.586 2.672s8.267-.023 11.966-.049c2.438-.426 2.683-2.566 2.683-2.566l.035-1.93s3.473.181 5.34-1.785c1.78-1.875 1.58-4.89 1.249-4.369zm-5.068 3.513c-.943.916-2.457.77-2.457.77l-.02-3.83s1.583-.186 2.483.744c.82.846.79 1.517-.006 2.316z"/></svg>
+                </div>
+                <div>
+                  <div style="font-weight: 600; font-size: 13px;">Ko-fi (Buy Me a Coffee)</div>
                   <div style="font-size: 11px; color: var(--md-sys-color-outline);">ko-fi.com/m1n698</div>
                 </div>
               </div>
               <span class="btn-pill-primary" style="padding: 4px 12px; font-size: 12px; pointer-events: none;">Mở link</span>
-            </a>
+            </button>
 
-            <a href="https://zypage.com/m1n6" target="_blank" class="btn-outline-pill" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; text-decoration: none; color: inherit; border-radius: 14px;">
-              <div style="display: flex; align-items: center; gap: 10px;">
-                <span style="font-size: 20px;">⚡</span>
-                <div style="text-align: left;">
-                  <div style="font-weight: 600;">ZyPage</div>
+            <button type="button" class="btn-outline-pill donate-ext-btn" data-url="https://zypage.com/m1n6" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; width: 100%; border-radius: 14px; cursor: pointer; text-align: left; background: transparent; color: inherit;">
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="width: 32px; height: 32px; border-radius: 8px; background: rgba(99, 102, 241, 0.15); color: #6366f1; display: flex; align-items: center; justify-content: center;">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                </div>
+                <div>
+                  <div style="font-weight: 600; font-size: 13px;">ZyPage</div>
                   <div style="font-size: 11px; color: var(--md-sys-color-outline);">zypage.com/m1n6</div>
                 </div>
               </div>
               <span class="btn-pill-primary" style="padding: 4px 12px; font-size: 12px; pointer-events: none;">Mở link</span>
-            </a>
+            </button>
           </div>
         </div>
 
@@ -3960,32 +3953,44 @@
           <div style="display: flex; flex-direction: column; gap: 10px;">
             <div class="setting-item" style="padding: 12px; border-radius: 14px; background: var(--bg-surface-2, rgba(255,255,255,0.04));">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                <span style="font-weight: 600; font-size: 13px;">🟡 BNB Smart Chain (BEP20)</span>
-                <button class="btn-outline-pill" id="btn-copy-bep20" type="button" style="padding: 3px 8px; font-size: 11px;">Copy</button>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <div style="width: 20px; height: 20px; border-radius: 50%; background: #F3BA2F; display: flex; align-items: center; justify-content: center; color: #000; font-weight: bold; font-size: 10px;">B</div>
+                  <span style="font-weight: 600; font-size: 13px;">BNB Smart Chain (BEP20)</span>
+                </div>
+                <button class="btn-outline-pill" id="btn-copy-bep20" type="button" style="padding: 3px 8px; font-size: 11px; cursor: pointer;">Copy</button>
               </div>
-              <div style="font-size: 11px; color: var(--md-sys-color-outline); margin-bottom: 4px;">Hỗ trợ nạp: LTC, ETH, BTC, BNB, USDT (BEP20)</div>
+              <div style="font-size: 11px; color: var(--md-sys-color-outline); margin-bottom: 4px;">Hỗ trợ: LTC, ETH, BTC, BNB, USDT (BEP20)</div>
               <div style="font-family: monospace; font-size: 11px; word-break: break-all; color: var(--md-sys-color-primary);">0x37d1e10a2ba7f99ba758b644510c73ef16d5dd77</div>
             </div>
 
             <div class="setting-item" style="padding: 12px; border-radius: 14px; background: var(--bg-surface-2, rgba(255,255,255,0.04));">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                <span style="font-weight: 600; font-size: 13px;">🔴 Tron (TRC20)</span>
-                <button class="btn-outline-pill" id="btn-copy-trc20" type="button" style="padding: 3px 8px; font-size: 11px;">Copy</button>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <div style="width: 20px; height: 20px; border-radius: 50%; background: #EF0027; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: bold; font-size: 10px;">T</div>
+                  <span style="font-weight: 600; font-size: 13px;">Tron Network (TRC20)</span>
+                </div>
+                <button class="btn-outline-pill" id="btn-copy-trc20" type="button" style="padding: 3px 8px; font-size: 11px; cursor: pointer;">Copy</button>
               </div>
               <div style="font-size: 11px; color: var(--md-sys-color-outline); margin-bottom: 4px;">Hỗ trợ: USDT, TRX (TRC20)</div>
               <div style="font-family: monospace; font-size: 11px; word-break: break-all; color: var(--md-sys-color-primary);">TL4eNxibcgmSx3RsnMN3QLZcLnKcXFAS27</div>
             </div>
 
             <div style="display: flex; gap: 8px;">
-              <a href="https://s.binance.com/LZt9c3yD" target="_blank" class="btn-outline-pill" style="flex: 1; text-align: center; text-decoration: none; padding: 8px; font-size: 12px; color: inherit;">Binance Web3 1</a>
-              <a href="https://s.binance.com/kVjamXez" target="_blank" class="btn-outline-pill" style="flex: 1; text-align: center; text-decoration: none; padding: 8px; font-size: 12px; color: inherit;">Binance Web3 2</a>
+              <button type="button" class="btn-outline-pill donate-ext-btn" data-url="https://s.binance.com/LZt9c3yD" style="flex: 1; padding: 10px; font-size: 12px; border-radius: 12px; cursor: pointer; text-align: center; color: inherit; background: transparent; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                <span>Binance Web3 1</span>
+              </button>
+              <button type="button" class="btn-outline-pill donate-ext-btn" data-url="https://s.binance.com/kVjamXez" style="flex: 1; padding: 10px; font-size: 12px; border-radius: 12px; cursor: pointer; text-align: center; color: inherit; background: transparent; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                <span>Binance Web3 2</span>
+              </button>
             </div>
           </div>
         </div>
 
         <div style="margin-top: 20px; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-color, rgba(255,255,255,0.08)); padding-top: 14px;">
-          <button class="btn-text" id="btn-donate-dismiss-forever" type="button" style="font-size: 12px; color: var(--md-sys-color-outline);">Đã ủng hộ / Không nhắc lại</button>
-          <button class="btn-pill-primary" id="btn-close-donate-ok" type="button" style="padding: 6px 18px; font-size: 13px;">Đóng</button>
+          <button class="btn-text" id="btn-donate-dismiss-forever" type="button" style="font-size: 12px; color: var(--md-sys-color-outline); cursor: pointer;">Đã ủng hộ / Không nhắc lại</button>
+          <button class="btn-pill-primary" id="btn-close-donate-ok" type="button" style="padding: 6px 18px; font-size: 13px; cursor: pointer;">Đóng</button>
         </div>
       </div>
     </div>
