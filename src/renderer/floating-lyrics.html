@@ -15,7 +15,7 @@
       height: 100%;
       overflow: hidden;
       background: transparent;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
     }
     .floating-container {
       width: 100%;
@@ -24,21 +24,25 @@
       flex-direction: column;
       justify-content: center;
       padding: 10px 18px;
-      background: rgba(18, 18, 22, 0.78);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(14, 14, 18, 0.78);
+      backdrop-filter: blur(24px) saturate(190%);
+      -webkit-backdrop-filter: blur(24px) saturate(190%);
+      border: 1px solid rgba(255, 255, 255, 0.14);
       border-radius: 20px;
-      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.5);
       color: #ffffff;
       cursor: grab;
       -webkit-app-region: drag;
       position: relative;
-      transition: background 0.2s, border-color 0.2s;
+      transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
     }
     .floating-container:hover {
-      background: rgba(22, 22, 28, 0.88);
-      border-color: rgba(255, 255, 255, 0.2);
+      background: rgba(18, 18, 24, 0.88);
+      border-color: rgba(255, 255, 255, 0.22);
+      box-shadow: 0 20px 42px rgba(0, 0, 0, 0.65);
+    }
+    .floating-container:active {
+      cursor: grabbing;
     }
     .floating-controls {
       position: absolute;
@@ -48,15 +52,16 @@
       align-items: center;
       gap: 6px;
       opacity: 0;
-      transition: opacity 0.2s ease;
+      transition: opacity 0.2s cubic-bezier(0.23, 1, 0.32, 1);
       -webkit-app-region: no-drag;
+      z-index: 10;
     }
     .floating-container:hover .floating-controls {
       opacity: 1;
     }
     .ctrl-btn {
-      width: 24px;
-      height: 24px;
+      width: 26px;
+      height: 26px;
       border-radius: 50%;
       border: none;
       background: rgba(255, 255, 255, 0.12);
@@ -65,40 +70,69 @@
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      transition: background 0.15s, transform 0.1s;
+      transition: background 0.15s, transform 0.12s;
     }
     .ctrl-btn:hover {
       background: rgba(255, 255, 255, 0.25);
       transform: scale(1.08);
     }
     .ctrl-btn:active {
-      transform: scale(0.95);
+      transform: scale(0.92);
     }
+
+    /* Current active line container */
     .lyrics-active-line {
       font-size: 19px;
       font-weight: 700;
       line-height: 1.35;
       color: #ffffff;
-      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      transition: color 0.2s ease;
+      display: flex;
+      align-items: baseline;
+      gap: 5px;
+      min-height: 27px;
     }
-    .lyrics-active-line.has-words {
-      background: linear-gradient(90deg, #93c5fd var(--progress, 0%), rgba(255,255,255,0.7) var(--progress, 0%));
+
+    /* Word span styling */
+    .lyric-w {
+      position: relative;
+      display: inline-block;
+      color: rgba(255, 255, 255, 0.55);
+      transition: color 0.15s ease, transform 0.2s cubic-bezier(0.25, 1, 0.5, 1);
+    }
+
+    .lyric-w.active-word {
+      color: #ffffff;
+      transform: scale(1.03);
+      text-shadow: 0 0 14px rgba(107, 185, 255, 0.8), 0 2px 8px rgba(0,0,0,0.8);
+    }
+
+    .lyric-w.past-word {
+      color: #ffffff;
+    }
+
+    /* Smooth continuous line gradient fallback (when word-by-word timestamps are missing) */
+    .lyrics-active-line.gradient-fill {
+      background: linear-gradient(90deg, #ffffff var(--prog, 0%), rgba(255, 255, 255, 0.45) calc(var(--prog, 0%) + 15%));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
+      transition: --prog 0.08s linear;
     }
+
+    /* Next line preview */
     .lyrics-next-line {
       font-size: 13.5px;
       font-weight: 500;
       line-height: 1.3;
-      margin-top: 3px;
-      color: rgba(255, 255, 255, 0.55);
+      margin-top: 4px;
+      color: rgba(255, 255, 255, 0.5);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      transition: opacity 0.25s ease, transform 0.25s cubic-bezier(0.25, 1, 0.5, 1);
     }
   </style>
 </head>
@@ -106,7 +140,7 @@
   <div class="floating-container" id="floating-box">
     <div class="floating-controls">
       <button class="ctrl-btn" id="btn-prev" title="Previous">⏮</button>
-      <button class="ctrl-btn" id="btn-playpause" title="Play/Pause">⏯</button>
+      <button class="ctrl-btn" id="btn-playpause" title="Play/Pause">⏸</button>
       <button class="ctrl-btn" id="btn-next" title="Next">⏭</button>
       <button class="ctrl-btn" id="btn-close" title="Close Overlay" style="margin-left: 4px;">✕</button>
     </div>
@@ -119,23 +153,99 @@
     const nextEl = document.getElementById('lyric-next');
     const btnPlayPause = document.getElementById('btn-playpause');
 
+    let currentLineText = '';
+    let currentWords = null;
+    let smoothProgress = 0;
+    let targetProgress = 0;
+    let animFrame = null;
+
+    // Smooth animation loop for continuous gradient progression
+    function updateAnimation() {
+      if (Math.abs(targetProgress - smoothProgress) > 0.05) {
+        smoothProgress += (targetProgress - smoothProgress) * 0.2;
+        curEl.style.setProperty('--prog', smoothProgress.toFixed(2) + '%');
+      }
+      animFrame = requestAnimationFrame(updateAnimation);
+    }
+    animFrame = requestAnimationFrame(updateAnimation);
+
+    function renderWords(words, currentTime) {
+      if (!words || words.length === 0) return;
+      curEl.classList.remove('gradient-fill');
+      curEl.style.removeProperty('--prog');
+
+      // Check if DOM already matches words count
+      const existingSpans = curEl.querySelectorAll('.lyric-w');
+      if (existingSpans.length !== words.length) {
+        curEl.innerHTML = '';
+        words.forEach((w) => {
+          const span = document.createElement('span');
+          span.className = 'lyric-w';
+          span.textContent = w.word + ' ';
+          curEl.appendChild(span);
+        });
+      }
+
+      const spans = curEl.querySelectorAll('.lyric-w');
+      words.forEach((w, idx) => {
+        const span = spans[idx];
+        if (!span) return;
+        const wStart = w.start;
+        const wEnd = w.end || (words[idx + 1] ? words[idx + 1].start : wStart + 0.4);
+
+        if (currentTime >= wEnd) {
+          span.className = 'lyric-w past-word';
+        } else if (currentTime >= wStart) {
+          span.className = 'lyric-w active-word';
+        } else {
+          span.className = 'lyric-w';
+        }
+      });
+    }
+
     if (window.electronAPI) {
       if (window.electronAPI.onFloatingLyricsUpdate) {
         window.electronAPI.onFloatingLyricsUpdate((data) => {
           if (!data) return;
-          if (data.current) curEl.textContent = data.current;
-          if (data.next !== undefined) nextEl.textContent = data.next || '';
+
+          // Next line
+          if (data.next !== undefined && nextEl.textContent !== data.next) {
+            nextEl.style.opacity = '0';
+            setTimeout(() => {
+              nextEl.textContent = data.next || '';
+              nextEl.style.opacity = '1';
+            }, 100);
+          }
+
+          // Playback state
           if (data.isPlaying !== undefined && btnPlayPause) {
             btnPlayPause.textContent = data.isPlaying ? '⏸' : '▶';
           }
-          if (data.progress != null && data.progress >= 0) {
-            curEl.classList.add('has-words');
-            curEl.style.setProperty('--progress', `${Math.min(100, Math.max(0, data.progress))}%`);
-          } else {
-            curEl.classList.remove('has-words');
+
+          const lineChanged = (currentLineText !== data.current);
+          if (lineChanged) {
+            currentLineText = data.current || '';
+            smoothProgress = 0;
+            targetProgress = 0;
+          }
+
+          // Case 1: True Word-by-Word Timestamps Available
+          if (data.words && Array.isArray(data.words) && data.words.length > 0) {
+            currentWords = data.words;
+            renderWords(data.words, data.currentTime || 0);
+          }
+          // Case 2: Smooth continuous line gradient progression
+          else {
+            if (lineChanged || curEl.querySelector('.lyric-w')) {
+              curEl.innerHTML = '';
+              curEl.textContent = currentLineText || 'Eclipse';
+              curEl.classList.add('gradient-fill');
+            }
+            targetProgress = Math.min(100, Math.max(0, data.progress != null ? data.progress : 0));
           }
         });
       }
+
       if (window.electronAPI.floatingLyricsReady) {
         window.electronAPI.floatingLyricsReady();
       }

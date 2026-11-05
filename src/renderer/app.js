@@ -5561,11 +5561,25 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           const lineDur = Math.max(0.5, nextLineTime - currentLineTime);
           const progress = Math.min(Math.max((matchTime - currentLineTime) / lineDur, 0), 0.999);
       if (window.electronAPI && window.electronAPI.updateFloatingLyrics) {
-        const nextLineObj = state.syncedLyrics[activeIndex + 1];
+        const nextLineObj = state.syncedLyrics && state.syncedLyrics[activeIndex + 1];
+        let floatProgress = progress * 100;
+        let wordsPayload = null;
+        if (line && line.words && Array.isArray(line.words) && line.words.length > 0) {
+          wordsPayload = line.words.map(w => ({
+            word: w.word || w.text || '',
+            start: w.time !== undefined ? w.time : (w.start || 0),
+            end: w.endTime !== undefined ? w.endTime : (w.end || 0)
+          }));
+        }
         window.electronAPI.updateFloatingLyrics({
           current: cleanText || (state.currentTrack ? state.currentTrack.title : 'Eclipse'),
           next: nextLineObj ? nextLineObj.text : '',
-          progress: progress * 100
+          progress: floatProgress,
+          currentTime: matchTime,
+          startTime: currentLineTime,
+          endTime: nextLineTime,
+          words: wordsPayload,
+          isPlaying: state.isPlaying
         });
       }
           const wordSpans = activeEl.querySelectorAll('.lyric-word');
