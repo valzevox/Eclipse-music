@@ -1,6 +1,6 @@
 {
   "name": "eclipse",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "main": "src/main/main.js",
   "bin": {
     "eclipse": "src/main/cli.js"
