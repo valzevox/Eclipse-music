@@ -27,6 +27,14 @@
   <a href="https://eclipse-player.vercel.app">
     <img src="https://img.shields.io/badge/Website-1F2328?style=for-the-badge&logo=open-webui&logoColor=white" height="40" alt="Visit Website">
   </a>
+  &nbsp;
+  <a href="https://ko-fi.com/m1n698">
+    <img src="https://img.shields.io/badge/Donate-Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white" height="40" alt="Ko-fi">
+  </a>
+  &nbsp;
+  <a href="https://zypage.com/m1n6">
+    <img src="https://img.shields.io/badge/Donate-ZyPage-6366F1?style=for-the-badge&logo=linktree&logoColor=white" height="40" alt="ZyPage">
+  </a>
 </p>
 
 <p align="center">
@@ -203,11 +211,30 @@ No official mobile releases exist. See [Mobile versions](#mobile-versions) for c
 
 ## Contributing
 
-Pull requests are welcome. Please verify all changes locally, ensure code passes syntax validation (`node --check`), and confirm stability before submitting contributions. Untested pull requests or changes introducing regressions will not be merged.
+Pull requests, bug reports, and feature suggestions are always welcome. Please verify all changes locally, ensure code passes syntax validation (`node --check`), and confirm stability before submitting contributions.
 
-## Support
+<a href="https://github.com/valzevox/Eclipse-music/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=valzevox/Eclipse-music" alt="Eclipse Contributors" />
+</a>
 
-You can support ongoing development via [Ko-fi](https://ko-fi.com/m1n698). Repository stars on GitHub are also appreciated.
+## Support & Donate
+
+Eclipse is an independent, 100% ad-free, open-source project. If Eclipse brings value to your music listening experience, consider supporting ongoing development:
+
+<p align="left">
+  <a href="https://ko-fi.com/m1n698" target="_blank">
+    <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white" alt="Support on Ko-fi">
+  </a>
+  &nbsp;
+  <a href="https://zypage.com/m1n6" target="_blank">
+    <img src="https://img.shields.io/badge/Donate-ZyPage-6366F1?style=for-the-badge&logo=linktree&logoColor=white" alt="m1n6 on ZyPage">
+  </a>
+</p>
+
+- ☕ **Ko-fi:** [ko-fi.com/m1n698](https://ko-fi.com/m1n698)
+- 💳 **ZyPage:** [m1n6 on ZyPage](https://zypage.com/m1n6)
+
+Every contribution helps keep development active, cover infrastructure, and push new features. A star ⭐ on GitHub is also deeply appreciated!
 
 ## Disclaimer
 
