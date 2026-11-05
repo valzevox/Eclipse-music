@@ -11,10 +11,10 @@
       mkRiff = pkgs:
         pkgs.buildNpmPackage rec {
           pname = "riff";
-          version = "1.3.3";
+          version = "1.3.4";
           src = self;
 
-          npmDepsHash = "sha256-rF4yvXjCFcrILJ3G2TbnqxvjScRafgW9OPZtOpT8Akw=";
+          npmDepsHash = "sha256-4mJKYo+dzyF5Z3Fym6aB/Di7cz0XnSziqnfnRZNZ/bE=";
 
           ELECTRON_SKIP_BINARY_DOWNLOAD = "1";
           forceGitDeps = true;
