@@ -27027,6 +27027,67 @@ document.addEventListener('DOMContentLoaded', () => {
       };
     }
 
+    async function saveQrImage() {
+      try {
+        const qrImg = document.getElementById('donate-qr-img');
+        if (!qrImg) return;
+
+        // Try Canvas DataURL conversion first (highest fidelity & direct download)
+        const canvas = document.createElement('canvas');
+        canvas.width = qrImg.naturalWidth || 600;
+        canvas.height = qrImg.naturalHeight || 800;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(qrImg, 0, 0, canvas.width, canvas.height);
+
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+        const filename = 'VietQR-MBBank-57995999-VOVANGIAMINH.jpg';
+
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        if (typeof showToast === 'function') {
+          showToast('Đã lưu mã QR về máy thành công!', 'success');
+        }
+      } catch (err) {
+        // Fallback: direct download link
+        try {
+          const qrImg = document.getElementById('donate-qr-img');
+          const src = (qrImg && qrImg.src) || 'assets/donate-vietqr.jpg';
+          const a = document.createElement('a');
+          a.href = src;
+          a.download = 'VietQR-MBBank-57995999-VOVANGIAMINH.jpg';
+          a.target = '_blank';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          if (typeof showToast === 'function') {
+            showToast('Đang tải ảnh mã QR về máy...', 'info');
+          }
+        } catch (_) {
+          if (typeof showToast === 'function') {
+            showToast('Vui lòng chạm giữ vào ảnh để lưu ảnh về máy', 'info');
+          }
+        }
+      }
+    }
+
+    const btnSaveQr = document.getElementById('btn-save-qr-img');
+    if (btnSaveQr) {
+      btnSaveQr.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof recordDonateUserAction === 'function') recordDonateUserAction('saved_qr_image');
+        saveQrImage();
+      };
+    }
+
+
     const btnCopyBep20 = document.getElementById('btn-copy-bep20');
     if (btnCopyBep20) {
       btnCopyBep20.onclick = (e) => {
