@@ -1485,7 +1485,7 @@
         if (!port) return { success: false, error: 'Eclipse server is not available here' };
         try {
           const res = await fetch(`http://127.0.0.1:${port}/api/spotify-import?url=${encodeURIComponent(url)}`, {
-            headers: { 'X-Eclipse-Token': this.api?.serverToken || '', 'X-Riff-Token': this.api?.serverToken || '' }
+            headers: { 'X-Eclipse-Token': this.api?.serverToken || '' }
           });
           return await res.json();
         } catch (e) {
@@ -2320,7 +2320,7 @@
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Eclipse-Token': token, 'X-Riff-Token': token
+            'X-Eclipse-Token': token
           },
           body: JSON.stringify({ target: lang, texts })
         });

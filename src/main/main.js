@@ -370,7 +370,7 @@ function runGUI() {
                                    useContentSize: true,
                                    webPreferences: {
                                      preload: path.join(__dirname, 'preload.js'),
-                                   additionalArguments: [`--eclipse-token=${getServerToken()}`, `--riff-token=${getServerToken()}`],
+                                   additionalArguments: [`--eclipse-token=${getServerToken()}`],
                                    nodeIntegration: false,
                                    contextIsolation: true,
                                    webSecurity: false,
@@ -549,7 +549,7 @@ function createFloatingLyricsWindow() {
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      additionalArguments: [`--eclipse-token=${getServerToken()}`, `--riff-token=${getServerToken()}`],
+      additionalArguments: [`--eclipse-token=${getServerToken()}`],
       nodeIntegration: false,
       contextIsolation: true,
       spellcheck: false

@@ -1,4 +1,4 @@
-const http = require('http');
+﻿const http = require('http');
 const https = require('https');
 const keepAliveHttpsAgent = new https.Agent({
   keepAlive: true,
@@ -8861,7 +8861,7 @@ const server = http.createServer(async (req, res) => {
 
   if (pathname.startsWith('/api/lastfm/')) { handleLastFmRoute(req, res, pathname); return; }
 
-  const reqToken = req.headers['x-eclipse-token'] || req.headers['x-riff-token'] || (parsedUrl.query && (parsedUrl.query.token || parsedUrl.query['x-eclipse-token'] || parsedUrl.query['x-riff-token']));
+  const reqToken = req.headers['x-eclipse-token'] || (parsedUrl.query && (parsedUrl.query.token || parsedUrl.query['x-eclipse-token']));
   if (TOKEN_PROTECTED_ROUTES.has(parsedUrl.pathname) && !tokenMatches(reqToken)) {
     res.writeHead(403, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ success: false, error: 'forbidden' }));
@@ -9833,7 +9833,9 @@ function startServer(port = PORT) {
   });
 }
 
-module.exports = { matchAndResolveTrack, handleLyrics, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchSyncLrc, parseKaraokeToWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc };
+function stopServer() { return new Promise((resolve) => { if (!server || !server.listening) return resolve(); server.close(() => resolve()); }); }
+
+module.exports = { stopServer, matchAndResolveTrack, handleLyrics, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchSyncLrc, parseKaraokeToWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc };
 
 if (require.main === module) {
   startServer();

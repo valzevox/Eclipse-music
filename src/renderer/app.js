@@ -123,7 +123,6 @@ try { window.electronAPI.storageSaveSync(diskMap); } catch (_) {}
           const headers = new Headers(opts.headers || (input && input.headers) || undefined);
           if (activeToken) {
             headers.set('X-Eclipse-Token', activeToken);
-            headers.set('X-Riff-Token', activeToken);
           }
           opts.headers = headers;
           return origFetch(input, opts);
@@ -381,9 +380,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     if (dict && dict.has(str)) return dict.get(str);
     if (typeof state !== 'undefined' && state && state.serverPort) {
+      const token = (window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '';
       fetch(`http://127.0.0.1:${state.serverPort}/api/i18n-batch`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Eclipse-Token': token
+        },
         body: JSON.stringify({ target: lang, texts: [str] })
       }).then(r => r.json()).then(data => {
         if (data && data.success && data.translations && data.translations[0]) {
@@ -5951,11 +5954,18 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       try {
         const port = (typeof state !== 'undefined' && state && state.serverPort) || (window.electronAPI && window.electronAPI.getServerPort ? await window.electronAPI.getServerPort() : 38472);
         if (port) {
+          const token = (window.electronAPI && window.electronAPI.serverToken) || (typeof state !== 'undefined' && state && state.serverToken) || '';
           const res = await fetch(`http://127.0.0.1:${port}/api/i18n-batch`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Eclipse-Token': token
+            },
             body: JSON.stringify({ target: lang, texts: missing })
           });
+          if (!res.ok) {
+            console.warn(`i18n request failed: HTTP ${res.status}`);
+          }
           const data = await res.json();
           if (data && data.success && Array.isArray(data.translations)) {
             let hasNew = false;
@@ -20279,7 +20289,7 @@ function bindCoverHoldZoom(wrapEl) {
   let spotifyConnected = false;
   function getSpotifyHeaders() {
     const tok = (window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '';
-    return { 'X-Eclipse-Token': tok, 'X-Riff-Token': tok };
+    return { 'X-Eclipse-Token': tok };
   }
   const spotifyHeaders = getSpotifyHeaders();
 

@@ -4,7 +4,7 @@ const { contextBridge, ipcRenderer, webFrame } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
   serverToken: (() => {
     try {
-      const arg = process.argv.find((a) => a.startsWith('--eclipse-token=') || a.startsWith('--riff-token='));
+      const arg = process.argv.find((a) => a.startsWith('--eclipse-token='));
       if (arg) {
         const eq = arg.indexOf('=');
         if (eq !== -1) return arg.slice(eq + 1);
