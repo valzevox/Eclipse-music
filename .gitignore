@@ -55,3 +55,19 @@ test/lastfm-scrobbler.test.js
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# Local planning, agent scratchpads & metadata
+plan.md
+*.plan.md
+TODO.md
+todo.md
+AGENTS.md
+GEMINI.md
+opencode.json
+.mcp.json
+.claude/
+.cursor/
+.gemini/
+.grok/
+.kiro/
+.ignore
