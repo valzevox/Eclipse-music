@@ -3891,14 +3891,21 @@
         <!-- Tab 1: VietQR -->
         <div class="donate-tab-content" id="donate-tab-vietqr" style="text-align: center;">
           <div style="background: #fff; padding: 12px; border-radius: 16px; display: inline-block; margin-bottom: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.25);">
-            <img src="../../assets/donate-vietqr.jpg" alt="VietQR MBBank" style="width: 210px; height: auto; border-radius: 8px; display: block;" onerror="this.src='https://img.vietqr.io/image/MB-57995999-compact2.png?accountName=VO%20VAN%20GIA%20MINH'" />
+            <img id="donate-qr-img" src="../../assets/donate-vietqr.jpg" alt="VietQR MBBank" style="width: 210px; height: auto; border-radius: 8px; display: block;" onerror="this.src='https://img.vietqr.io/image/MB-57995999-compact2.png?accountName=VO%20VAN%20GIA%20MINH'" />
           </div>
           <div style="display: flex; flex-direction: column; gap: 4px; font-size: 13px; margin-bottom: 12px; color: var(--md-sys-color-on-surface);">
             <div><strong>Ngân hàng:</strong> MBBank (Ngân hàng Quân Đội)</div>
             <div><strong>Chủ tài khoản:</strong> VO VAN GIA MINH</div>
             <div style="display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 6px;">
               <span style="font-family: monospace; font-size: 15px; font-weight: 700; background: var(--bg-surface-2, rgba(255,255,255,0.08)); padding: 4px 12px; border-radius: 8px;">57995999</span>
-              <button class="btn-outline-pill" id="btn-copy-stk" type="button" style="padding: 4px 10px; font-size: 12px; cursor: pointer;">Copy STK</button>
+              <button class="btn-outline-pill" id="btn-copy-stk" type="button" style="padding: 4px 10px; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <span>Copy STK</span>
+              </button>
+              <button class="btn-outline-pill" id="btn-save-qr-img" type="button" style="padding: 4px 10px; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                <span>Lưu ảnh QR</span>
+              </button>
             </div>
           </div>
           <span style="font-size: 11px; color: var(--md-sys-color-outline);">Chuyển nhanh Napas 24/7 từ mọi ứng dụng ngân hàng, MoMo, ZaloPay</span>
