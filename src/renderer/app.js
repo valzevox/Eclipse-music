@@ -21942,7 +21942,7 @@ function bindCoverHoldZoom(wrapEl) {
     } catch (e) {}
 
     const payload = {
-      app: 'Riff',
+      app: 'Eclipse',
       appVersion: appVer,
       exportedAt: new Date().toISOString(),
       playlists: valid.map(pl => ({
@@ -21974,7 +21974,7 @@ function bindCoverHoldZoom(wrapEl) {
   }
 
   async function exportAllPlaylists() {
-    await exportPlaylistsAsJson(state.playlists, 'riff-playlists.json');
+    await exportPlaylistsAsJson(state.playlists, 'eclipse-playlists.json');
   }
 
   const btnExportPl = document.getElementById('btn-export-playlist');
