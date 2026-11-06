@@ -4722,7 +4722,10 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       }
 
       let resolvedUrl = track.url;
-      let resolvedId = track.id;
+      let resolvedId = track._matchedYtId || track.id;
+      if (!resolvedUrl && track._matchedYtId) {
+        resolvedUrl = 'https://www.youtube.com/watch?v=' + track._matchedYtId;
+      }
 
       const qQuality = encodeURIComponent(localStorage.getItem('riff_audio_quality') || 'medium');
       const qSearch = encodeURIComponent(track.searchQuery || ((track.artist ? track.artist + ' - ' : '') + track.title));
@@ -8513,7 +8516,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         try {
           const qQuality = encodeURIComponent(localStorage.getItem('riff_audio_quality') || 'medium');
           const qSearch = encodeURIComponent(cur.searchQuery || ((cur.artist ? cur.artist + ' - ' : '') + (cur.title || '')));
-          const retryUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?url=${encodeURIComponent(cur.url || '')}&id=${encodeURIComponent(cur.id || '')}&platform=${encodeURIComponent(cur.platform || state.platform)}&title=${encodeURIComponent(cur.title || '')}&artist=${encodeURIComponent(cur.artist || '')}&duration=${encodeURIComponent(cur.duration || 0)}&quality=${qQuality}&q=${qSearch}&forceYtDlp=1&token=${encodeURIComponent((window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '')}`;
+          const retryYtId = cur._matchedYtId || cur.id || '';
+          const retryTrackUrl = cur.url || (cur._matchedYtId ? ('https://www.youtube.com/watch?v=' + cur._matchedYtId) : '');
+          const retryUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?url=${encodeURIComponent(retryTrackUrl)}&id=${encodeURIComponent(retryYtId)}&platform=${encodeURIComponent(cur.platform || state.platform)}&title=${encodeURIComponent(cur.title || '')}&artist=${encodeURIComponent(cur.artist || '')}&duration=${encodeURIComponent(cur.duration || 0)}&quality=${qQuality}&q=${qSearch}&forceYtDlp=1&token=${encodeURIComponent((window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '')}`;
           const r = await fetch(retryUrl);
           const d = await r.json();
           if (myToken !== state.loadToken) return;

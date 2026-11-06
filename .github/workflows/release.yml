@@ -41,6 +41,18 @@ jobs:
         shell: bash
         run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
       - run: npm ci
+      - name: Download Windows bundled tools (yt-dlp & ffmpeg)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p bin
+          curl -L -o bin/yt-dlp.exe https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe
+          curl -L -o ffmpeg.zip https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip
+          unzip -q ffmpeg.zip
+          cp ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe bin/
+          cp ffmpeg-master-latest-win64-gpl/bin/ffprobe.exe bin/ || true
+          rm -rf ffmpeg.zip ffmpeg-master-latest-win64-gpl
+          ls -la bin/
       - name: Build and upload to the release
         shell: bash
         env:

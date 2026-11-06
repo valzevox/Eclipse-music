@@ -122,7 +122,15 @@ async function removeDirContents(dir, skipNames = new Set(['config.json'])) {
 function isExecutableFile(p) {
   try {
     fs.accessSync(p, fs.constants.X_OK);
-    return fs.statSync(p).isFile();
+    const stat = fs.statSync(p);
+    if (!stat.isFile()) return false;
+    // On Windows, pip-generated python launcher stubs are ~100KB and hardcode python.exe path,
+    // breaking completely on systems without that python installation.
+    // Real standalone yt-dlp.exe is >= 5MB.
+    if (IS_WIN && path.basename(p).toLowerCase().startsWith('yt-dlp') && stat.size < 5 * 1024 * 1024) {
+      return false;
+    }
+    return true;
   } catch (e) {
     return false;
   }
