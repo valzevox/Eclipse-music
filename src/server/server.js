@@ -2432,13 +2432,35 @@ function fetchItunesTopSongs(limit = 30) {
 async function handleTrending(req, res) {
   const parsedUrl = url.parse(req.url, true);
   const type = String(parsedUrl.query.type || parsedUrl.query.category || 'trending').toLowerCase().trim();
-  const cached = serverTrendingCacheMap.get(type);
+  const country = String(parsedUrl.query.country || 'VN').toUpperCase().trim();
+  const cacheKey = `${type}_${country}`;
+  const cached = serverTrendingCacheMap.get(cacheKey);
+
   if (cached && Array.isArray(cached.tracks) && cached.tracks.length > 0 && Date.now() - cached.ts < 2 * 3600 * 1000) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success: true, type, tracks: cached.tracks }));
-    return;
+    return res.end(JSON.stringify({ success: true, type, country, tracks: cached.tracks, videos: cached.videos || [], source: 'ytm' }));
   }
 
+  // Try YouTube Music Charts / Trending first
+  try {
+    const ytmData = await ytmCharts.getTrending(country);
+    if (ytmData && ytmData.tracks && ytmData.tracks.length > 0) {
+      serverTrendingCacheMap.set(cacheKey, { ts: Date.now(), tracks: ytmData.tracks, videos: ytmData.videos });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({
+        success: true,
+        type,
+        country: ytmData.country,
+        tracks: ytmData.tracks,
+        videos: ytmData.videos,
+        source: 'ytm'
+      }));
+    }
+  } catch (err) {
+    logger.log('warn', '[handleTrending] YTM Trending error: ' + err.message);
+  }
+
+  // Fallback to iTunes / yt-dlp
   let tracks = [];
   if (type === 'charts') {
     tracks = await fetchItunesFeed('topsongs', 32);
@@ -2468,11 +2490,11 @@ async function handleTrending(req, res) {
   }
 
   if (tracks && tracks.length > 0) {
-    serverTrendingCacheMap.set(type, { ts: Date.now(), tracks });
+    serverTrendingCacheMap.set(cacheKey, { ts: Date.now(), tracks });
   }
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ success: true, type, tracks: tracks || [] }));
+  return res.end(JSON.stringify({ success: true, type, tracks: tracks || [], source: 'fallback' }));
 }
 
 function scoreImportedCandidate(targetTitle, targetArtist, targetDur, cand) {
@@ -9292,6 +9314,115 @@ const server = http.createServer(async (req, res) => {
 
   if (parsedUrl.pathname === '/api/trending') {
     return handleTrending(req, res);
+  }
+
+  if (parsedUrl.pathname === '/api/charts') {
+    const country = (parsedUrl.query.country || 'VN').toString().toUpperCase();
+    try {
+      const data = await ytmCharts.getCharts(country);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: true, ...data }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+  }
+
+  if (parsedUrl.pathname === '/api/charts/playlist') {
+    const playlistId = (parsedUrl.query.id || '').toString();
+    if (!playlistId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: 'Missing playlist id' }));
+    }
+    try {
+      const pl = await ytmCharts.getChartPlaylistTracks(playlistId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: true, playlist: pl }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+  }
+
+  if (parsedUrl.pathname === '/api/charts/countries') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ success: true, countries: ytmCharts.SUPPORTED_COUNTRIES }));
+  }
+
+  // YouTube Music Cookie & Account Auth Handlers
+  if (parsedUrl.pathname === '/api/ytm/login-url') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ success: true, loginUrl: ytmAuth.getLoginUrl() }));
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/accounts') {
+    const accounts = ytmAuth.listAccounts();
+    const active = ytmAuth.getActiveAccount();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ success: true, accounts, activeAccount: active }));
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/intercept-cookie' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const cookie = payload.cookie || '';
+        const account = await ytmAuth.authenticateWithCookie(cookie);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, account }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/switch-account' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const account = ytmAuth.switchAccount(payload.id);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, account }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/remove-account' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const removed = ytmAuth.removeAccount(payload.id);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, removed }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/library') {
+    try {
+      const lib = await ytmAuth.getUserLibrary();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: true, library: lib }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: e.message }));
+    }
   }
 
   if (parsedUrl.pathname === '/api/artist') {
