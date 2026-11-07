@@ -1,4 +1,4 @@
-<p align="center">
+﻿<p align="center">
   <img src="banner.png?v=2" alt="Eclipse - desktop music player and audio suite for YouTube Music, SoundCloud, and local files" width="100%">
 </p>
 
@@ -171,11 +171,19 @@ Eclipse (single Electron renderer and server process) typically utilizes approxi
 
 ### Memory usage is only classified as a leak when sustained footprint exceeds 600 MB.
 
-## Mobile versions
+## Mobile versions & Cross-Platform Ecosystem
 
-There is no official Eclipse client for Android or iOS. Third-party community forks are documented below:
-### https://eclipse-player.vercel.app
-Additional mobile implementations may be reviewed in future releases.
+Eclipse provides official clients across both **Desktop** and **Mobile** platforms:
+
+| Platform | Format | Repository / Source | Highlights |
+| :--- | :--- | :--- | :--- |
+| **Windows** | .exe (x64 / ia32), .zip | [valzevox/Eclipse-music](https://github.com/valzevox/Eclipse-music) | Hardware EQ, Floating Lyrics overlay, Discord RPC |
+| **macOS** | .dmg, .zip (Intel & Apple Silicon) | [valzevox/Eclipse-music](https://github.com/valzevox/Eclipse-music) | Retina audio visualizer, menu bar controls |
+| **Linux** | .AppImage, .deb | [valzevox/Eclipse-music](https://github.com/valzevox/Eclipse-music) | MPRIS integration, portable AppImage package |
+| **Android** | .apk (ARM64, ARMv7, Universal, vivo) | [valzevox/eclipse-mobile](https://github.com/valzevox/eclipse-mobile) | Background playback, lockscreen controls, Origin Island support |
+| **iOS** | .ipa (Sideload / AltStore / TrollStore) | [valzevox/eclipse-mobile](https://github.com/valzevox/eclipse-mobile) | Dynamic Island with synchronized lyrics, offline downloads |
+
+Web portal and direct installers: [https://eclipse-player.vercel.app](https://eclipse-player.vercel.app)
 
 ## FAQ
 
@@ -207,7 +215,7 @@ Yes. Eclipse supports online synchronized lyrics, local LRC files, manual timing
 Yes. Native Discord Rich Presence displays the currently playing track title, artist, elapsed time, and platform indicator.
 
 **Are there official mobile builds?**
-No official mobile releases exist. See [Mobile versions](#mobile-versions) for community-maintained forks.
+Yes. Official Android (APK) and iOS (IPA) builds are available at [valzevox/eclipse-mobile](https://github.com/valzevox/eclipse-mobile) and via the web portal at [eclipse-player.vercel.app](https://eclipse-player.vercel.app).
 
 ## Contributing
 
