@@ -1,4 +1,4 @@
-﻿(function initRiffDiskStorageDaemon() {
+(function initRiffDiskStorageDaemon() {
 if (!window.electronAPI || typeof window.electronAPI.storageInitSync !== 'function') return;
 const origGet = Storage.prototype.getItem;
 const origSet = Storage.prototype.setItem;
@@ -1112,7 +1112,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     navigator.mediaSession.playbackState = state.isPlaying ? 'playing' : 'paused';
   }
 
-  const MEDIA_GROUP = { toggle: 'pp', play: 'pp', pause: 'pp', next: 'next', prev: 'prev', stop: 'stop' };
+  const MEDIA_GROUP = { toggle: 'pp', playpause: 'pp', play: 'pp', pause: 'pp', next: 'next', prev: 'prev', stop: 'stop' };
   let lastMedia = { g: '', t: 0 };
   let hasNotifiedMediaKeysActive = false;
   function handleMediaCommand(cmd, src) {
@@ -1121,7 +1121,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const now = performance.now();
     if (lastMedia.g === g && now - lastMedia.t < 350) return;
     lastMedia = { g, t: now };
-    if (cmd === 'toggle') togglePlayPause();
+    if (cmd === 'toggle' || cmd === 'playpause') togglePlayPause();
     else if (cmd === 'play') { if (!state.isPlaying) playSmooth(); }
     else if (cmd === 'pause') { if (state.isPlaying) pauseSmooth(); }
     else if (cmd === 'next') playNext();

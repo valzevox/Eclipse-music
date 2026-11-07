@@ -135,6 +135,10 @@ if (process.argv.includes('lyrics') || process.argv.includes('--lyrics')) {
 }
 
 function runGUI() {
+  // Set AppUserModelId as early as possible so Windows Taskbar pins and icons associate correctly
+  if (process.platform === 'win32') {
+    app.setAppUserModelId('io.github.eclipse.app');
+  }
   const { startServer, PORT, getServerToken } = require('../server/server');
   const discordRPC = require('./discord');
 
@@ -363,7 +367,9 @@ function runGUI() {
       minHeight: 540,
                                    backgroundColor: firstRun ? '#8d5ef2' : '#000000',
                                    title: 'Eclipse',
-                                   icon: path.join(__dirname, '../../assets', 'icon.png'),
+                                   icon: process.platform === 'win32'
+      ? path.join(__dirname, '../../assets', 'icon.ico')
+      : path.join(__dirname, '../../assets', 'icon.png'),
                                    frame: false,
                                    titleBarStyle: 'hidden',
                                    show: false,
