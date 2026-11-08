@@ -110,7 +110,7 @@ class YtmAuthManager {
 
     this.saveAccounts();
     this.activeClient = yt;
-    return newAccount;
+    return this.getSanitizedAccount(newAccount);
   }
 
   getAccounts() {

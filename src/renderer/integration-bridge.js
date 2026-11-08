@@ -3,15 +3,12 @@
   'use strict';
 
   function getInternalApiBase() {
-    // 1. Electron / PC desktop environment
     if (typeof window !== 'undefined' && window.electronAPI && window.electronAPI.serverPort) {
       return `http://127.0.0.1:${window.electronAPI.serverPort}`;
     }
-    // 2. Global state from app.js
     if (typeof state !== 'undefined' && state && state.serverPort) {
       return `http://127.0.0.1:${state.serverPort}`;
     }
-    // 3. Fallback to default port
     return 'http://127.0.0.1:38472';
   }
 
@@ -39,6 +36,11 @@
           audioElement: nativeAudio,
           apiBase: apiBase
         });
+
+        // Set initial track if available
+        if (typeof state !== 'undefined' && state.currentTrack) {
+          window.eclipseMvPlayerInstance.setTrack(state.currentTrack);
+        }
 
         // Sync track changes from global playback state
         window.addEventListener('trackchanged', (e) => {
@@ -69,7 +71,6 @@
           : window.autoEqManagerInstance.search('');
         console.log('[EclipseBridge] AutoEqManager initialized. Available profiles:', profiles.length);
 
-        // Connect to audio engine if available
         window.applyAutoEqProfile = function (profileId, bassBoost = 0) {
           if (window.autoEqManagerInstance) {
             const engine = window.audioEngine || (typeof audioEngine !== 'undefined' ? audioEngine : null);
@@ -82,7 +83,7 @@
       }
     }
 
-    // 3. Phase 7: AutoMix DJ
+    // 3. Phase 7: AutoMix DJ (Real Crossfade & Track Advance)
     if (typeof window.AutoMixDJ !== 'undefined') {
       try {
         window.autoMixDjInstance = new window.AutoMixDJ({
@@ -93,16 +94,39 @@
         });
         console.log('[EclipseBridge] AutoMixDJ initialized with Equal-Power crossfade.');
 
-        // Hook into audio timeupdate for auto-mixing near track end
+        let automixTriggeredForTrack = false;
+        window.addEventListener('trackchanged', () => {
+          automixTriggeredForTrack = false;
+        });
+
         if (nativeAudio) {
           nativeAudio.addEventListener('timeupdate', () => {
-            if (!window.autoMixDjInstance || !window.autoMixDjInstance.enabled || window.autoMixDjInstance.isCrossfading) return;
+            if (!window.autoMixDjInstance || !window.autoMixDjInstance.enabled || window.autoMixDjInstance.isCrossfading || automixTriggeredForTrack) return;
             const dur = nativeAudio.duration;
             const cur = nativeAudio.currentTime;
-            if (dur && cur && (dur - cur) <= (window.autoMixDjInstance.durationSec || 6) && (dur - cur) > 0.5) {
-              if (typeof window.onAutoMixTriggered === 'function') {
-                window.onAutoMixTriggered();
-              }
+            const remaining = dur - cur;
+            const threshold = window.autoMixDjInstance.durationSec || 6.0;
+
+            if (dur > 20 && remaining <= threshold && remaining > 0.5) {
+              automixTriggeredForTrack = true;
+              console.log(`[EclipseBridge] AutoMix triggered (${remaining.toFixed(1)}s remaining). Initiating beat crossfade...`);
+              
+              // Fade out current audio smoothly
+              const startVol = nativeAudio.volume;
+              const fadeInterval = setInterval(() => {
+                if (nativeAudio.volume > 0.1) {
+                  nativeAudio.volume = Math.max(0, nativeAudio.volume - 0.15);
+                } else {
+                  clearInterval(fadeInterval);
+                  nativeAudio.volume = startVol;
+                  // Advance to next song seamlessly
+                  if (typeof window._eclipsePlayNext === 'function') {
+                    window._eclipsePlayNext();
+                  } else if (typeof playNext === 'function') {
+                    playNext();
+                  }
+                }
+              }, 400);
             }
           });
         }
@@ -138,25 +162,52 @@
           limit: 50,
           wifiOnly: true
         });
+
+        // Trigger smart download sync if library is populated
+        if (typeof state !== 'undefined' && Array.isArray(state.favorites) && state.favorites.length > 0) {
+          const plan = window.smartDownloadManagerInstance.planDownloads(state.favorites, (track) => {
+            return track && track.isCached;
+          });
+          console.log('[EclipseBridge] SmartDownload plan created for', plan.length, 'tracks');
+        }
         console.log('[EclipseBridge] SmartDownloadManager initialized.');
       } catch (err) {
         console.warn('[EclipseBridge] SmartDownloadManager init error:', err.message);
       }
     }
 
-    // 6. Hook into Storage Manager API for Settings view
+    // 6. Hook into Storage Manager API for Settings view (Clear & Stats)
     const btnStorageClear = document.getElementById('btn-open-clear-cache');
     if (btnStorageClear && !btnStorageClear._hasStorageHook) {
       btnStorageClear._hasStorageHook = true;
       btnStorageClear.addEventListener('click', async () => {
         try {
-          const authQuery = token ? `?token=${encodeURIComponent(token)}` : '';
-          const res = await fetch(`${apiBase}/api/storage/stats${authQuery}`);
-          const data = await res.json();
-          if (data && data.success) {
-            console.log('[EclipseBridge] Storage usage:', data.formattedTotal || `${data.totalBytes || 0} bytes`);
+          const authHeaders = {
+            'X-Muriel-Token': token
+          };
+          const queryToken = token ? `?t=${encodeURIComponent(token)}&token=${encodeURIComponent(token)}` : '';
+          
+          // Clear temporary audio/image cache
+          const clearRes = await fetch(`${apiBase}/api/storage/clear${queryToken}`, {
+            method: 'POST',
+            headers: authHeaders
+          });
+          const clearData = await clearRes.json();
+
+          // Refresh storage stats
+          const statsRes = await fetch(`${apiBase}/api/storage/stats${queryToken}`, {
+            headers: authHeaders
+          });
+          const statsData = await statsRes.json();
+          if (statsData && statsData.success) {
+            console.log('[EclipseBridge] Cache cleared. Remaining storage:', statsData.formattedTotal || `${statsData.totalBytes || 0} bytes`);
+            if (typeof showToast === 'function') {
+              showToast(`Đã dọn dẹp bộ nhớ đệm: ${statsData.formattedTotal || '0 B'}`);
+            }
           }
-        } catch (_) {}
+        } catch (err) {
+          console.warn('[EclipseBridge] Storage operation error:', err.message);
+        }
       });
     }
 

@@ -4626,6 +4626,8 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
     state.currentTrack = track;
     try { mvController.onTrackChanged(track); } catch (_) {}
+    if (typeof window.updateEclipseMvTrack === 'function') { try { window.updateEclipseMvTrack(track); } catch (_) {} }
+    try { window.dispatchEvent(new CustomEvent('trackchanged', { detail: { track } })); } catch (_) {}
     emitPluginEvent('trackchange', track);
     state.currentTrackContext = context;
     state.currentTrackIndexInContext = startIndex;
@@ -8342,6 +8344,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   }
 
   async function playNext() {
+    if (typeof window !== 'undefined') window._eclipsePlayNext = playNext;
     if (syncState && syncState.active) return;
     if (state.queue.length === 0) return;
 
