@@ -9411,6 +9411,29 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (parsedUrl.pathname === '/api/storage/stats') {
+    try {
+      const stats = await storageManager.getStorageStats({ CACHE_DIR, THUMBNAILS_DIR, CUSTOM_LYRICS_DIR, LYRICS_DIR });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: true, ...stats }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+  }
+
+  if (parsedUrl.pathname === '/api/storage/clear' && req.method === 'POST') {
+    const type = (parsedUrl.query.type || 'audio').toString();
+    try {
+      const result = await storageManager.clearStorage(type, { CACHE_DIR, THUMBNAILS_DIR, CUSTOM_LYRICS_DIR, LYRICS_DIR });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: true, ...result }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+  }
+
 if (parsedUrl.pathname === '/api/ytm/login-url') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ success: true, loginUrl: ytmAuth.getLoginUrl() }));
