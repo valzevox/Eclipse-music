@@ -221,8 +221,24 @@ class YtmAuthManager {
     return this.getAccounts();
   }
 
+  getSanitizedAccount(account) {
+    if (!account) return null;
+    return {
+      id: account.id,
+      name: account.name,
+      handle: account.handle,
+      avatarUrl: account.avatarUrl,
+      isDefault: !!account.isDefault,
+      lastSync: account.lastSync
+    };
+  }
+
+  getSanitizedActiveAccount() {
+    return this.getSanitizedAccount(this.getDefaultAccount());
+  }
+
   getActiveAccount() {
-    return this.getDefaultAccount();
+    return this.getSanitizedActiveAccount();
   }
 
   async authenticateWithCookie(cookieString) {

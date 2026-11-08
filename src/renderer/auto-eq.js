@@ -151,6 +151,13 @@ class AutoEqManager {
   }
 
   /**
+   * List all available headphone profiles
+   */
+  listProfiles() {
+    return this.profiles;
+  }
+
+  /**
    * Search available headphone models
    */
   search(query = '') {
