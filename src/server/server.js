@@ -9473,11 +9473,11 @@ const server = http.createServer(async (req, res) => {
         if (typeof payload.qrData === 'string') {
           try { qrObj = { ...payload, ...JSON.parse(payload.qrData) }; } catch (_) {}
         }
-        const { transferId, secretKey, sourceServerUrl, transitEncrypted, directPayload } = qrObj;
+        const { transferId, secretKey, sourceServerUrl, transitEncrypted, directPayload, pin } = qrObj;
 
         // Case 1: Remote LAN peer claiming token generated on this PC server
         if (transitEncrypted) {
-          const encryptedAccount = qrTransfer.claimTransferSession(transferId, secretKey, { encryptForTransit: true });
+          const encryptedAccount = qrTransfer.claimTransferSession(transferId, secretKey, { encryptForTransit: true, pin });
           res.writeHead(200, { 'Content-Type': 'application/json' });
           return res.end(JSON.stringify({ success: true, encryptedAccount }));
         }
@@ -9488,7 +9488,7 @@ const server = http.createServer(async (req, res) => {
           account = qrTransfer.claimTransferSession(transferId, secretKey);
         } catch (localErr) {
           if (sourceServerUrl || directPayload) {
-            account = await qrTransfer.claimRemoteTransferSession(sourceServerUrl, transferId, secretKey, directPayload);
+            account = await qrTransfer.claimRemoteTransferSession(sourceServerUrl, transferId, secretKey, directPayload, pin);
           } else {
             throw localErr;
           }

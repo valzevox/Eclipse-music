@@ -142,14 +142,41 @@ class SmartDownloadManager {
         const currentTrack = this.queue.shift();
         this.emitStatus({ currentTrack });
 
+        // Create AbortController for active download to support mid-download cancellation
+        const downloadAbort = new AbortController();
+        this._activeDownloadAbort = downloadAbort;
+
+        // Active network watcher: continuously verifies network during active download
+        let networkPoller = null;
+        if (this.wifiOnly) {
+          networkPoller = setInterval(async () => {
+            try {
+              const onWifi = await checkWifi();
+              if (!onWifi && !downloadAbort.signal.aborted) {
+                downloadAbort.abort(new Error('network_switched_to_cellular'));
+              }
+            } catch (_) {}
+          }, 30);
+          if (networkPoller && typeof networkPoller.unref === 'function') networkPoller.unref();
+        }
+
         try {
           if (typeof downloadFn === 'function') {
-            await downloadFn(currentTrack);
+            await downloadFn(currentTrack, { signal: downloadAbort.signal });
           }
           this.downloaded++;
           this.emitStatus({ downloaded: this.downloaded, total: this.total });
         } catch (err) {
+          if (downloadAbort.signal.aborted || err.message === 'network_switched_to_cellular' || err.name === 'AbortError') {
+            // Restore track to front of queue so progress is not lost
+            this.queue.unshift(currentTrack);
+            this.emitStatus({ pausedReason: 'network_switched_to_cellular' });
+            return { downloaded: this.downloaded, total: this.total, pausedReason: 'network_switched_to_cellular' };
+          }
           console.warn('[SmartDownloads] Failed to cache track:', currentTrack?.title, err.message);
+        } finally {
+          if (networkPoller) clearInterval(networkPoller);
+          this._activeDownloadAbort = null;
         }
 
         // Brief delay between downloads to prevent YouTube throttling
