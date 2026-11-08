@@ -11,40 +11,105 @@ const electronSafeStorage = (typeof process !== 'undefined' && process.versions 
 class YtmAuthManager {
   constructor(dataDir, vaultProvider = null) {
     this.dataDir = dataDir;
-    this.vaultProvider = vaultProvider;
+    this.vaultProvider = vaultProvider || (typeof globalThis.__eclipseHardwareVault === 'function' ? globalThis.__eclipseHardwareVault('ytm') : (typeof globalThis.__murielVault === 'function' ? globalThis.__murielVault('ytm_master_key') : null));
     this.storagePath = path.join(dataDir, 'ytm-accounts.json');
     this.encStoragePath = path.join(dataDir, 'ytm-accounts.enc');
+    this.masterKeyPath = path.join(dataDir, '.ytm-master-key.bin');
     this.accounts = []; // Array of { id, name, handle, avatarUrl, cookie, isDefault, lastSync }
     this.activeClient = null;
+    this._cachedMasterKey = null;
     this.loadAccounts();
   }
 
-  _encryptData(plainText) {
-    if (electronSafeStorage && typeof electronSafeStorage.isEncryptionAvailable === 'function' && electronSafeStorage.isEncryptionAvailable()) {
-      return { enc: true, type: 'safeStorage', data: electronSafeStorage.encryptString(plainText).toString('base64') };
+  _canUseSafeStorage() {
+    try {
+      return !!(electronSafeStorage && typeof electronSafeStorage.isEncryptionAvailable === 'function' && electronSafeStorage.isEncryptionAvailable() && (process.platform !== 'linux' || typeof electronSafeStorage.getSelectedStorageBackend !== 'function' || electronSafeStorage.getSelectedStorageBackend() !== 'basic_text'));
+    } catch (_) {
+      return false;
     }
-    // AES-256-GCM hardware/machine bound fallback
-    const key = crypto.createHash('sha256').update(this.dataDir + '::eclipse-ytm-vault').digest();
+  }
+
+  _getOrCreateMasterKey() {
+    if (this._cachedMasterKey && this._cachedMasterKey.length === 32) return this._cachedMasterKey;
+
+    // 1. Hardware/Platform Vault Provider (Android Keystore / iOS Keychain / Custom Vault)
+    if (this.vaultProvider && typeof this.vaultProvider.read === 'function' && typeof this.vaultProvider.write === 'function') {
+      try {
+        const existing = this.vaultProvider.read();
+        if (existing && typeof existing.keyHex === 'string' && /^[0-9a-f]{64}$/i.test(existing.keyHex)) {
+          this._cachedMasterKey = Buffer.from(existing.keyHex, 'hex');
+          return this._cachedMasterKey;
+        }
+      } catch (_) {}
+      const newKey = crypto.randomBytes(32);
+      this.vaultProvider.write({ keyHex: newKey.toString('hex'), createdAt: Date.now() });
+      this._cachedMasterKey = Buffer.from(newKey.toString('hex'), 'hex');
+      return this._cachedMasterKey;
+    }
+
+    fs.mkdirSync(this.dataDir, { recursive: true });
+
+    // 2. OS Keychain / DPAPI via Electron safeStorage wrapping a random 256-bit key
+    if (this._canUseSafeStorage()) {
+      if (fs.existsSync(this.masterKeyPath)) {
+        try {
+          const raw = fs.readFileSync(this.masterKeyPath);
+          const unwrappedHex = electronSafeStorage.decryptString(raw).trim();
+          if (/^[0-9a-f]{64}$/i.test(unwrappedHex)) {
+            this._cachedMasterKey = Buffer.from(unwrappedHex, 'hex');
+            return this._cachedMasterKey;
+          }
+        } catch (_) {}
+      }
+      const newKey = crypto.randomBytes(32);
+      const wrapped = electronSafeStorage.encryptString(newKey.toString('hex'));
+      fs.writeFileSync(this.masterKeyPath, wrapped, { mode: 0o600 });
+      this._cachedMasterKey = newKey;
+      return this._cachedMasterKey;
+    }
+
+    // 3. CSPRNG 256-bit random key file (0o600 permissions) when running in headless/Node environment without Electron
+    if (fs.existsSync(this.masterKeyPath)) {
+      try {
+        const rawHex = fs.readFileSync(this.masterKeyPath, 'utf8').trim();
+        if (/^[0-9a-f]{64}$/i.test(rawHex)) {
+          this._cachedMasterKey = Buffer.from(rawHex, 'hex');
+          return this._cachedMasterKey;
+        }
+      } catch (_) {}
+    }
+    const newKey = crypto.randomBytes(32);
+    fs.writeFileSync(this.masterKeyPath, newKey.toString('hex'), { encoding: 'utf8', mode: 0o600 });
+    this._cachedMasterKey = Buffer.from(newKey.toString('hex'), 'hex');
+    return this._cachedMasterKey;
+  }
+
+  _encryptData(plainText) {
+    const key = this._getOrCreateMasterKey();
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
     let encrypted = cipher.update(plainText, 'utf8', 'hex');
     encrypted += cipher.final('hex');
     const authTag = cipher.getAuthTag().toString('hex');
-    return { enc: true, type: 'aes256', iv: iv.toString('hex'), tag: authTag, data: encrypted };
+    return { enc: true, v: 2, type: 'aes-256-gcm', iv: iv.toString('hex'), tag: authTag, data: encrypted };
   }
 
   _decryptData(payload) {
     if (!payload || !payload.enc) return null;
-    if (payload.type === 'safeStorage' && electronSafeStorage) {
-      return electronSafeStorage.decryptString(Buffer.from(payload.data, 'base64'));
-    }
-    if (payload.type === 'aes256') {
-      const key = crypto.createHash('sha256').update(this.dataDir + '::eclipse-ytm-vault').digest();
-      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(payload.iv, 'hex'));
-      decipher.setAuthTag(Buffer.from(payload.tag, 'hex'));
-      let decrypted = decipher.update(payload.data, 'hex', 'utf8');
-      decrypted += decipher.final('utf8');
-      return decrypted;
+    try {
+      if (payload.type === 'safeStorage' && this._canUseSafeStorage()) {
+        return electronSafeStorage.decryptString(Buffer.from(payload.data, 'base64'));
+      }
+      if (payload.type === 'aes-256-gcm' || payload.type === 'aes256') {
+        const key = this._getOrCreateMasterKey();
+        const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(payload.iv, 'hex'));
+        decipher.setAuthTag(Buffer.from(payload.tag, 'hex'));
+        let decrypted = decipher.update(payload.data, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+      }
+    } catch (_) {
+      return null;
     }
     return null;
   }
@@ -57,20 +122,27 @@ class YtmAuthManager {
         const parsed = JSON.parse(raw);
         const decryptedStr = this._decryptData(parsed);
         if (decryptedStr) {
-          this.accounts = JSON.parse(decryptedStr);
-          if (!Array.isArray(this.accounts)) this.accounts = [];
-          return;
+          const loaded = JSON.parse(decryptedStr);
+          if (Array.isArray(loaded)) {
+            this.accounts = loaded;
+            // Clean up leftover plaintext file only after verified decrypt
+            if (fs.existsSync(this.storagePath)) {
+              try { fs.unlinkSync(this.storagePath); } catch (_) {}
+            }
+            return;
+          }
         }
       }
 
-      // 2. Fallback to migration from old plaintext json
+      // 2. Safe migration from legacy plaintext json (only unlink after verified encrypted round-trip)
       if (fs.existsSync(this.storagePath)) {
         const raw = fs.readFileSync(this.storagePath, 'utf8');
-        this.accounts = JSON.parse(raw);
-        if (!Array.isArray(this.accounts)) this.accounts = [];
-        // Immediately migrate to encrypted and delete unencrypted file
-        this.saveAccounts();
-        try { fs.unlinkSync(this.storagePath); } catch (_) {}
+        const parsed = JSON.parse(raw);
+        this.accounts = Array.isArray(parsed) ? parsed : [];
+        const migratedOk = this.saveAccounts();
+        if (migratedOk && fs.existsSync(this.encStoragePath)) {
+          try { fs.unlinkSync(this.storagePath); } catch (_) {}
+        }
       }
     } catch (e) {
       logger.log('warn', `ytm-auth: Failed to load accounts: ${e.message}`);
@@ -79,17 +151,37 @@ class YtmAuthManager {
   }
 
   saveAccounts() {
+    const tmpPath = `${this.encStoragePath}.tmp`;
     try {
       fs.mkdirSync(this.dataDir, { recursive: true });
       const plainStr = JSON.stringify(this.accounts, null, 2);
       const encryptedPayload = this._encryptData(plainStr);
-      fs.writeFileSync(this.encStoragePath, JSON.stringify(encryptedPayload), 'utf8');
-      // Ensure plaintext json does not persist on disk
+      const serialized = JSON.stringify(encryptedPayload);
+
+      // Verify round-trip decryption before committing to disk
+      const verifyDecrypted = this._decryptData(JSON.parse(serialized));
+      if (verifyDecrypted !== plainStr) {
+        throw new Error('Encrypted round-trip verification failed');
+      }
+
+      fs.writeFileSync(tmpPath, serialized, { encoding: 'utf8', mode: 0o600 });
+      fs.renameSync(tmpPath, this.encStoragePath);
+
+      // Verify file on disk can be decrypted before removing any legacy plaintext file
+      const diskRaw = fs.readFileSync(this.encStoragePath, 'utf8');
+      const diskDecrypted = this._decryptData(JSON.parse(diskRaw));
+      if (diskDecrypted !== plainStr) {
+        throw new Error('Disk encrypted file verification failed');
+      }
+
       if (fs.existsSync(this.storagePath)) {
         try { fs.unlinkSync(this.storagePath); } catch (_) {}
       }
+      return true;
     } catch (e) {
+      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (_) {}
       logger.log('error', `ytm-auth: Failed to save accounts: ${e.message}`);
+      return false;
     }
   }
 

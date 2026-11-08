@@ -6,6 +6,7 @@ class SmartDownloadManager {
     this.enabled = options.enabled ?? false;
     this.limit = options.limit || 50; // 25, 50, or 100
     this.wifiOnly = options.wifiOnly ?? true;
+    this.delayMs = typeof options.delayMs === 'number' ? options.delayMs : 1500;
     this.inProgress = false;
     this.queue = [];
     this.downloaded = 0;
@@ -120,12 +121,15 @@ class SmartDownloadManager {
         }
 
         // Brief delay between downloads to prevent YouTube throttling
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        if (this.delayMs > 0) {
+          await new Promise(resolve => setTimeout(resolve, this.delayMs));
+        }
       }
     } finally {
       this.inProgress = false;
       this.emitStatus({ inProgress: false, completed: true });
     }
+    return { downloaded: this.downloaded, total: this.total };
   }
 }
 

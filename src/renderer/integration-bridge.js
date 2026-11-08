@@ -6,6 +6,9 @@
     if (typeof window !== 'undefined' && window.electronAPI && window.electronAPI.serverPort) {
       return `http://127.0.0.1:${window.electronAPI.serverPort}`;
     }
+    if (typeof window !== 'undefined' && window.EclipseCore && typeof window.EclipseCore.base === 'function') {
+      return window.EclipseCore.base();
+    }
     if (typeof state !== 'undefined' && state && state.serverPort) {
       return `http://127.0.0.1:${state.serverPort}`;
     }
@@ -16,10 +19,24 @@
     if (typeof window !== 'undefined' && window.electronAPI && window.electronAPI.serverToken) {
       return window.electronAPI.serverToken;
     }
+    if (typeof window !== 'undefined' && window.EclipseCore && window.EclipseCore.state && window.EclipseCore.state.serverToken) {
+      return window.EclipseCore.state.serverToken;
+    }
     if (typeof state !== 'undefined' && state && state.serverToken) {
       return state.serverToken;
     }
     return '';
+  }
+
+  function getCoreState() {
+    if (typeof window !== 'undefined' && window.EclipseCore && window.EclipseCore.state) {
+      return window.EclipseCore.state;
+    }
+    if (typeof window !== 'undefined' && window.MurielCore && window.MurielCore.state) {
+      return window.MurielCore.state;
+    }
+    if (typeof state !== 'undefined') return state;
+    return null;
   }
 
   function initEclipsePhasesBridge() {
@@ -37,12 +54,11 @@
           apiBase: apiBase
         });
 
-        // Set initial track if available
-        if (typeof state !== 'undefined' && state.currentTrack) {
-          window.eclipseMvPlayerInstance.setTrack(state.currentTrack);
+        const coreSt = getCoreState();
+        if (coreSt && coreSt.currentTrack) {
+          window.eclipseMvPlayerInstance.setTrack(coreSt.currentTrack);
         }
 
-        // Sync track changes from global playback state
         window.addEventListener('trackchanged', (e) => {
           if (e.detail && e.detail.track) {
             window.eclipseMvPlayerInstance.setTrack(e.detail.track);
@@ -82,7 +98,7 @@
       }
     }
 
-    // 3. Phase 7: AutoMix DJ (Real Crossfade with Auxiliary Incoming Audio)
+    // 3. Phase 7: AutoMix DJ (Two-Source Equal-Power Crossfade with Auxiliary Incoming Audio)
     if (typeof window.AutoMixDJ !== 'undefined') {
       try {
         window.autoMixDjInstance = new window.AutoMixDJ({
@@ -91,15 +107,42 @@
           mode: 'equal_power',
           bpm: 120
         });
-        console.log('[EclipseBridge] AutoMixDJ initialized with Equal-Power crossfade.');
+
+        let auxAudio = document.getElementById('eclipse-aux-audio');
+        if (!auxAudio && typeof document !== 'undefined' && document.body) {
+          auxAudio = document.createElement('audio');
+          auxAudio.id = 'eclipse-aux-audio';
+          auxAudio.preload = 'auto';
+          auxAudio.style.display = 'none';
+          document.body.appendChild(auxAudio);
+        }
+        const coreSt = getCoreState();
+        if (coreSt && auxAudio) coreSt.secondaryAudio = auxAudio;
+
+        console.log('[EclipseBridge] AutoMixDJ initialized with dual-source Equal-Power crossfade.');
 
         let automixTriggeredForTrack = false;
         window.addEventListener('trackchanged', () => {
           automixTriggeredForTrack = false;
         });
 
-        if (nativeAudio) {
-          nativeAudio.addEventListener('timeupdate', () => {
+        async function resolveNextTrackStreamUrl(nextTrack) {
+          if (!nextTrack) return '';
+          if (nextTrack._preloadedStreamUrl) return nextTrack._preloadedStreamUrl;
+          const qFallback = encodeURIComponent(nextTrack.searchQuery || ((nextTrack.artist ? nextTrack.artist + ' - ' : '') + (nextTrack.title || '')));
+          const tkn = getInternalApiToken();
+          const url = `${getInternalApiBase()}/api/stream-info?id=${encodeURIComponent(nextTrack.id || '')}&url=${encodeURIComponent(nextTrack.url || '')}&platform=${encodeURIComponent(nextTrack.platform || 'ytmusic')}&title=${encodeURIComponent(nextTrack.title || '')}&artist=${encodeURIComponent(nextTrack.artist || '')}&duration=${encodeURIComponent(nextTrack.duration || 0)}&q=${qFallback}&token=${encodeURIComponent(tkn)}&t=${encodeURIComponent(tkn)}`;
+          const res = await fetch(url, { headers: { 'X-Eclipse-Token': tkn, 'X-Muriel-Token': tkn } });
+          const data = await res.json();
+          if (data && data.success && (data.proxyUrl || data.streamUrl)) {
+            nextTrack._preloadedStreamUrl = data.proxyUrl || data.streamUrl;
+            return nextTrack._preloadedStreamUrl;
+          }
+          return '';
+        }
+
+        if (nativeAudio && auxAudio) {
+          nativeAudio.addEventListener('timeupdate', async () => {
             if (!window.autoMixDjInstance || !window.autoMixDjInstance.enabled || window.autoMixDjInstance.isCrossfading || automixTriggeredForTrack) return;
             const dur = nativeAudio.duration;
             const cur = nativeAudio.currentTime;
@@ -108,28 +151,27 @@
 
             if (dur > 20 && remaining <= threshold && remaining > 0.8) {
               automixTriggeredForTrack = true;
-              console.log(`[EclipseBridge] AutoMix executing beat crossfade (${remaining.toFixed(1)}s remaining)...`);
+              const st = getCoreState();
+              const nextTrack = (st && Array.isArray(st.queue) && st.queueIndex + 1 < st.queue.length)
+                ? st.queue[st.queueIndex + 1]
+                : null;
 
-              // Smooth volume transition using equal-power curve
-              const durationMs = threshold * 1000;
-              const startTime = Date.now();
-              const initialVol = nativeAudio.volume || 1.0;
-
-              const xfadeInterval = setInterval(() => {
-                const elapsed = Date.now() - startTime;
-                const progress = Math.min(1.0, elapsed / durationMs);
-                const gains = window.autoMixDjInstance.computeGainValues(progress);
-
-                nativeAudio.volume = Math.max(0, initialVol * gains.fadeOutGain);
-
-                if (progress >= 0.95) {
-                  clearInterval(xfadeInterval);
-                  nativeAudio.volume = initialVol;
-                  if (typeof window._eclipsePlayNext === 'function') {
-                    window._eclipsePlayNext();
+              if (nextTrack) {
+                try {
+                  const nextStreamUrl = await resolveNextTrackStreamUrl(nextTrack);
+                  if (nextStreamUrl) {
+                    auxAudio.src = nextStreamUrl;
+                    auxAudio.currentTime = 0;
                   }
-                }
-              }, 60);
+                } catch (_) {}
+              }
+
+              console.log(`[EclipseBridge] AutoMix executing dual-source crossfade (${remaining.toFixed(1)}s remaining)...`);
+              await window.autoMixDjInstance.executeCrossfade(nativeAudio, auxAudio, threshold);
+              try { auxAudio.pause(); } catch (_) {}
+              if (typeof window._eclipsePlayNext === 'function') {
+                window._eclipsePlayNext();
+              }
             }
           });
         }
@@ -138,7 +180,7 @@
       }
     }
 
-    // 4. Phase 8: Listen Together P2P Room & Receipt
+    // 4. Phase 8: Listen Together P2P Room & Cross-Device QR Session Transfer
     if (typeof window.ListenTogetherRoom !== 'undefined') {
       try {
         window.listenTogetherRoomInstance = new window.ListenTogetherRoom();
@@ -148,7 +190,26 @@
       }
     }
 
-    // 5. Phase 6: Synced Lyrics Editor & Smart Downloads (Execution Sync)
+    window.claimQrSessionTransfer = async function (qrInput) {
+      const parsed = typeof qrInput === 'string' ? JSON.parse(qrInput) : (qrInput || {});
+      const tkn = getInternalApiToken();
+      const res = await fetch(`${getInternalApiBase()}/api/ytm/session-transfer/claim?t=${encodeURIComponent(tkn)}&token=${encodeURIComponent(tkn)}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Eclipse-Token': tkn,
+          'X-Muriel-Token': tkn
+        },
+        body: JSON.stringify(parsed)
+      });
+      const data = await res.json();
+      if (!data || !data.success) {
+        throw new Error((data && data.error) || 'QR session transfer failed');
+      }
+      return data.account;
+    };
+
+    // 5. Phase 6: Synced Lyrics Editor & Smart Downloads (Real Batch Execution)
     if (typeof window.SyncedLyricsEditor !== 'undefined') {
       try {
         window.syncedLyricsEditorInstance = new window.SyncedLyricsEditor();
@@ -156,6 +217,45 @@
       } catch (err) {
         console.warn('[EclipseBridge] SyncedLyricsEditor init error:', err.message);
       }
+    }
+
+    if (typeof window.downloadTrackBatch !== 'function') {
+      window.downloadTrackBatch = async function (tracks) {
+        const list = Array.isArray(tracks) ? tracks : [];
+        if (list.length === 0) return { done: [], failed: [] };
+        const tkn = getInternalApiToken();
+        const base = getInternalApiBase();
+
+        const downloadOne = async (t) => {
+          const thumbUrl = t.thumbnail || t.cover || '';
+          const dlUrl = `${base}/api/download?url=${encodeURIComponent(t.url || '')}&id=${encodeURIComponent(t.id || '')}&title=${encodeURIComponent(t.title || '')}&artist=${encodeURIComponent(t.artist || '')}&format=m4a&quality=high&thumbnail=${encodeURIComponent(thumbUrl)}&token=${encodeURIComponent(tkn)}&t=${encodeURIComponent(tkn)}`;
+          const res = await fetch(dlUrl, { headers: { 'X-Eclipse-Token': tkn, 'X-Muriel-Token': tkn } });
+          const data = await res.json();
+          if (!data || !data.success) {
+            const err = new Error((data && data.error) || 'Failed to download track');
+            err.status = res.status;
+            throw err;
+          }
+          t.isCached = true;
+          return data;
+        };
+
+        if (window.MurielDownloadBatch && typeof window.MurielDownloadBatch.runDownloadBatch === 'function') {
+          return await window.MurielDownloadBatch.runDownloadBatch(list, downloadOne, { concurrency: 2, retries: 2, finalPass: false });
+        }
+
+        const done = [];
+        const failed = [];
+        for (const item of list) {
+          try {
+            await downloadOne(item);
+            done.push(item);
+          } catch (error) {
+            failed.push({ item, error });
+          }
+        }
+        return { done, failed };
+      };
     }
 
     if (typeof window.SmartDownloadManager !== 'undefined') {
@@ -166,11 +266,14 @@
           wifiOnly: true
         });
 
-        // Smart download runner with cache detection
         window.runSmartDownloadsSync = async function () {
-          if (!window.smartDownloadManagerInstance) return;
-          const favs = (typeof state !== 'undefined' && Array.isArray(state.favorites)) ? state.favorites : [];
-          if (favs.length === 0) return;
+          if (!window.smartDownloadManagerInstance || !window.smartDownloadManagerInstance.enabled) return { downloaded: 0 };
+          const st = getCoreState();
+          let favs = (st && Array.isArray(st.favorites)) ? st.favorites : [];
+          if (favs.length === 0) {
+            try { favs = JSON.parse(localStorage.getItem('devsize_favorites') || '[]'); } catch (_) { favs = []; }
+          }
+          if (favs.length === 0) return { downloaded: 0 };
 
           const toDownload = window.smartDownloadManagerInstance.planDownloads(favs, (id, track) => {
             if (track && track.isCached) return true;
@@ -178,46 +281,40 @@
             return false;
           });
 
-          console.log(`[EclipseBridge] SmartDownload planned ${toDownload.length} uncached tracks.`);
-
           if (toDownload.length > 0 && typeof window.downloadTrackBatch === 'function') {
-            window.smartDownloadManagerInstance.startSync(async (track) => {
-              return await window.downloadTrackBatch([track]);
-            }, () => navigator.onLine);
+            return await window.smartDownloadManagerInstance.startSync(async (track) => {
+              const res = await window.downloadTrackBatch([track]);
+              if (res && res.failed && res.failed.length > 0) {
+                throw res.failed[0].error || new Error('Track download failed');
+              }
+              return res;
+            }, () => (typeof navigator !== 'undefined' ? navigator.onLine !== false : true));
           }
+          return { downloaded: 0 };
         };
 
-        console.log('[EclipseBridge] SmartDownloadManager initialized.');
+        window.addEventListener('muriel:library', () => {
+          window.runSmartDownloadsSync().catch(() => {});
+        });
+        setTimeout(() => {
+          window.runSmartDownloadsSync().catch(() => {});
+        }, 3000);
+
+        console.log('[EclipseBridge] SmartDownloadManager initialized and bound to library events.');
       } catch (err) {
         console.warn('[EclipseBridge] SmartDownloadManager init error:', err.message);
       }
     }
 
-    // 6. Safe Storage Manager Clear Cache (Only on Modal Confirm button)
-    const btnConfirmClear = document.getElementById('btn-confirm-clear-cache');
-    if (btnConfirmClear && !btnConfirmClear._hasStorageConfirmHook) {
-      btnConfirmClear._hasStorageConfirmHook = true;
-      btnConfirmClear.addEventListener('click', async () => {
-        try {
-          const authHeaders = { 'X-Muriel-Token': token };
-          const queryToken = token ? `?t=${encodeURIComponent(token)}&token=${encodeURIComponent(token)}` : '';
-          
-          const clearRes = await fetch(`${apiBase}/api/storage/clear${queryToken}`, {
-            method: 'POST',
-            headers: authHeaders
-          });
-          
-          if (clearRes.ok) {
-            const clearData = await clearRes.json();
-            if (clearData && clearData.success) {
-              console.log('[EclipseBridge] Verified cache cleared:', clearData);
-            }
-          }
-        } catch (err) {
-          console.warn('[EclipseBridge] Safe clear cache error:', err.message);
-        }
+    // 6. Storage Manager Stats Helper (No duplicate clear listener on #btn-confirm-clear-cache; app.js owns the clear action)
+    window.refreshEclipseStorageStats = async function () {
+      const tkn = getInternalApiToken();
+      const res = await fetch(`${getInternalApiBase()}/api/storage/stats?t=${encodeURIComponent(tkn)}&token=${encodeURIComponent(tkn)}`, {
+        headers: { 'X-Eclipse-Token': tkn, 'X-Muriel-Token': tkn }
       });
-    }
+      if (!res.ok) return null;
+      return await res.json();
+    };
 
     console.log('[EclipseBridge] Phases 1-8 integration bridge ready.');
   }

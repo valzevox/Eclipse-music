@@ -8862,8 +8862,12 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
 
+  const parsedUrl = url.parse(req.url, true);
+  const pathname = parsedUrl.pathname;
+  const isLanTransferClaim = pathname === '/api/ytm/session-transfer/claim' && (req.method === 'POST' || req.method === 'OPTIONS');
+
   const requestOrigin = req.headers.origin;
-  if (requestOrigin && requestOrigin !== 'null') {
+  if (!isLanTransferClaim && requestOrigin && requestOrigin !== 'null') {
     let originAllowed = false;
     try {
       const originUrl = new URL(requestOrigin);
@@ -8878,7 +8882,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   const hostName = (req.headers.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
-  if (hostName && hostName !== '127.0.0.1' && hostName !== 'localhost' && hostName !== '::1') {
+  if (!isLanTransferClaim && hostName && hostName !== '127.0.0.1' && hostName !== 'localhost' && hostName !== '::1') {
     res.writeHead(403, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ success: false, error: 'forbidden' }));
   }
@@ -8887,9 +8891,6 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204);
     return res.end();
   }
-
-  const parsedUrl = url.parse(req.url, true);
-  const pathname = parsedUrl.pathname;
 
   if (pathname.startsWith('/api/lastfm/')) { handleLastFmRoute(req, res, pathname); return; }
 
@@ -9468,13 +9469,39 @@ const server = http.createServer(async (req, res) => {
     req.on('end', async () => {
       try {
         const payload = JSON.parse(body || '{}');
-        const account = qrTransfer.claimTransferSession(payload.transferId, payload.secretKey);
-        // Automatically save into local ytmAuth
+        let qrObj = payload;
+        if (typeof payload.qrData === 'string') {
+          try { qrObj = { ...payload, ...JSON.parse(payload.qrData) }; } catch (_) {}
+        }
+        const { transferId, secretKey, sourceServerUrl, transitEncrypted } = qrObj;
+
+        // Case 1: Remote LAN peer claiming token generated on this PC server
+        if (transitEncrypted) {
+          const encryptedAccount = qrTransfer.claimTransferSession(transferId, secretKey, { encryptForTransit: true });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ success: true, encryptedAccount }));
+        }
+
+        // Case 2: Local client claiming from a remote sourceServerUrl or local pendingTransfers
+        let account = null;
+        try {
+          account = qrTransfer.claimTransferSession(transferId, secretKey);
+        } catch (localErr) {
+          if (sourceServerUrl) {
+            account = await qrTransfer.claimRemoteTransferSession(sourceServerUrl, transferId, secretKey);
+          } else {
+            throw localErr;
+          }
+        }
+
+        let sanitized = null;
         if (account && account.cookie) {
-          await ytmAuth.authenticateWithCookie(account.cookie);
+          sanitized = await ytmAuth.authenticateWithCookie(account.cookie);
+        } else if (account) {
+          sanitized = ytmAuth.getSanitizedAccount(account);
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ success: true, account }));
+        return res.end(JSON.stringify({ success: true, account: sanitized }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ success: false, error: e.message }));
@@ -10061,7 +10088,7 @@ function startServer(port = PORT) {
     return Promise.resolve(address && typeof address === 'object' ? address.port : port);
   }
   return new Promise((resolve, reject) => {
-    server.listen(port, '127.0.0.1', () => {
+    server.listen(port, '0.0.0.0', () => {
       const p = server.address().port;
       currentActivePort = p;
       console.log(`devsize internal server running on http://127.0.0.1:${p}`);
@@ -10076,7 +10103,7 @@ function startServer(port = PORT) {
       resolve(p);
     }).on('error', (err) => {
       if (err.code === 'EADDRINUSE') {
-        server.listen(0, '127.0.0.1', () => {
+        server.listen(0, '0.0.0.0', () => {
           const p = server.address().port;
           currentActivePort = p;
           console.log(`devsize internal server running on fallback port http://127.0.0.1:${p}`);

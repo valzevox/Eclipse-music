@@ -8344,7 +8344,19 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   }
 
   async function playNext() {
-    if (typeof window !== 'undefined') window._eclipsePlayNext = playNext;
+    if (typeof window !== 'undefined') {
+    window._eclipsePlayNext = playNext;
+    window.EclipseCore = window.MurielCore = {
+      state,
+      audio: el.nativeAudio,
+      base: () => `http://127.0.0.1:${state.serverPort}`,
+      getFavorites: () => Array.isArray(state.favorites) ? state.favorites : [],
+      getQueue: () => Array.isArray(state.queue) ? state.queue : [],
+      getQueueIndex: () => typeof state.queueIndex === 'number' ? state.queueIndex : -1,
+      getNextTrack: () => (Array.isArray(state.queue) && state.queueIndex + 1 < state.queue.length) ? state.queue[state.queueIndex + 1] : null,
+      playNext: () => playNext()
+    };
+  }
     if (syncState && syncState.active) return;
     if (state.queue.length === 0) return;
 
@@ -8476,7 +8488,19 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     playTrack(state.queue[prevIdx]);
   }
 
-  if (typeof window !== 'undefined') window._eclipsePlayNext = playNext;
+  if (typeof window !== 'undefined') {
+    window._eclipsePlayNext = playNext;
+    window.EclipseCore = window.MurielCore = {
+      state,
+      audio: el.nativeAudio,
+      base: () => `http://127.0.0.1:${state.serverPort}`,
+      getFavorites: () => Array.isArray(state.favorites) ? state.favorites : [],
+      getQueue: () => Array.isArray(state.queue) ? state.queue : [],
+      getQueueIndex: () => typeof state.queueIndex === 'number' ? state.queueIndex : -1,
+      getNextTrack: () => (Array.isArray(state.queue) && state.queueIndex + 1 < state.queue.length) ? state.queue[state.queueIndex + 1] : null,
+      playNext: () => playNext()
+    };
+  }
 
   if (el.nativeAudio) {
     el.nativeAudio.addEventListener('volumechange', () => {
