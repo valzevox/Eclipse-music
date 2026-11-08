@@ -9397,6 +9397,20 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (parsedUrl.pathname === '/api/ytm/mv') {
+    const id = (parsedUrl.query.id || '').toString();
+    const title = (parsedUrl.query.title || '').toString();
+    const artist = (parsedUrl.query.artist || '').toString();
+    try {
+      const data = await ytmMv.resolveMusicVideo(id, title, artist);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: true, ...data }));
+    } catch (e) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+  }
+
 if (parsedUrl.pathname === '/api/ytm/login-url') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ success: true, loginUrl: ytmAuth.getLoginUrl() }));
