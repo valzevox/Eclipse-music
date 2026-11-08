@@ -29,7 +29,7 @@
     const token = getInternalApiToken();
     const nativeAudio = document.getElementById('native-audio') || document.querySelector('audio');
 
-    // 1. Phase 5: MV Player IFrame integration
+    // 1. Phase 5: MV Player IFrame integration (Unified Controller)
     if (typeof window.EclipseMvPlayer !== 'undefined') {
       try {
         window.eclipseMvPlayerInstance = new window.EclipseMvPlayer({
@@ -49,7 +49,6 @@
           }
         });
 
-        // Expose a helper to trigger from app.js or button clicks
         window.updateEclipseMvTrack = function (track) {
           if (window.eclipseMvPlayerInstance) {
             window.eclipseMvPlayerInstance.setTrack(track);
@@ -83,7 +82,7 @@
       }
     }
 
-    // 3. Phase 7: AutoMix DJ (Real Crossfade & Track Advance)
+    // 3. Phase 7: AutoMix DJ (Real Crossfade with Auxiliary Incoming Audio)
     if (typeof window.AutoMixDJ !== 'undefined') {
       try {
         window.autoMixDjInstance = new window.AutoMixDJ({
@@ -107,26 +106,30 @@
             const remaining = dur - cur;
             const threshold = window.autoMixDjInstance.durationSec || 6.0;
 
-            if (dur > 20 && remaining <= threshold && remaining > 0.5) {
+            if (dur > 20 && remaining <= threshold && remaining > 0.8) {
               automixTriggeredForTrack = true;
-              console.log(`[EclipseBridge] AutoMix triggered (${remaining.toFixed(1)}s remaining). Initiating beat crossfade...`);
-              
-              // Fade out current audio smoothly
-              const startVol = nativeAudio.volume;
-              const fadeInterval = setInterval(() => {
-                if (nativeAudio.volume > 0.1) {
-                  nativeAudio.volume = Math.max(0, nativeAudio.volume - 0.15);
-                } else {
-                  clearInterval(fadeInterval);
-                  nativeAudio.volume = startVol;
-                  // Advance to next song seamlessly
+              console.log(`[EclipseBridge] AutoMix executing beat crossfade (${remaining.toFixed(1)}s remaining)...`);
+
+              // Smooth volume transition using equal-power curve
+              const durationMs = threshold * 1000;
+              const startTime = Date.now();
+              const initialVol = nativeAudio.volume || 1.0;
+
+              const xfadeInterval = setInterval(() => {
+                const elapsed = Date.now() - startTime;
+                const progress = Math.min(1.0, elapsed / durationMs);
+                const gains = window.autoMixDjInstance.computeGainValues(progress);
+
+                nativeAudio.volume = Math.max(0, initialVol * gains.fadeOutGain);
+
+                if (progress >= 0.95) {
+                  clearInterval(xfadeInterval);
+                  nativeAudio.volume = initialVol;
                   if (typeof window._eclipsePlayNext === 'function') {
                     window._eclipsePlayNext();
-                  } else if (typeof playNext === 'function') {
-                    playNext();
                   }
                 }
-              }, 400);
+              }, 60);
             }
           });
         }
@@ -145,7 +148,7 @@
       }
     }
 
-    // 5. Phase 6: Synced Lyrics Editor & Smart Downloads
+    // 5. Phase 6: Synced Lyrics Editor & Smart Downloads (Execution Sync)
     if (typeof window.SyncedLyricsEditor !== 'undefined') {
       try {
         window.syncedLyricsEditorInstance = new window.SyncedLyricsEditor();
@@ -163,50 +166,55 @@
           wifiOnly: true
         });
 
-        // Trigger smart download sync if library is populated
-        if (typeof state !== 'undefined' && Array.isArray(state.favorites) && state.favorites.length > 0) {
-          const plan = window.smartDownloadManagerInstance.planDownloads(state.favorites, (track) => {
-            return track && track.isCached;
+        // Smart download runner with cache detection
+        window.runSmartDownloadsSync = async function () {
+          if (!window.smartDownloadManagerInstance) return;
+          const favs = (typeof state !== 'undefined' && Array.isArray(state.favorites)) ? state.favorites : [];
+          if (favs.length === 0) return;
+
+          const toDownload = window.smartDownloadManagerInstance.planDownloads(favs, (id, track) => {
+            if (track && track.isCached) return true;
+            if (typeof isTrackCachedLocally === 'function') return isTrackCachedLocally(id);
+            return false;
           });
-          console.log('[EclipseBridge] SmartDownload plan created for', plan.length, 'tracks');
-        }
+
+          console.log(`[EclipseBridge] SmartDownload planned ${toDownload.length} uncached tracks.`);
+
+          if (toDownload.length > 0 && typeof window.downloadTrackBatch === 'function') {
+            window.smartDownloadManagerInstance.startSync(async (track) => {
+              return await window.downloadTrackBatch([track]);
+            }, () => navigator.onLine);
+          }
+        };
+
         console.log('[EclipseBridge] SmartDownloadManager initialized.');
       } catch (err) {
         console.warn('[EclipseBridge] SmartDownloadManager init error:', err.message);
       }
     }
 
-    // 6. Hook into Storage Manager API for Settings view (Clear & Stats)
-    const btnStorageClear = document.getElementById('btn-open-clear-cache');
-    if (btnStorageClear && !btnStorageClear._hasStorageHook) {
-      btnStorageClear._hasStorageHook = true;
-      btnStorageClear.addEventListener('click', async () => {
+    // 6. Safe Storage Manager Clear Cache (Only on Modal Confirm button)
+    const btnConfirmClear = document.getElementById('btn-confirm-clear-cache');
+    if (btnConfirmClear && !btnConfirmClear._hasStorageConfirmHook) {
+      btnConfirmClear._hasStorageConfirmHook = true;
+      btnConfirmClear.addEventListener('click', async () => {
         try {
-          const authHeaders = {
-            'X-Muriel-Token': token
-          };
+          const authHeaders = { 'X-Muriel-Token': token };
           const queryToken = token ? `?t=${encodeURIComponent(token)}&token=${encodeURIComponent(token)}` : '';
           
-          // Clear temporary audio/image cache
           const clearRes = await fetch(`${apiBase}/api/storage/clear${queryToken}`, {
             method: 'POST',
             headers: authHeaders
           });
-          const clearData = await clearRes.json();
-
-          // Refresh storage stats
-          const statsRes = await fetch(`${apiBase}/api/storage/stats${queryToken}`, {
-            headers: authHeaders
-          });
-          const statsData = await statsRes.json();
-          if (statsData && statsData.success) {
-            console.log('[EclipseBridge] Cache cleared. Remaining storage:', statsData.formattedTotal || `${statsData.totalBytes || 0} bytes`);
-            if (typeof showToast === 'function') {
-              showToast(`Đã dọn dẹp bộ nhớ đệm: ${statsData.formattedTotal || '0 B'}`);
+          
+          if (clearRes.ok) {
+            const clearData = await clearRes.json();
+            if (clearData && clearData.success) {
+              console.log('[EclipseBridge] Verified cache cleared:', clearData);
             }
           }
         } catch (err) {
-          console.warn('[EclipseBridge] Storage operation error:', err.message);
+          console.warn('[EclipseBridge] Safe clear cache error:', err.message);
         }
       });
     }

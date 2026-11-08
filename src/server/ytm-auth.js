@@ -237,6 +237,10 @@ class YtmAuthManager {
     return this.getSanitizedAccount(this.getDefaultAccount());
   }
 
+  getRawActiveAccount() {
+    return this.getDefaultAccount();
+  }
+
   getActiveAccount() {
     return this.getSanitizedActiveAccount();
   }

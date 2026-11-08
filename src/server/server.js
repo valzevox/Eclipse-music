@@ -9450,8 +9450,8 @@ const server = http.createServer(async (req, res) => {
     req.on('end', () => {
       try {
         const payload = JSON.parse(body || '{}');
-        const activeAccount = ytmAuth.getActiveAccount() || payload.account || {};
-        const transfer = qrTransfer.createTransferPayload(activeAccount);
+        const rawAccount = (typeof ytmAuth.getRawActiveAccount === 'function' ? ytmAuth.getRawActiveAccount() : null) || payload.account || {};
+        const transfer = qrTransfer.createTransferPayload(rawAccount);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ success: true, ...transfer }));
       } catch (e) {

@@ -8476,6 +8476,8 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     playTrack(state.queue[prevIdx]);
   }
 
+  if (typeof window !== 'undefined') window._eclipsePlayNext = playNext;
+
   if (el.nativeAudio) {
     el.nativeAudio.addEventListener('volumechange', () => {
       if (!el.nativeAudio) return;
