@@ -231,12 +231,13 @@ async function getCharts(country = 'VN') {
 /**
  * Fetch Top Songs playlist tracks (e.g. Trending 20 or Top 100)
  */
-async function getChartPlaylistTracks(playlistId) {
+async function getChartPlaylistTracks(playlistId, country = 'VN') {
   const normId = playlistId.replace(/^VL/, '');
-  const cacheKey = `chart_pl_${normId}`;
+  const normCountry = (country || 'VN').toUpperCase();
+  const cacheKey = `chart_pl_${normCountry}_${normId}`;
 
   return await withCache(cacheKey, async () => {
-    const yt = await getInnertube('VN');
+    const yt = await getInnertube(normCountry);
     const pl = await yt.music.getPlaylist(normId);
 
     const tracks = (pl.items || []).map((t, idx) => ({

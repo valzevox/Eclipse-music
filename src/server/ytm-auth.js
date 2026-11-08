@@ -1,9 +1,9 @@
-﻿// ytm-auth.js — YouTube Music Authentication Engine (WebView Cookie Interceptor & InnerTube Session)
+// ytm-auth.js — YouTube Music Authentication Engine (WebView Cookie Interceptor & InnerTube Session)
 // Independent implementation under MIT License for Eclipse (PC & Mobile)
 const fs = require('fs');
 const path = require('path');
 const { Innertube } = require('youtubei.js');
-const logger = require('./logger');
+const logger = fs.existsSync(path.join(__dirname, 'logger.js')) ? require('./logger') : (fs.existsSync(path.join(__dirname, '../shared/logger.js')) ? require('../shared/logger') : console);
 
 class YtmAuthManager {
   constructor(dataDir, vaultProvider = null) {
@@ -210,6 +210,27 @@ class YtmAuthManager {
       logger.log('error', `ytm-auth: Failed to fetch library: ${e.message}`);
       return { success: false, error: e.message };
     }
+  }
+
+  // Backward-compatible method aliases for route controllers
+  getLoginUrl() {
+    return this.getGoogleLoginUrl();
+  }
+
+  listAccounts() {
+    return this.getAccounts();
+  }
+
+  getActiveAccount() {
+    return this.getDefaultAccount();
+  }
+
+  async authenticateWithCookie(cookieString) {
+    return this.addAccountFromCookie(cookieString);
+  }
+
+  switchAccount(id) {
+    return this.setDefaultAccount(id);
   }
 }
 

@@ -1,4 +1,4 @@
-﻿const http = require('http');
+const http = require('http');
 const https = require('https');
 const keepAliveHttpsAgent = new https.Agent({
   keepAlive: true,
@@ -19,6 +19,16 @@ const zlib = require('zlib');
 
 const PORT = 38472;
 const { DATA_DIR, CACHE_DIR, CUSTOM_LYRICS_DIR, LYRICS_DIR, THUMBNAILS_DIR, METADATA_PATH, LIBRARY_DIR, LIBRARY_PATH, ytDlpCommand, resolveDownloadDir, defaultDownloadDir, resolveBinary, clearBinaryCache, cookieJarHasYtLogin, findInPath } = require('../shared/platform');
+
+// Services for Phases 1-8
+const YtmAuthManager = require('./ytm-auth');
+const ytmAuth = new YtmAuthManager(DATA_DIR);
+const ytmCharts = require('./ytm-charts');
+const ytmArtistFull = require('./ytm-artist-full');
+const ytmDiscovery = require('./ytm-discovery');
+const ytmMv = require('./ytm-mv');
+const storageManager = require('./storage-manager');
+const qrTransfer = require('./qr-session-transfer');
 
 let currentActivePort = PORT;
 function getActiveServerPort() {
