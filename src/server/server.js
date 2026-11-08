@@ -9350,6 +9350,23 @@ const server = http.createServer(async (req, res) => {
   }
 
   // YouTube Music Cookie & Account Auth Handlers
+    if (parsedUrl.pathname === '/api/ytm/artist' || (parsedUrl.pathname === '/api/artist' && parsedUrl.query.id && /^UC[\w-]{22}$/.test(parsedUrl.query.id))) {
+    const artistId = parsedUrl.query.id || parsedUrl.query.browseId || '';
+    const country = (parsedUrl.query.country || 'VN').toString();
+    if (!artistId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: 'Missing artist browseId or channel ID' }));
+    }
+    try {
+      const profile = await ytmArtistFull.getArtistProfile(artistId, country);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: true, artist: profile }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+  }
+
   if (parsedUrl.pathname === '/api/ytm/login-url') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ success: true, loginUrl: ytmAuth.getLoginUrl() }));
