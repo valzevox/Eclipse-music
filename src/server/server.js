@@ -9451,7 +9451,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const payload = JSON.parse(body || '{}');
         const rawAccount = (typeof ytmAuth.getRawActiveAccount === 'function' ? ytmAuth.getRawActiveAccount() : null) || payload.account || {};
-        const transfer = qrTransfer.createTransferPayload(rawAccount);
+        const transfer = qrTransfer.createTransferPayload(rawAccount, getActiveServerPort());
         res.writeHead(200, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ success: true, ...transfer }));
       } catch (e) {

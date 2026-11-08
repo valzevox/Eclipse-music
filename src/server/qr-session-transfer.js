@@ -2,17 +2,32 @@
 // Part of Eclipse Music Player — MIT License
 
 const crypto = require('crypto');
+const os = require('os');
 
 const TRANSFER_TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const pendingTransfers = new Map();
 
+function getPrimaryLocalIp() {
+  const nets = os.networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === 'IPv4' && !net.internal) {
+        return net.address;
+      }
+    }
+  }
+  return '127.0.0.1';
+}
+
 /**
  * Generate secure session handoff payload and QR link
  */
-function createTransferPayload(accountData = {}) {
+function createTransferPayload(accountData = {}, port = 38472) {
   const transferId = crypto.randomBytes(16).toString('hex');
   const secretKey = crypto.randomBytes(24).toString('base64url');
   const expiresAt = Date.now() + TRANSFER_TOKEN_TTL_MS;
+  const hostIp = getPrimaryLocalIp();
+  const sourceServerUrl = `http://${hostIp}:${port}`;
 
   const payload = {
     transferId,
@@ -38,12 +53,14 @@ function createTransferPayload(accountData = {}) {
     transferId,
     secretKey,
     expiresAt,
+    sourceServerUrl,
     qrData: JSON.stringify({
       app: 'eclipse-music',
       action: 'session_transfer',
       transferId,
       secretKey,
-      v: 1
+      sourceServerUrl,
+      v: 2
     })
   };
 }

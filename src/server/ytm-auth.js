@@ -2,25 +2,75 @@
 // Independent implementation under MIT License for Eclipse (PC & Mobile)
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { Innertube } = require('youtubei.js');
 const logger = fs.existsSync(path.join(__dirname, 'logger.js')) ? require('./logger') : (fs.existsSync(path.join(__dirname, '../shared/logger.js')) ? require('../shared/logger') : console);
+
+const electronSafeStorage = (typeof process !== 'undefined' && process.versions && process.versions.electron) ? require('electron').safeStorage : null;
 
 class YtmAuthManager {
   constructor(dataDir, vaultProvider = null) {
     this.dataDir = dataDir;
     this.vaultProvider = vaultProvider;
     this.storagePath = path.join(dataDir, 'ytm-accounts.json');
+    this.encStoragePath = path.join(dataDir, 'ytm-accounts.enc');
     this.accounts = []; // Array of { id, name, handle, avatarUrl, cookie, isDefault, lastSync }
     this.activeClient = null;
     this.loadAccounts();
   }
 
+  _encryptData(plainText) {
+    if (electronSafeStorage && typeof electronSafeStorage.isEncryptionAvailable === 'function' && electronSafeStorage.isEncryptionAvailable()) {
+      return { enc: true, type: 'safeStorage', data: electronSafeStorage.encryptString(plainText).toString('base64') };
+    }
+    // AES-256-GCM hardware/machine bound fallback
+    const key = crypto.createHash('sha256').update(this.dataDir + '::eclipse-ytm-vault').digest();
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    let encrypted = cipher.update(plainText, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    const authTag = cipher.getAuthTag().toString('hex');
+    return { enc: true, type: 'aes256', iv: iv.toString('hex'), tag: authTag, data: encrypted };
+  }
+
+  _decryptData(payload) {
+    if (!payload || !payload.enc) return null;
+    if (payload.type === 'safeStorage' && electronSafeStorage) {
+      return electronSafeStorage.decryptString(Buffer.from(payload.data, 'base64'));
+    }
+    if (payload.type === 'aes256') {
+      const key = crypto.createHash('sha256').update(this.dataDir + '::eclipse-ytm-vault').digest();
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(payload.iv, 'hex'));
+      decipher.setAuthTag(Buffer.from(payload.tag, 'hex'));
+      let decrypted = decipher.update(payload.data, 'hex', 'utf8');
+      decrypted += decipher.final('utf8');
+      return decrypted;
+    }
+    return null;
+  }
+
   loadAccounts() {
     try {
+      // 1. Try reading encrypted storage first
+      if (fs.existsSync(this.encStoragePath)) {
+        const raw = fs.readFileSync(this.encStoragePath, 'utf8');
+        const parsed = JSON.parse(raw);
+        const decryptedStr = this._decryptData(parsed);
+        if (decryptedStr) {
+          this.accounts = JSON.parse(decryptedStr);
+          if (!Array.isArray(this.accounts)) this.accounts = [];
+          return;
+        }
+      }
+
+      // 2. Fallback to migration from old plaintext json
       if (fs.existsSync(this.storagePath)) {
         const raw = fs.readFileSync(this.storagePath, 'utf8');
         this.accounts = JSON.parse(raw);
         if (!Array.isArray(this.accounts)) this.accounts = [];
+        // Immediately migrate to encrypted and delete unencrypted file
+        this.saveAccounts();
+        try { fs.unlinkSync(this.storagePath); } catch (_) {}
       }
     } catch (e) {
       logger.log('warn', `ytm-auth: Failed to load accounts: ${e.message}`);
@@ -31,7 +81,13 @@ class YtmAuthManager {
   saveAccounts() {
     try {
       fs.mkdirSync(this.dataDir, { recursive: true });
-      fs.writeFileSync(this.storagePath, JSON.stringify(this.accounts, null, 2), 'utf8');
+      const plainStr = JSON.stringify(this.accounts, null, 2);
+      const encryptedPayload = this._encryptData(plainStr);
+      fs.writeFileSync(this.encStoragePath, JSON.stringify(encryptedPayload), 'utf8');
+      // Ensure plaintext json does not persist on disk
+      if (fs.existsSync(this.storagePath)) {
+        try { fs.unlinkSync(this.storagePath); } catch (_) {}
+      }
     } catch (e) {
       logger.log('error', `ytm-auth: Failed to save accounts: ${e.message}`);
     }

@@ -68,7 +68,8 @@ class SmartDownloadManager {
     const toDownload = [];
 
     for (const track of targetList) {
-      const cached = typeof isCachedFn === 'function' ? isCachedFn(track.id || track.cleanId) : false;
+      const trackId = track.id || track.cleanId || '';
+      const cached = typeof isCachedFn === 'function' ? isCachedFn(trackId, track) : false;
       if (!cached) {
         toDownload.push(track);
       }
