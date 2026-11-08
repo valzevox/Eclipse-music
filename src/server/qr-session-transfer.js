@@ -50,7 +50,7 @@ function decryptAccountFromTransit(encBundle, secretKey) {
 /**
  * Generate secure session handoff payload and QR link
  */
-function createTransferPayload(accountData = {}, port = 38472) {
+function createTransferPayload(accountData = {}, port = 38472, options = {}) {
   const transferId = crypto.randomBytes(16).toString('hex');
   const secretKey = crypto.randomBytes(24).toString('base64url');
   const expiresAt = Date.now() + TRANSFER_TOKEN_TTL_MS;
@@ -77,18 +77,25 @@ function createTransferPayload(accountData = {}, port = 38472) {
   }, TRANSFER_TOKEN_TTL_MS + 1000);
   if (timer && typeof timer.unref === 'function') timer.unref();
 
+  // Encrypt transit payload for direct QR embedding (enables Mobile -> PC without inbound socket)
+  const directPayload = (options && options.includeDirectPayload !== false)
+    ? encryptAccountForTransit(payload.account, secretKey)
+    : null;
+
   // Return transfer ticket for QR Code encoding
   return {
     transferId,
     secretKey,
     expiresAt,
     sourceServerUrl,
+    directPayload,
     qrData: JSON.stringify({
       app: 'eclipse-music',
       action: 'session_transfer',
       transferId,
       secretKey,
       sourceServerUrl,
+      directPayload,
       v: 2
     })
   };
@@ -125,9 +132,19 @@ function claimTransferSession(transferId, secretKey, options = {}) {
 }
 
 /**
- * Claim session across devices/processes from remote sourceServerUrl over LAN
+ * Claim session across devices/processes from remote sourceServerUrl over LAN (or via direct QR payload)
  */
-function claimRemoteTransferSession(sourceServerUrl, transferId, secretKey) {
+function claimRemoteTransferSession(sourceServerUrl, transferId, secretKey, directPayload = null) {
+  // If direct transit-encrypted payload was embedded in the QR (e.g. Mobile -> PC)
+  if (directPayload && secretKey) {
+    try {
+      const acc = decryptAccountFromTransit(directPayload, secretKey);
+      if (acc && (acc.cookie || acc.id)) {
+        return Promise.resolve(acc);
+      }
+    } catch (_) {}
+  }
+
   return new Promise((resolve, reject) => {
     if (!sourceServerUrl || !/^https?:\/\//i.test(sourceServerUrl)) {
       return reject(new Error('Invalid sourceServerUrl'));

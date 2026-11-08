@@ -84,19 +84,37 @@ class SmartDownloadManager {
   }
 
   /**
+   * Check whether current device connection satisfies Wi-Fi constraint
+   */
+  static isWifiConnection() {
+    if (typeof navigator === 'undefined') return true;
+    if (navigator.onLine === false) return false;
+    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (conn) {
+      if (typeof conn.type === 'string') {
+        const t = conn.type.toLowerCase();
+        return t === 'wifi' || t === 'ethernet' || t === 'unknown';
+      }
+      if (conn.saveData) return false;
+    }
+    return true;
+  }
+
+  /**
    * Start executing smart download queue with concurrency and rate limiting
    */
-  async startSync(downloadFn, isWifiFn) {
+  async startSync(downloadFn, isWifiFn = SmartDownloadManager.isWifiConnection) {
     if (!this.enabled || this.inProgress || this.queue.length === 0) {
       return;
     }
 
     // Check Wi-Fi constraint if requested
-    if (this.wifiOnly && typeof isWifiFn === 'function') {
-      const onWifi = await isWifiFn();
+    if (this.wifiOnly) {
+      const checkWifi = typeof isWifiFn === 'function' ? isWifiFn : SmartDownloadManager.isWifiConnection;
+      const onWifi = await checkWifi();
       if (!onWifi) {
         this.emitStatus({ pausedReason: 'waiting_for_wifi' });
-        return;
+        return { downloaded: 0, total: this.total, pausedReason: 'waiting_for_wifi' };
       }
     }
 

@@ -168,7 +168,26 @@
 
               console.log(`[EclipseBridge] AutoMix executing dual-source crossfade (${remaining.toFixed(1)}s remaining)...`);
               await window.autoMixDjInstance.executeCrossfade(nativeAudio, auxAudio, threshold);
-              try { auxAudio.pause(); } catch (_) {}
+              
+              // Seamless Handover: transfer playback offset and audio source without restarting nextTrack at 0:00
+              const handoverTime = (auxAudio && !isNaN(auxAudio.currentTime)) ? auxAudio.currentTime : 0;
+              const handoverSrc = (auxAudio && auxAudio.src) ? auxAudio.src : '';
+              const curCoreState = getCoreState();
+              if (curCoreState && nextTrack) {
+                curCoreState._autoMixHandover = {
+                  src: handoverSrc,
+                  currentTime: handoverTime,
+                  trackId: nextTrack.id || nextTrack.videoId
+                };
+              }
+
+              try {
+                if (auxAudio) {
+                  auxAudio.pause();
+                  auxAudio.currentTime = 0;
+                }
+              } catch (_) {}
+
               if (typeof window._eclipsePlayNext === 'function') {
                 window._eclipsePlayNext();
               }
@@ -288,7 +307,7 @@
                 throw res.failed[0].error || new Error('Track download failed');
               }
               return res;
-            }, () => (typeof navigator !== 'undefined' ? navigator.onLine !== false : true));
+            }, typeof window.SmartDownloadManager.isWifiConnection === 'function' ? window.SmartDownloadManager.isWifiConnection : () => (typeof navigator !== 'undefined' ? navigator.onLine !== false : true));
           }
           return { downloaded: 0 };
         };

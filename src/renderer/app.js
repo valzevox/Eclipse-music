@@ -4685,6 +4685,22 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     loadSyncedLyrics(track.title, track.artist, currentToken);
     loadSponsorBlockSegments(track);
 
+    // AutoMix seamless handover: transfer playing stream and time offset from crossfade without restarting from 0:00
+    if (state._autoMixHandover && (track.id === state._autoMixHandover.trackId || (track.videoId && track.videoId === state._autoMixHandover.trackId) || (track._matchedYtId && track._matchedYtId === state._autoMixHandover.trackId))) {
+      const handover = state._autoMixHandover;
+      state._autoMixHandover = null;
+      if (currentToken === state.loadToken) {
+        if (hlsInstance) { try { hlsInstance.destroy(); } catch (_) {} hlsInstance = null; }
+        el.nativeAudio.preload = "auto";
+        el.nativeAudio.src = handover.src;
+        try { el.nativeAudio.currentTime = handover.currentTime; } catch (_) {}
+        el.nativeAudio.volume = state.volume != null ? state.volume : 1.0;
+        playSmooth();
+        applyAudioSettings();
+        return;
+      }
+    }
+
     try {
       if (track._preloadedStreamUrl && (!track._preloadedStreamUrlExpires || Date.now() < track._preloadedStreamUrlExpires)) {
         if (currentToken !== state.loadToken) return;
