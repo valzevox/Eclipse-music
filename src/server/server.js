@@ -9434,6 +9434,45 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (parsedUrl.pathname === '/api/ytm/session-transfer/create' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const activeAccount = ytmAuth.getActiveAccount() || payload.account || {};
+        const transfer = qrTransfer.createTransferPayload(activeAccount);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, ...transfer }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/session-transfer/claim' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const account = qrTransfer.claimTransferSession(payload.transferId, payload.secretKey);
+        // Automatically save into local ytmAuth
+        if (account && account.cookie) {
+          await ytmAuth.authenticateWithCookie(account.cookie);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, account }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
 if (parsedUrl.pathname === '/api/ytm/login-url') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ success: true, loginUrl: ytmAuth.getLoginUrl() }));
