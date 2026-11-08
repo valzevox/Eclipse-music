@@ -42,8 +42,19 @@ class YtmAuthManager {
         }
       } catch (_) {}
       const newKey = crypto.randomBytes(32);
-      this.vaultProvider.write({ keyHex: newKey.toString('hex'), createdAt: Date.now() });
-      this._cachedMasterKey = Buffer.from(newKey.toString('hex'), 'hex');
+      const keyHex = newKey.toString('hex');
+      try {
+        const writeRes = this.vaultProvider.write({ keyHex, createdAt: Date.now() });
+        if (writeRes && typeof writeRes.then === 'function') {
+          writeRes.catch(err => {
+            this._vaultWriteError = err;
+          });
+        }
+      } catch (err) {
+        this._vaultWriteError = err;
+        throw new Error(`Vault write failed: ${err.message}`);
+      }
+      this._cachedMasterKey = Buffer.from(keyHex, 'hex');
       return this._cachedMasterKey;
     }
 
@@ -172,6 +183,11 @@ class YtmAuthManager {
       const diskDecrypted = this._decryptData(JSON.parse(diskRaw));
       if (diskDecrypted !== plainStr) {
         throw new Error('Disk encrypted file verification failed');
+      }
+
+      // Safeguard: If hardware vault failed to persist the master key, NEVER delete plaintext
+      if (this._vaultWriteError) {
+        throw new Error(`Vault persistence failure: ${this._vaultWriteError.message}`);
       }
 
       if (fs.existsSync(this.storagePath)) {

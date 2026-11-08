@@ -7,19 +7,20 @@ const http = require('http');
 
 const TRANSFER_TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const pendingTransfers = new Map();
+const consumedDirectTransfers = new Map(); // Anti-replay cache: transferId -> expiresAt
 
 function getPrimaryLocalIp() {
   try {
     const nets = os.networkInterfaces();
     for (const name of Object.keys(nets || {})) {
       for (const net of (nets[name] || [])) {
-        if (net.family === 'IPv4' && !net.internal) {
+        if (net.family === 'IPv4' && !net.internal && net.address !== '127.0.0.1') {
           return net.address;
         }
       }
     }
   } catch (_) {}
-  return '127.0.0.1';
+  return null; // Never advertise 127.0.0.1 as a LAN address
 }
 
 function deriveTransferCipherKey(secretKey) {
@@ -47,6 +48,50 @@ function decryptAccountFromTransit(encBundle, secretKey) {
   return JSON.parse(decrypted);
 }
 
+function signDirectPayload(data, iv, tag, transferId, expiresAt, secretKey) {
+  const hmac = crypto.createHmac('sha256', secretKey);
+  hmac.update(`${data}:${iv}:${tag}:${transferId}:${expiresAt}`);
+  return hmac.digest('hex');
+}
+
+function verifyAndClaimDirectPayload(directPayload, secretKey) {
+  if (!directPayload || typeof directPayload !== 'object') {
+    throw new Error('Invalid direct payload');
+  }
+  const { enc, iv, tag, data, transferId, expiresAt, sig } = directPayload;
+  if (!enc || !iv || !tag || !data || !transferId || !expiresAt || !sig) {
+    throw new Error('Malformed direct transfer bundle');
+  }
+
+  // 1. Strict Expiration Check
+  if (Date.now() > Number(expiresAt)) {
+    throw new Error('Direct transfer ticket has expired');
+  }
+
+  // 2. Anti-Replay Check (One-Time Burn on Client)
+  if (consumedDirectTransfers.has(transferId)) {
+    throw new Error('Direct transfer ticket has already been used');
+  }
+
+  // 3. Cryptographic Signature Verification
+  const expectedSig = signDirectPayload(data, iv, tag, transferId, expiresAt, secretKey);
+  const bufExpected = Buffer.from(expectedSig);
+  const bufActual = Buffer.from(String(sig));
+  if (bufExpected.length !== bufActual.length || !crypto.timingSafeEqual(bufExpected, bufActual)) {
+    throw new Error('Direct transfer signature verification failed');
+  }
+
+  // 4. Burn the ticket in replay cache with TTL cleanup
+  consumedDirectTransfers.set(transferId, expiresAt);
+  const cleanTimer = setTimeout(() => {
+    consumedDirectTransfers.delete(transferId);
+  }, Math.max(1000, Number(expiresAt) - Date.now() + 60000));
+  if (cleanTimer && typeof cleanTimer.unref === 'function') cleanTimer.unref();
+
+  // 5. Decrypt payload
+  return decryptAccountFromTransit({ enc: true, iv, tag, data }, secretKey);
+}
+
 /**
  * Generate secure session handoff payload and QR link
  */
@@ -55,7 +100,7 @@ function createTransferPayload(accountData = {}, port = 38472, options = {}) {
   const secretKey = crypto.randomBytes(24).toString('base64url');
   const expiresAt = Date.now() + TRANSFER_TOKEN_TTL_MS;
   const hostIp = getPrimaryLocalIp();
-  const sourceServerUrl = `http://${hostIp}:${port}`;
+  const sourceServerUrl = hostIp ? `http://${hostIp}:${port}` : null;
 
   const payload = {
     transferId,
@@ -77,10 +122,18 @@ function createTransferPayload(accountData = {}, port = 38472, options = {}) {
   }, TRANSFER_TOKEN_TTL_MS + 1000);
   if (timer && typeof timer.unref === 'function') timer.unref();
 
-  // Encrypt transit payload for direct QR embedding (enables Mobile -> PC without inbound socket)
-  const directPayload = (options && options.includeDirectPayload !== false)
-    ? encryptAccountForTransit(payload.account, secretKey)
-    : null;
+  // Encrypt & sign direct payload with expiration and anti-replay
+  let directPayload = null;
+  if (options && options.includeDirectPayload !== false) {
+    const rawEnc = encryptAccountForTransit(payload.account, secretKey);
+    const sig = signDirectPayload(rawEnc.data, rawEnc.iv, rawEnc.tag, transferId, expiresAt, secretKey);
+    directPayload = {
+      ...rawEnc,
+      transferId,
+      expiresAt,
+      sig
+    };
+  }
 
   // Return transfer ticket for QR Code encoding
   return {
@@ -135,80 +188,88 @@ function claimTransferSession(transferId, secretKey, options = {}) {
  * Claim session across devices/processes from remote sourceServerUrl over LAN (or via direct QR payload)
  */
 function claimRemoteTransferSession(sourceServerUrl, transferId, secretKey, directPayload = null) {
-  // If direct transit-encrypted payload was embedded in the QR (e.g. Mobile -> PC)
-  if (directPayload && secretKey) {
-    try {
-      const acc = decryptAccountFromTransit(directPayload, secretKey);
-      if (acc && (acc.cookie || acc.id)) {
-        return Promise.resolve(acc);
-      }
-    } catch (_) {}
-  }
+  return new Promise(async (resolve, reject) => {
+    // 1. If sourceServerUrl is a genuine non-loopback LAN URL, attempt burn-on-source claim first
+    if (sourceServerUrl && /^https?:\/\//i.test(sourceServerUrl)) {
+      try {
+        const parsed = new URL(sourceServerUrl);
+        if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost') {
+          const targetUrl = `${sourceServerUrl.replace(/\/+$/, '')}/api/ytm/session-transfer/claim`;
+          const reqBody = JSON.stringify({
+            transferId,
+            secretKey,
+            transitEncrypted: true
+          });
 
-  return new Promise((resolve, reject) => {
-    if (!sourceServerUrl || !/^https?:\/\//i.test(sourceServerUrl)) {
-      return reject(new Error('Invalid sourceServerUrl'));
-    }
-    const targetUrl = `${sourceServerUrl.replace(/\/+$/, '')}/api/ytm/session-transfer/claim`;
-    const reqBody = JSON.stringify({
-      transferId,
-      secretKey,
-      transitEncrypted: true
-    });
-
-    if (typeof globalThis.__murielFetch === 'function') {
-      globalThis.__murielFetch(targetUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: reqBody
-      })
-        .then(r => r.json())
-        .then(data => {
-          if (!data || !data.success) {
-            throw new Error((data && data.error) || 'Remote session transfer failed');
+          if (typeof globalThis.__murielFetch === 'function') {
+            const r = await globalThis.__murielFetch(targetUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: reqBody
+            });
+            const data = await r.json();
+            if (data && data.success) {
+              const acc = data.encryptedAccount
+                ? decryptAccountFromTransit(data.encryptedAccount, secretKey)
+                : data.account;
+              return resolve(acc);
+            }
+          } else {
+            const lanResult = await new Promise((resLan, rejLan) => {
+              const req = http.request({
+                hostname: parsed.hostname,
+                port: parsed.port || 80,
+                path: parsed.pathname + parsed.search,
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Content-Length': Buffer.byteLength(reqBody)
+                },
+                timeout: 5000
+              }, (res) => {
+                let raw = '';
+                res.on('data', chunk => { raw += chunk; });
+                res.on('end', () => {
+                  try {
+                    const data = JSON.parse(raw || '{}');
+                    if (data && data.success) {
+                      const acc = data.encryptedAccount
+                        ? decryptAccountFromTransit(data.encryptedAccount, secretKey)
+                        : data.account;
+                      return resLan(acc);
+                    }
+                    rejLan(new Error((data && data.error) || 'LAN transfer failed'));
+                  } catch (e) {
+                    rejLan(e);
+                  }
+                });
+              });
+              req.on('error', rejLan);
+              req.on('timeout', () => { req.destroy(new Error('LAN transfer timed out')); });
+              req.write(reqBody);
+              req.end();
+            });
+            if (lanResult) return resolve(lanResult);
           }
-          const acc = data.encryptedAccount
-            ? decryptAccountFromTransit(data.encryptedAccount, secretKey)
-            : data.account;
-          resolve(acc);
-        })
-        .catch(reject);
-      return;
-    }
-
-    const parsed = new URL(targetUrl);
-    const req = http.request({
-      hostname: parsed.hostname,
-      port: parsed.port || 80,
-      path: parsed.pathname + parsed.search,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(reqBody)
-      },
-      timeout: 8000
-    }, (res) => {
-      let raw = '';
-      res.on('data', chunk => { raw += chunk; });
-      res.on('end', () => {
-        try {
-          const data = JSON.parse(raw || '{}');
-          if (!data || !data.success) {
-            return reject(new Error((data && data.error) || 'Remote session transfer failed'));
-          }
-          const acc = data.encryptedAccount
-            ? decryptAccountFromTransit(data.encryptedAccount, secretKey)
-            : data.account;
-          resolve(acc);
-        } catch (err) {
-          reject(err);
         }
-      });
-    });
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(new Error('Remote session transfer timed out')); });
-    req.write(reqBody);
-    req.end();
+      } catch (_) {
+        // Fall through to directPayload
+      }
+    }
+
+    // 2. Fallback to direct signed & replay-protected payload
+    if (directPayload && secretKey) {
+      try {
+        const acc = verifyAndClaimDirectPayload(directPayload, secretKey);
+        if (acc && (acc.cookie || acc.id)) {
+          return resolve(acc);
+        }
+      } catch (err) {
+        return reject(err);
+      }
+    }
+
+    return reject(new Error('No reachable transfer source or valid direct QR payload'));
   });
 }
 
@@ -216,6 +277,7 @@ module.exports = {
   createTransferPayload,
   claimTransferSession,
   claimRemoteTransferSession,
+  verifyAndClaimDirectPayload,
   encryptAccountForTransit,
   decryptAccountFromTransit
 };

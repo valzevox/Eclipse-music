@@ -85,19 +85,23 @@ class SmartDownloadManager {
 
   /**
    * Check whether current device connection satisfies Wi-Fi constraint
+   * Strict verification: requires navigator.connection to exist and report wifi/ethernet.
+   * Returns false when API is unavailable, when offline, on cellular, or when type is unknown.
    */
-  static isWifiConnection() {
-    if (typeof navigator === 'undefined') return true;
-    if (navigator.onLine === false) return false;
-    const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-    if (conn) {
-      if (typeof conn.type === 'string') {
-        const t = conn.type.toLowerCase();
-        return t === 'wifi' || t === 'ethernet' || t === 'unknown';
-      }
-      if (conn.saveData) return false;
+  static isWifiConnection(nav = (typeof navigator !== 'undefined' ? navigator : null)) {
+    if (!nav) return false;
+    if (nav.onLine === false) return false;
+    const conn = nav.connection || nav.mozConnection || nav.webkitConnection;
+    if (!conn) {
+      // Fail-safe: Cannot verify Wi-Fi without NetworkInformation API
+      return false;
     }
-    return true;
+    if (conn.saveData) return false;
+    if (typeof conn.type === 'string') {
+      const t = conn.type.toLowerCase();
+      return t === 'wifi' || t === 'ethernet';
+    }
+    return false;
   }
 
   /**
@@ -105,12 +109,13 @@ class SmartDownloadManager {
    */
   async startSync(downloadFn, isWifiFn = SmartDownloadManager.isWifiConnection) {
     if (!this.enabled || this.inProgress || this.queue.length === 0) {
-      return;
+      return { downloaded: this.downloaded, total: this.total };
     }
 
-    // Check Wi-Fi constraint if requested
+    const checkWifi = typeof isWifiFn === 'function' ? isWifiFn : SmartDownloadManager.isWifiConnection;
+
+    // Check Wi-Fi constraint upfront if requested
     if (this.wifiOnly) {
-      const checkWifi = typeof isWifiFn === 'function' ? isWifiFn : SmartDownloadManager.isWifiConnection;
       const onWifi = await checkWifi();
       if (!onWifi) {
         this.emitStatus({ pausedReason: 'waiting_for_wifi' });
@@ -124,6 +129,15 @@ class SmartDownloadManager {
     try {
       while (this.queue.length > 0) {
         if (!this.enabled) break;
+
+        // Re-check network between downloads to immediately halt if network switches to cellular
+        if (this.wifiOnly) {
+          const stillOnWifi = await checkWifi();
+          if (!stillOnWifi) {
+            this.emitStatus({ pausedReason: 'network_switched_to_cellular' });
+            return { downloaded: this.downloaded, total: this.total, pausedReason: 'network_switched_to_cellular' };
+          }
+        }
 
         const currentTrack = this.queue.shift();
         this.emitStatus({ currentTrack });
