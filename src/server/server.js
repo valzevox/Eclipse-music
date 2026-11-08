@@ -9367,7 +9367,37 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (parsedUrl.pathname === '/api/ytm/login-url') {
+    if (parsedUrl.pathname === '/api/ytm/new-releases') {
+    const country = (parsedUrl.query.country || 'VN').toString();
+    try {
+      const data = await ytmDiscovery.getNewReleases(country);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: true, ...data }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/search') {
+    const q = (parsedUrl.query.q || parsedUrl.query.query || '').toString();
+    const category = (parsedUrl.query.category || parsedUrl.query.type || 'all').toString();
+    const country = (parsedUrl.query.country || 'VN').toString();
+    if (!q) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: 'Missing search query' }));
+    }
+    try {
+      const data = await ytmDiscovery.searchCategorized(q, category, country);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: true, ...data }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+  }
+
+if (parsedUrl.pathname === '/api/ytm/login-url') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ success: true, loginUrl: ytmAuth.getLoginUrl() }));
   }
