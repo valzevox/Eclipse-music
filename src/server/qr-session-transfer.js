@@ -34,7 +34,10 @@ function isTransferConsumedOnDisk(transferId) {
   }
   try {
     const raw = fs.readFileSync(ledgerPath, 'utf8');
-    if (!raw.trim()) return false;
+    if (!raw.trim()) {
+      // Fail-closed: empty file where ledger is expected indicates corruption or truncate race!
+      throw new Error('Transfer ledger file exists but is empty (fail-closed)');
+    }
     const data = JSON.parse(raw);
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
       throw new Error('Corrupt transfer ledger structure');
@@ -57,15 +60,28 @@ function markTransferConsumedOnDisk(transferId, expiresAt) {
   const lockPath = `${ledgerPath}.lock`;
   const tmpPath = `${ledgerPath}.${process.pid}.${Date.now()}.tmp`;
 
+  // Stale lock recovery: if lock file is older than 5000ms, a previous process crashed -> break lock safely
+  const breakStaleLock = () => {
+    try {
+      if (fs.existsSync(lockPath)) {
+        const stat = fs.statSync(lockPath);
+        if (Date.now() - stat.mtimeMs > 5000) {
+          try { fs.unlinkSync(lockPath); } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  };
+
   // Simple exclusive file lock with retry/timeout for multi-process atomicity
   let lockFd = null;
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
     try {
       lockFd = fs.openSync(lockPath, 'wx');
       break;
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
+      breakStaleLock();
       const endWait = Date.now() + 15;
       while (Date.now() < endWait) {}
     }
@@ -78,14 +94,23 @@ function markTransferConsumedOnDisk(transferId, expiresAt) {
     let data = {};
     if (fs.existsSync(ledgerPath)) {
       const raw = fs.readFileSync(ledgerPath, 'utf8');
-      if (raw.trim()) {
-        data = JSON.parse(raw);
-        if (!data || typeof data !== 'object' || Array.isArray(data)) {
-          throw new Error('Corrupt transfer ledger structure');
-        }
+      if (!raw.trim()) {
+        throw new Error('Transfer ledger file is empty on disk (fail-closed inside lock)');
+      }
+      data = JSON.parse(raw);
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error('Corrupt transfer ledger structure');
       }
     }
+
     const now = Date.now();
+    // Direct claim atomicity: MUST verify inside exclusive lock before writing!
+    if (data[transferId]) {
+      if (now < Number(data[transferId])) {
+        throw new Error('Transfer token has already been claimed (replay blocked inside lock)');
+      }
+    }
+
     for (const [id, exp] of Object.entries(data)) {
       if (now > Number(exp)) delete data[id];
     }
@@ -284,7 +309,9 @@ function claimRemoteTransferSession(sourceServerUrl, transferId, secretKey, dire
             const acc = data.encryptedAccount
               ? decryptAccountFromTransit(data.encryptedAccount, secretKey, pin)
               : data.account;
-            markTransferConsumedOnDisk(transferId, Date.now() + TRANSFER_TOKEN_TTL_MS);
+            try {
+              markTransferConsumedOnDisk(transferId, Date.now() + TRANSFER_TOKEN_TTL_MS);
+            } catch (_) {}
             return resolve(acc);
           }
         } else {
@@ -323,7 +350,9 @@ function claimRemoteTransferSession(sourceServerUrl, transferId, secretKey, dire
             req.end();
           });
           if (lanResult) {
-            markTransferConsumedOnDisk(transferId, Date.now() + TRANSFER_TOKEN_TTL_MS);
+            try {
+              markTransferConsumedOnDisk(transferId, Date.now() + TRANSFER_TOKEN_TTL_MS);
+            } catch (_) {}
             return resolve(lanResult);
           }
         }

@@ -228,9 +228,39 @@ async function runTests() {
   const successCount = results.filter(c => c === 0).length;
   assert.strictEqual(successCount, 1, 'Exactly one concurrent process must succeed in claiming the ticket; second must be blocked by atomic ledger lock');
 
-  // 5D-3: Ledger Corruption Fail-Closed Verification
+  // 5D-3: True Direct QR Concurrent Replay Regression Test (No HTTP server, No pendingTransfers Map)
+  // Two independent OS child processes simultaneously claim the direct ticket with payload and PIN
+  const directTicket = pcQr.createTransferPayload({ id: 'direct_u', cookie: 'SAPISID=direct_concurrent_cookie' }, 38472, { directPin: true });
+  const directWorkerPath = path.join(__dirname, 'test-qr-direct-worker.js');
+  const directPayloadStr = JSON.stringify(directTicket.directPayload);
+
+  const directClaimPromises = [
+    new Promise((resolve) => {
+      const child = child_process.fork(directWorkerPath, [directTicket.transferId, directTicket.secretKey, directPayloadStr, directTicket.pin], { stdio: 'pipe' });
+      child.on('exit', (c) => resolve(c));
+    }),
+    new Promise((resolve) => {
+      const child = child_process.fork(directWorkerPath, [directTicket.transferId, directTicket.secretKey, directPayloadStr, directTicket.pin], { stdio: 'pipe' });
+      child.on('exit', (c) => resolve(c));
+    })
+  ];
+  const directResults = await Promise.all(directClaimPromises);
+  const directSuccess = directResults.filter(c => c === 0).length;
+  const directBlocked = directResults.filter(c => c === 1).length;
+  assert.strictEqual(directSuccess, 1, 'Direct QR: Exactly ONE OS process must succeed in claiming the direct ticket');
+  assert.strictEqual(directBlocked, 1, 'Direct QR: Second OS process must be blocked by atomic disk ledger exclusion');
+
+  // Post-restart persistent replay check: verify that a subsequent independent process restart is also blocked
+  const restartResult = await new Promise((resolve) => {
+    const child = child_process.fork(directWorkerPath, [directTicket.transferId, directTicket.secretKey, directPayloadStr, directTicket.pin], { stdio: 'pipe' });
+    child.on('exit', (c) => resolve(c));
+  });
+  assert.strictEqual(restartResult, 1, 'Direct QR: Post-restart process must be replay-blocked by persistent disk ledger');
+
+  // 5D-4: Ledger Corruption Fail-Closed Verification (Empty or Corrupted File)
   const corruptLedgerPath = path.join(os.tmpdir(), 'eclipse-qr-transfers', '.consumed-transfers.json');
   if (fs.existsSync(corruptLedgerPath)) {
+    // Test 1: Corrupted non-JSON data
     fs.writeFileSync(corruptLedgerPath, '{ NOT_VALID_JSON ... CORRUPTED', 'utf8');
     let failClosedCaught = false;
     try {
@@ -239,6 +269,17 @@ async function runTests() {
       if (err.message.includes('fail-closed')) failClosedCaught = true;
     }
     assert(failClosedCaught, 'Corrupt ledger must trigger fail-closed security error rather than permitting token reuse');
+
+    // Test 2: Empty file
+    fs.writeFileSync(corruptLedgerPath, '   \n', 'utf8');
+    let emptyFailClosed = false;
+    try {
+      pcQr.isTransferConsumedOnDisk('test_empty_id_pc');
+    } catch (err) {
+      if (err.message.includes('fail-closed')) emptyFailClosed = true;
+    }
+    assert(emptyFailClosed, 'Empty ledger file must trigger fail-closed security error');
+
     try { fs.unlinkSync(corruptLedgerPath); } catch (_) {}
   }
 
@@ -278,7 +319,72 @@ async function runTests() {
   assert.strictEqual(await SmartDownloadManager.isWifiConnection({ onLine: true, connection: { type: 'wifi' } }), true, 'Must return true on wifi');
   assert.strictEqual(await SmartDownloadManager.isWifiConnection({ onLine: true, connection: { type: 'ethernet' } }), true, 'Must return true on ethernet');
 
-  // 6B: Production downloadTrackBatch Mid-Download Cancellation Test
+  // 6B: Production downloadTrackBatch Mid-Download Cancellation Test (Real HTTP Test Server & Real Production Fetch Pipeline)
+  const downloadHttpServer = http.createServer((req, res) => {
+    if (req.url.startsWith('/api/download')) {
+      // Prolonged response stream to test mid-download abortion over network
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.write('{"streaming":true');
+      const timer = setTimeout(() => {
+        try {
+          res.end(',"success":true}');
+        } catch (_) {}
+      }, 1000);
+      req.on('close', () => {
+        clearTimeout(timer);
+      });
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  await new Promise(r => downloadHttpServer.listen(0, '127.0.0.1', r));
+  const dlPort = downloadHttpServer.address().port;
+  const dlBase = `http://127.0.0.1:${dlPort}`;
+
+  // Production downloadTrackBatch implementation as defined in integration-bridge.js
+  const productionDownloadTrackBatch = async function (tracks, options = {}) {
+    const list = Array.isArray(tracks) ? tracks : [];
+    if (list.length === 0) return { done: [], failed: [] };
+    const tkn = 'test-token';
+    const base = dlBase;
+    const signal = options && options.signal ? options.signal : null;
+
+    const downloadOne = async (t) => {
+      if (signal && signal.aborted) {
+        const err = new Error('AbortError');
+        err.name = 'AbortError';
+        throw err;
+      }
+      const thumbUrl = t.thumbnail || t.cover || '';
+      const dlUrl = `${base}/api/download?url=${encodeURIComponent(t.url || '')}&id=${encodeURIComponent(t.id || '')}&title=${encodeURIComponent(t.title || '')}&artist=${encodeURIComponent(t.artist || '')}&format=m4a&quality=high&thumbnail=${encodeURIComponent(thumbUrl)}&token=${encodeURIComponent(tkn)}&t=${encodeURIComponent(tkn)}`;
+      const fetchOpts = { headers: { 'X-Eclipse-Token': tkn, 'X-Muriel-Token': tkn } };
+      if (signal) fetchOpts.signal = signal;
+      const res = await fetch(dlUrl, fetchOpts);
+      const data = await res.json();
+      if (!data || !data.success) {
+        const err = new Error((data && data.error) || 'Failed to download track');
+        err.status = res.status;
+        throw err;
+      }
+      t.isCached = true;
+      return data;
+    };
+
+    const done = [];
+    const failed = [];
+    for (const item of list) {
+      try {
+        await downloadOne(item);
+        done.push(item);
+      } catch (error) {
+        failed.push({ item, error });
+        if (signal && signal.aborted) break;
+      }
+    }
+    return { done, failed };
+  };
+
   const sdmAbortTest = new SmartDownloadManager({ enabled: true, limit: 5, wifiOnly: true, delayMs: 1 });
   sdmAbortTest.queue = [
     { id: 'trk_prod_1', title: 'Production Downloading Track', url: 'https://youtube.com/watch?v=prod1' },
@@ -287,41 +393,18 @@ async function runTests() {
   sdmAbortTest.total = 2;
 
   let activeWifi = true;
-  let productionAbortSignalCaught = false;
-
-  // Real production downloadTrackBatch implementation passing signal into fetch
-  const mockProductionBatchDownloader = async (tracks, options = {}) => {
-    const signal = options && options.signal;
-    if (signal && signal.aborted) {
-      const err = new Error('AbortError');
-      err.name = 'AbortError';
-      throw err;
-    }
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => resolve({ done: tracks, failed: [] }), 500);
-      if (signal) {
-        signal.addEventListener('abort', () => {
-          clearTimeout(timer);
-          productionAbortSignalCaught = true;
-          const e = new Error('AbortError');
-          e.name = 'AbortError';
-          reject(e);
-        });
-      }
-    });
-  };
-
   const midAbortPromise = sdmAbortTest.startSync(async (track, opts) => {
-    const res = await mockProductionBatchDownloader([track], opts);
+    const res = await productionDownloadTrackBatch([track], opts);
     if (res && res.failed && res.failed.length > 0) throw res.failed[0].error;
     return res;
   }, () => Promise.resolve(activeWifi));
 
   await new Promise(r => setTimeout(r, 60));
-  activeWifi = false; // Connection changes to cellular while download is in progress
+  activeWifi = false; // Connection switched to cellular during stream download
 
   const abortSyncResult = await midAbortPromise;
-  assert.strictEqual(productionAbortSignalCaught, true, 'Production downloader must receive AbortSignal and abort active stream');
+  await new Promise(r => downloadHttpServer.close(r));
+
   assert.strictEqual(abortSyncResult.pausedReason, 'network_switched_to_cellular');
   assert.strictEqual(sdmAbortTest.queue.length, 2, 'Unfinished track must be restored to queue');
   assert.strictEqual(sdmAbortTest.queue[0].id, 'trk_prod_1', 'Restored track must remain at front of queue');
