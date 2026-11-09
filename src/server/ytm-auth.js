@@ -49,10 +49,10 @@ class YtmAuthManager {
       const newKey = crypto.randomBytes(32);
       const keyHex = newKey.toString('hex');
       
-      // Explicitly await native hardware vault write; if it rejects, fail immediately and do NOT cache in memory!
+      // Explicitly await native hardware vault write; if it rejects or is not durable/hardware-backed, fail immediately and do NOT cache in memory!
       const writeRes = await this.vaultProvider.write({ keyHex, createdAt: Date.now() });
-      if (writeRes && writeRes.success === false) {
-        throw new Error('Hardware vault write rejected by native keystore');
+      if (!writeRes || writeRes.success === false || writeRes.hardwareBacked === false) {
+        throw new Error('Hardware vault write rejected or not durably persisted by native keystore');
       }
 
       this._cachedMasterKey = Buffer.from(keyHex, 'hex');
@@ -187,7 +187,12 @@ class YtmAuthManager {
         const raw = fs.readFileSync(this.storagePath, 'utf8');
         const parsed = JSON.parse(raw);
         this.accounts = Array.isArray(parsed) ? parsed : [];
-        const migratedOk = await this.saveAccounts();
+        let migratedOk = false;
+        try {
+          migratedOk = await this.saveAccounts();
+        } catch (_) {
+          migratedOk = false;
+        }
         if (migratedOk && fs.existsSync(this.encStoragePath)) {
           try { fs.unlinkSync(this.storagePath); } catch (_) {}
         }

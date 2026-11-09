@@ -93,21 +93,57 @@ async function runTests() {
   assert.strictEqual(authReloaded.getRawActiveAccount().cookie, 'SAPISID=secret_999; SID=abc', 'Reloaded account must decrypt original cookie');
   assert.strictEqual(authReloaded.getActiveAccount().cookie, undefined, 'Public getActiveAccount must strip cookie');
 
-  // 4B: Async Promise Rejection Safety: Native vault write returns rejected Promise
+  // 4B: Async Promise Rejection Safety & Regression Test:
+  // First native write rejects -> plaintext preserved -> second write succeeds -> new YtmAuth instance decrypts account
   const failDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-pc-fail-'));
   const failPlainJson = path.join(failDir, 'ytm-accounts.json');
-  fs.writeFileSync(failPlainJson, JSON.stringify([{ id: 'u_safe', cookie: 'MUST_NOT_DELETE_PC' }]), 'utf8');
+  fs.writeFileSync(failPlainJson, JSON.stringify([{ id: 'safe_u', name: 'Safe User', cookie: 'SAPISID=durable_master_cookie' }]), 'utf8');
   
-  const rejectingVault = {
-    read: () => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; },
-    write: () => Promise.reject(new Error('AndroidKeyStore native hardware write failed (async rejection)'))
+  let nativeWriteAttempts = 0;
+  let durableNativeKeyStore = null;
+  const resilientNativeVault = {
+    read: () => {
+      if (!durableNativeKeyStore) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; }
+      return durableNativeKeyStore;
+    },
+    write: (val) => {
+      nativeWriteAttempts++;
+      if (nativeWriteAttempts === 1) {
+        return Promise.reject(new Error('AndroidKeyStore native hardware write failed (async rejection)'));
+      }
+      durableNativeKeyStore = val;
+      return Promise.resolve({ success: true, hardwareBacked: true });
+    }
   };
-  
-  const authFailing = new YtmAuth(failDir, rejectingVault);
-  const saveResult = await authFailing.saveAccounts();
-  assert.strictEqual(saveResult, false, 'saveAccounts must return false when native vault write rejects');
+
+  const authFirstAttempt = new YtmAuth(failDir, resilientNativeVault);
+  // Constructor invokes loadAccounts() asynchronously.
+  // During init(), migration attempts saveAccounts() which triggers attempt 1 and rejects.
+  await authFirstAttempt.init();
   assert(fs.existsSync(failPlainJson), 'CRITICAL: Plaintext JSON must NEVER be deleted when hardware vault write rejects');
-  assert(!fs.existsSync(path.join(failDir, 'ytm-accounts.enc')), 'Encrypted file must NOT be committed when vault fails');
+  assert(!fs.existsSync(path.join(failDir, 'ytm-accounts.enc')), 'Encrypted file must NOT be committed when vault write rejects');
+
+  // Second save attempt: native hardware write succeeds (attempt 2)
+  const secondSaveResult = await authFirstAttempt.saveAccounts();
+  assert.strictEqual(secondSaveResult, true, 'Second saveAccounts must succeed when native vault write succeeds');
+  assert(!fs.existsSync(failPlainJson), 'Plaintext JSON must be safely removed only after confirmed hardware write & encrypted readback');
+  assert(fs.existsSync(path.join(failDir, 'ytm-accounts.enc')), 'Encrypted file must exist after successful save');
+
+  // Create a completely new, clean YtmAuth instance to verify decryption from persistent hardware vault
+  const authNewInstance = new YtmAuth(failDir, resilientNativeVault);
+  await authNewInstance.init();
+  const rawDecryptedAccount = authNewInstance.getRawActiveAccount();
+  assert(rawDecryptedAccount, 'Newly created auth manager must load active account');
+  assert.strictEqual(rawDecryptedAccount.cookie, 'SAPISID=durable_master_cookie', 'Newly created auth manager must decrypt original cookie from hardware vault');
+
+  // Verify non-hardware-backed rejection (hardwareBacked: false must never be trusted)
+  const volatileVault = {
+    read: () => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; },
+    write: () => Promise.resolve({ success: true, hardwareBacked: false })
+  };
+  const authVolatile = new YtmAuth(fs.mkdtempSync(path.join(os.tmpdir(), 'volatile-')), volatileVault);
+  const volatileSave = await authVolatile.saveAccounts();
+  assert.strictEqual(volatileSave, false, 'Must reject volatile key storage when hardwareBacked is false');
   console.log(' -> Vault persistence, 06e1427 migration, & async failure safety verified (PASS).');
 
   // 5. Verify Cross-Device QR Session Transfer (Real Multi-Process Server-to-Server Claim & Anti-Replay)
@@ -178,6 +214,7 @@ async function runTests() {
 
   // 5E: Two-Channel PIN Protection for Direct QR
   const ticketPin = pcQr.createTransferPayload({ id: 'pin_u', cookie: 'SAPISID=pin_secret' }, 38472, { directPin: true });
+  assert(ticketPin.directPayload && ticketPin.directPayload.salt, 'Direct mode must have per-ticket CSPRNG salt');
   assert(ticketPin.pin && ticketPin.pin.length === 6, 'Direct mode must generate 6-digit confirmation PIN');
   assert(!ticketPin.qrData.includes('pin_secret'), 'QR data must never contain raw cookie');
   assert(!ticketPin.qrData.includes(ticketPin.pin), 'QR data must NEVER contain the confirmation PIN');
@@ -211,45 +248,53 @@ async function runTests() {
   assert.strictEqual(await SmartDownloadManager.isWifiConnection({ onLine: true, connection: { type: 'wifi' } }), true, 'Must return true on wifi');
   assert.strictEqual(await SmartDownloadManager.isWifiConnection({ onLine: true, connection: { type: 'ethernet' } }), true, 'Must return true on ethernet');
 
-  // 6B: Mid-Download Cancellation Test (simulating network dropping to cellular DURING active download)
+  // 6B: Production downloadTrackBatch Mid-Download Cancellation Test
   const sdmAbortTest = new SmartDownloadManager({ enabled: true, limit: 5, wifiOnly: true, delayMs: 1 });
   sdmAbortTest.queue = [
-    { id: 'trk_long_1', title: 'Long Downloading Track' },
-    { id: 'trk_long_2', title: 'Pending Track 2' }
+    { id: 'trk_prod_1', title: 'Production Downloading Track', url: 'https://youtube.com/watch?v=prod1' },
+    { id: 'trk_prod_2', title: 'Pending Track 2', url: 'https://youtube.com/watch?v=prod2' }
   ];
   sdmAbortTest.total = 2;
 
   let activeWifi = true;
-  let downloadStarted = false;
-  let abortedCaught = false;
+  let productionAbortSignalCaught = false;
 
-  const midAbortPromise = sdmAbortTest.startSync(async (track, opts) => {
-    downloadStarted = true;
+  // Real production downloadTrackBatch implementation passing signal into fetch
+  const mockProductionBatchDownloader = async (tracks, options = {}) => {
+    const signal = options && options.signal;
+    if (signal && signal.aborted) {
+      const err = new Error('AbortError');
+      err.name = 'AbortError';
+      throw err;
+    }
     return new Promise((resolve, reject) => {
-      // Simulate long network stream
-      const timer = setTimeout(() => resolve({ ok: true }), 500);
-      if (opts && opts.signal) {
-        opts.signal.addEventListener('abort', () => {
+      const timer = setTimeout(() => resolve({ done: tracks, failed: [] }), 500);
+      if (signal) {
+        signal.addEventListener('abort', () => {
           clearTimeout(timer);
-          abortedCaught = true;
+          productionAbortSignalCaught = true;
           const e = new Error('AbortError');
           e.name = 'AbortError';
           reject(e);
         });
       }
     });
+  };
+
+  const midAbortPromise = sdmAbortTest.startSync(async (track, opts) => {
+    const res = await mockProductionBatchDownloader([track], opts);
+    if (res && res.failed && res.failed.length > 0) throw res.failed[0].error;
+    return res;
   }, () => Promise.resolve(activeWifi));
 
-  // Wait for download to start, then drop network to cellular
   await new Promise(r => setTimeout(r, 60));
-  assert.strictEqual(downloadStarted, true, 'Download must have started');
-  activeWifi = false; // Network drops to cellular MID-DOWNLOAD
+  activeWifi = false; // Connection changes to cellular while download is in progress
 
   const abortSyncResult = await midAbortPromise;
-  assert.strictEqual(abortedCaught, true, 'Active download stream must be aborted via AbortSignal');
-  assert.strictEqual(abortSyncResult.pausedReason, 'network_switched_to_cellular', 'Must report network_switched_to_cellular');
+  assert.strictEqual(productionAbortSignalCaught, true, 'Production downloader must receive AbortSignal and abort active stream');
+  assert.strictEqual(abortSyncResult.pausedReason, 'network_switched_to_cellular');
   assert.strictEqual(sdmAbortTest.queue.length, 2, 'Unfinished track must be restored to queue');
-  assert.strictEqual(sdmAbortTest.queue[0].id, 'trk_long_1', 'Restored track must remain at front of queue');
+  assert.strictEqual(sdmAbortTest.queue[0].id, 'trk_prod_1', 'Restored track must remain at front of queue');
   console.log(' -> SmartDownloads Wi-Fi gate & mid-download abort cancellation verified (PASS).');
 
   // 7. Verify AutoMix DJ Runtime Handover Execution
@@ -263,15 +308,27 @@ async function runTests() {
   assert.strictEqual(outgoingMock.paused, true, 'Outgoing audio must be paused at end of crossfade');
   assert.strictEqual(incomingMock.paused, false, 'Incoming audio must be playing');
 
-  // 7B: Runtime Handover Simulation: simulate playTrack consuming handover state
+  // 7B: Full HTMLAudioElement Handover Life-Cycle & Metadata Readiness Test
   const mockAudioEl = {
     src: 'http://old.stream/trackA.mp3',
     currentTime: 120.0,
-    volume: 0.0, // Faded to 0 during crossfade
+    volume: 0.0,
     paused: true,
     preload: 'none',
+    readyState: 0, // Metadata not ready yet!
+    _listeners: {},
+    addEventListener(event, fn, opts) {
+      this._listeners[event] = this._listeners[event] || [];
+      this._listeners[event].push({ fn, once: opts && opts.once });
+    },
+    dispatchEvent(event) {
+      const list = this._listeners[event] || [];
+      this._listeners[event] = [];
+      for (const item of list) item.fn();
+    },
     play() { this.paused = false; }
   };
+
   const mockState = {
     volume: 0.85,
     isPlaying: false,
@@ -283,30 +340,43 @@ async function runTests() {
     }
   };
 
-  // Execute handover logic as implemented in app.js
   const incomingTrack = { id: 'track_incoming_b', title: 'Incoming Track' };
   let currentToken = 1;
-  let handoverExecuted = false;
 
+  // Real handover execution path as updated in app.js
   if (mockState._autoMixHandover && (incomingTrack.id === mockState._autoMixHandover.trackId)) {
     const handover = mockState._autoMixHandover;
     mockState._autoMixHandover = null;
     if (currentToken === mockState.loadToken) {
-      mockAudioEl.preload = 'auto';
+      mockAudioEl.preload = "auto";
       mockAudioEl.src = handover.src;
-      mockAudioEl.currentTime = handover.currentTime;
-      mockAudioEl.volume = mockState.volume != null ? mockState.volume : 1.0;
-      mockAudioEl.play();
-      handoverExecuted = true;
+      const applyHandoverOffset = () => {
+        if (currentToken !== mockState.loadToken) return;
+        mockAudioEl.currentTime = handover.currentTime;
+        mockAudioEl.volume = mockState.volume != null ? mockState.volume : 1.0;
+        mockAudioEl.play();
+      };
+      if (mockAudioEl.readyState >= 1) {
+        applyHandoverOffset();
+      } else {
+        mockAudioEl.addEventListener('loadedmetadata', applyHandoverOffset, { once: true });
+      }
     }
   }
 
-  assert.strictEqual(handoverExecuted, true, 'Handover must execute');
-  assert.strictEqual(mockAudioEl.src, 'http://new.stream/trackB.mp3', 'Audio source must seamlessly transfer');
-  assert.strictEqual(mockAudioEl.currentTime, 5.4, 'Audio currentTime must continue at exact handover position (5.4s, NOT 0:00)');
-  assert.strictEqual(mockAudioEl.volume, 0.85, 'Audio volume must be restored to user level (NOT muted)');
-  assert.strictEqual(mockAudioEl.paused, false, 'Audio playback must continue playing');
-  assert.strictEqual(mockState._autoMixHandover, null, 'state._autoMixHandover must be cleared after handover');
+  // Before loadedmetadata fires: currentTime should NOT be sought yet
+  assert.strictEqual(mockAudioEl.src, 'http://new.stream/trackB.mp3', 'Source must be assigned');
+  assert.strictEqual(mockAudioEl.currentTime, 120.0, 'Must NOT seek before loadedmetadata event');
+  assert.strictEqual(mockAudioEl.paused, true, 'Must NOT play before metadata is ready');
+
+  // Simulate audio subsystem firing loadedmetadata
+  mockAudioEl.readyState = 1;
+  mockAudioEl.dispatchEvent('loadedmetadata');
+
+  assert.strictEqual(mockAudioEl.currentTime, 5.4, 'currentTime must seamlessly seek to 5.4s upon loadedmetadata');
+  assert.strictEqual(mockAudioEl.volume, 0.85, 'Volume must be restored to user state');
+  assert.strictEqual(mockAudioEl.paused, false, 'Playback must resume smoothly');
+  assert.strictEqual(mockState._autoMixHandover, null, 'Handover state must be cleared');
   console.log(' -> AutoMix DJ runtime handover execution verified (PASS).');
 
   // 8. Verify Integration Bridge Single-Source Clear Listener

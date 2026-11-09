@@ -4693,10 +4693,18 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         if (hlsInstance) { try { hlsInstance.destroy(); } catch (_) {} hlsInstance = null; }
         el.nativeAudio.preload = "auto";
         el.nativeAudio.src = handover.src;
-        try { el.nativeAudio.currentTime = handover.currentTime; } catch (_) {}
-        el.nativeAudio.volume = state.volume != null ? state.volume : 1.0;
-        playSmooth();
-        applyAudioSettings();
+        const applyHandoverOffset = () => {
+          if (currentToken !== state.loadToken) return;
+          try { el.nativeAudio.currentTime = handover.currentTime; } catch (_) {}
+          el.nativeAudio.volume = state.volume != null ? state.volume : 1.0;
+          playSmooth();
+          applyAudioSettings();
+        };
+        if (el.nativeAudio.readyState >= 1) {
+          applyHandoverOffset();
+        } else {
+          el.nativeAudio.addEventListener("loadedmetadata", applyHandoverOffset, { once: true });
+        }
         return;
       }
     }

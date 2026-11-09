@@ -45,18 +45,24 @@ function isTransferConsumedOnDisk(transferId) {
 function markTransferConsumedOnDisk(transferId, expiresAt) {
   if (!transferId) return;
   const ledgerPath = getLedgerPath();
+  const tmpPath = `${ledgerPath}.${process.pid}.${Date.now()}.tmp`;
+  let data = {};
+  if (fs.existsSync(ledgerPath)) {
+    try { data = JSON.parse(fs.readFileSync(ledgerPath, 'utf8')) || {}; } catch (_) {}
+  }
+  const now = Date.now();
+  for (const [id, exp] of Object.entries(data)) {
+    if (now > Number(exp)) delete data[id];
+  }
+  data[transferId] = Number(expiresAt) || (now + TRANSFER_TOKEN_TTL_MS);
+  // Atomic write via tmp file and rename; do NOT swallow persistence error!
+  fs.writeFileSync(tmpPath, JSON.stringify(data), { encoding: 'utf8', mode: 0o600 });
   try {
-    let data = {};
-    if (fs.existsSync(ledgerPath)) {
-      try { data = JSON.parse(fs.readFileSync(ledgerPath, 'utf8')) || {}; } catch (_) {}
-    }
-    const now = Date.now();
-    for (const [id, exp] of Object.entries(data)) {
-      if (now > Number(exp)) delete data[id];
-    }
-    data[transferId] = Number(expiresAt) || (now + TRANSFER_TOKEN_TTL_MS);
+    fs.renameSync(tmpPath, ledgerPath);
+  } catch (err) {
     fs.writeFileSync(ledgerPath, JSON.stringify(data), { encoding: 'utf8', mode: 0o600 });
-  } catch (_) {}
+    try { fs.unlinkSync(tmpPath); } catch (_) {}
+  }
 }
 
 function getPrimaryLocalIp() {
@@ -73,28 +79,30 @@ function getPrimaryLocalIp() {
   return null; // Never advertise loopback 127.0.0.1 as a LAN server
 }
 
-function deriveTransferCipherKey(secretKey, pin = '') {
+function deriveTransferCipherKey(secretKey, pin = '', salt = 'eclipse-qr-v2-salt') {
   if (pin) {
-    // Two-channel key derivation: PBKDF2 with out-of-band PIN protection
-    return crypto.pbkdf2Sync(secretKey, `eclipse-pin::${pin}`, 5000, 32, 'sha256');
+    // Two-channel key derivation: PBKDF2 with out-of-band PIN protection, per-ticket salt, and 100,000 iterations
+    return crypto.pbkdf2Sync(secretKey, `eclipse-pin::${salt}::${pin}`, 100000, 32, 'sha256');
   }
   return crypto.createHash('sha256').update(`eclipse-qr-v2::${secretKey}`).digest();
 }
 
-function encryptAccountForTransit(accountObj, secretKey, pin = '') {
-  const key = deriveTransferCipherKey(secretKey, pin);
+function encryptAccountForTransit(accountObj, secretKey, pin = '', salt = '') {
+  const effectiveSalt = salt || crypto.randomBytes(16).toString('hex');
+  const key = deriveTransferCipherKey(secretKey, pin, effectiveSalt);
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
   const plain = JSON.stringify(accountObj || {});
   let encrypted = cipher.update(plain, 'utf8', 'hex');
   encrypted += cipher.final('hex');
   const tag = cipher.getAuthTag().toString('hex');
-  return { enc: true, iv: iv.toString('hex'), tag, data: encrypted, pinProtected: !!pin };
+  return { enc: true, iv: iv.toString('hex'), tag, data: encrypted, pinProtected: !!pin, salt: effectiveSalt };
 }
 
 function decryptAccountFromTransit(encBundle, secretKey, pin = '') {
   if (!encBundle || !encBundle.enc) return encBundle;
-  const key = deriveTransferCipherKey(secretKey, pin);
+  const salt = encBundle.salt || 'eclipse-qr-v2-salt';
+  const key = deriveTransferCipherKey(secretKey, pin, salt);
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(encBundle.iv, 'hex'));
   decipher.setAuthTag(Buffer.from(encBundle.tag, 'hex'));
   let decrypted = decipher.update(encBundle.data, 'hex', 'utf8');
@@ -133,12 +141,13 @@ function createTransferPayload(accountData = {}, port = 38472, options = {}) {
   }, TRANSFER_TOKEN_TTL_MS + 1000);
   if (timer && typeof timer.unref === 'function') timer.unref();
 
-  // If two-channel direct mode is requested, generate out-of-band PIN
+  // If two-channel direct mode is requested, generate out-of-band PIN with CSPRNG
   let pin = null;
   let directPayload = null;
   if (options && options.directPin) {
-    pin = String(Math.floor(100000 + Math.random() * 900000));
-    const enc = encryptAccountForTransit(payload.account, secretKey, pin);
+    pin = String(crypto.randomInt(100000, 1000000));
+    const salt = crypto.randomBytes(16).toString('hex');
+    const enc = encryptAccountForTransit(payload.account, secretKey, pin, salt);
     directPayload = {
       ...enc,
       transferId,

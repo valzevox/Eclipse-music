@@ -239,16 +239,24 @@
     }
 
     if (typeof window.downloadTrackBatch !== 'function') {
-      window.downloadTrackBatch = async function (tracks) {
+      window.downloadTrackBatch = async function (tracks, options = {}) {
         const list = Array.isArray(tracks) ? tracks : [];
         if (list.length === 0) return { done: [], failed: [] };
         const tkn = getInternalApiToken();
         const base = getInternalApiBase();
+        const signal = options && options.signal ? options.signal : null;
 
         const downloadOne = async (t) => {
+          if (signal && signal.aborted) {
+            const err = new Error('AbortError');
+            err.name = 'AbortError';
+            throw err;
+          }
           const thumbUrl = t.thumbnail || t.cover || '';
           const dlUrl = `${base}/api/download?url=${encodeURIComponent(t.url || '')}&id=${encodeURIComponent(t.id || '')}&title=${encodeURIComponent(t.title || '')}&artist=${encodeURIComponent(t.artist || '')}&format=m4a&quality=high&thumbnail=${encodeURIComponent(thumbUrl)}&token=${encodeURIComponent(tkn)}&t=${encodeURIComponent(tkn)}`;
-          const res = await fetch(dlUrl, { headers: { 'X-Eclipse-Token': tkn, 'X-Muriel-Token': tkn } });
+          const fetchOpts = { headers: { 'X-Eclipse-Token': tkn, 'X-Muriel-Token': tkn } };
+          if (signal) fetchOpts.signal = signal;
+          const res = await fetch(dlUrl, fetchOpts);
           const data = await res.json();
           if (!data || !data.success) {
             const err = new Error((data && data.error) || 'Failed to download track');
@@ -260,7 +268,7 @@
         };
 
         if (window.MurielDownloadBatch && typeof window.MurielDownloadBatch.runDownloadBatch === 'function') {
-          return await window.MurielDownloadBatch.runDownloadBatch(list, downloadOne, { concurrency: 2, retries: 2, finalPass: false });
+          return await window.MurielDownloadBatch.runDownloadBatch(list, downloadOne, { concurrency: 2, retries: 2, finalPass: false, signal });
         }
 
         const done = [];
@@ -271,6 +279,7 @@
             done.push(item);
           } catch (error) {
             failed.push({ item, error });
+            if (signal && signal.aborted) break;
           }
         }
         return { done, failed };
@@ -301,8 +310,8 @@
           });
 
           if (toDownload.length > 0 && typeof window.downloadTrackBatch === 'function') {
-            return await window.smartDownloadManagerInstance.startSync(async (track) => {
-              const res = await window.downloadTrackBatch([track]);
+            return await window.smartDownloadManagerInstance.startSync(async (track, opts) => {
+              const res = await window.downloadTrackBatch([track], opts);
               if (res && res.failed && res.failed.length > 0) {
                 throw res.failed[0].error || new Error('Track download failed');
               }
