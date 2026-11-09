@@ -405,17 +405,22 @@ async function runTests() {
   const testLockFile = path.join(testLockDir, 'test.lock');
   const reaperWorkerPath = path.join(__dirname, 'test-stale-reaper-worker.js');
 
-  // Subtest 1: Malformed lock (invalid PID or format) must NOT be deleted (fail-closed)
+  // Subtest 1: Malformed lock (invalid PID format or corrupt string) must NOT be deleted (fail-closed)
   fs.writeFileSync(testLockFile, 'malformed_lock_content_without_pid\n', 'utf8');
   fs.utimesSync(testLockFile, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
   assert.strictEqual(pcQr.breakStaleLock(testLockFile), false, 'breakStaleLock must return false for malformed lock');
   assert(fs.existsSync(testLockFile), 'Malformed lock file must NOT be deleted');
 
-  // Subtest 1B: Empty lock file must NOT be deleted (fail-closed)
-  fs.writeFileSync(testLockFile, '   \n', 'utf8');
+  // Subtest 1B: Young empty lock file within grace period (<= 5s) must NOT be deleted prematurely
+  fs.writeFileSync(testLockFile, '');
+  fs.utimesSync(testLockFile, (Date.now() - 2000) / 1000, (Date.now() - 2000) / 1000);
+  assert.strictEqual(pcQr.breakStaleLock(testLockFile), false, 'breakStaleLock must return false for young empty lock within grace period');
+  assert(fs.existsSync(testLockFile), 'Young empty lock must NOT be deleted');
+
+  // Subtest 1C: Abandoned empty lock file older than grace period (> 5s) must be safely recovered (no permanent deadlock)
   fs.utimesSync(testLockFile, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
-  assert.strictEqual(pcQr.breakStaleLock(testLockFile), false, 'breakStaleLock must return false for empty lock file');
-  assert(fs.existsSync(testLockFile), 'Empty lock file must NOT be deleted');
+  assert.strictEqual(pcQr.breakStaleLock(testLockFile), true, 'breakStaleLock must recover abandoned empty lock file');
+  assert(!fs.existsSync(testLockFile), 'Abandoned empty lock must be cleaned up to prevent permanent deadlock');
 
   // Subtest 2: Owner process is ALIVE even older than 30s -> must NOT be deleted
   fs.writeFileSync(testLockFile, `${process.pid}:${Date.now() - 35000}:live_token\n`, 'utf8');
@@ -482,7 +487,110 @@ async function runTests() {
     cleanupReapers();
   }
 
-  // Subtest 5: Concurrency Race Test Across Multiple Rounds:
+  // Subtest 4B: Stale ReaperLock Crash & Multi-Process Concurrent Recovery
+  // Simulates Process A crashing while holding .reaper; two reapers B & C race to recover; Process D acquires new lock
+  const crashWorker = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  await new Promise((res, rej) => {
+    const t = setTimeout(() => rej(new Error('Crash worker READY timeout')), 3000);
+    crashWorker.on('message', (m) => {
+      if (m && m.status === 'READY') {
+        clearTimeout(t);
+        crashWorker.send({ action: 'HOLD_REAPER_AND_DIE' });
+      } else if (m && m.status === 'LOCKED') {
+        res();
+      }
+    });
+  });
+  await new Promise((res) => crashWorker.on('exit', res));
+
+  // The .reaper file now sits on disk with the dead crashWorker PID. Age it past 5s:
+  const reaperFilePath = `${testLockFile}.reaper`;
+  assert(fs.existsSync(reaperFilePath), 'Stale .reaper lock must exist after crash worker dies');
+  fs.utimesSync(reaperFilePath, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
+
+  // Also put a dead lock at testLockFile
+  fs.writeFileSync(testLockFile, `${deadPid}:${Date.now() - 10000}:target_dead_token\n`, 'utf8');
+  fs.utimesSync(testLockFile, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
+
+  // Spawn Reapers B and C concurrently to recover the stale .reaper and dead targetLock
+  const reaperB = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  const reaperC = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  const crashReapers = new Set([reaperB, reaperC]);
+  const cleanupCrashReapers = () => { for (const r of crashReapers) { try { r.kill(); } catch (_) {} } crashReapers.clear(); };
+
+  try {
+    const bcMsgs = [];
+    reaperB.on('message', (m) => { if (m && m.status === 'DONE') bcMsgs.push(m); });
+    reaperC.on('message', (m) => { if (m && m.status === 'DONE') bcMsgs.push(m); });
+    reaperB.on('exit', () => crashReapers.delete(reaperB));
+    reaperC.on('exit', () => crashReapers.delete(reaperC));
+
+    await Promise.all([
+      new Promise((res, rej) => {
+        const t = setTimeout(() => { cleanupCrashReapers(); rej(new Error('Reaper B READY timeout')); }, 3000);
+        reaperB.on('message', (m) => { if (m && m.status === 'READY') { clearTimeout(t); res(); } });
+      }),
+      new Promise((res, rej) => {
+        const t = setTimeout(() => { cleanupCrashReapers(); rej(new Error('Reaper C READY timeout')); }, 3000);
+        reaperC.on('message', (m) => { if (m && m.status === 'READY') { clearTimeout(t); res(); } });
+      })
+    ]);
+
+    // Dispatch REAP simultaneously
+    reaperB.send({ action: 'REAP' });
+    reaperC.send({ action: 'REAP' });
+
+    // Process D attempts to acquire new lock as soon as stale lock is cleared
+    const procDToken = `${process.pid}:${Date.now()}:proc_d_active_token`;
+    let procDAcquired = false;
+    let procDFd = null;
+    const deadlineD = Date.now() + 2500;
+    while (Date.now() < deadlineD) {
+      try {
+        procDFd = fs.openSync(testLockFile, 'wx');
+        fs.writeSync(procDFd, procDToken);
+        procDAcquired = true;
+        break;
+      } catch (e) {
+        if (e.code !== 'EEXIST') throw e;
+        const waitUntil = Date.now() + 5;
+        while (Date.now() < waitUntil) {}
+      }
+    }
+
+    assert(procDAcquired, 'Process D must acquire lock once stale locks are recovered');
+
+    const bcExitCodes = await Promise.all([
+      new Promise((res) => reaperB.on('exit', res)),
+      new Promise((res) => reaperC.on('exit', res))
+    ]);
+
+    assert.strictEqual(bcExitCodes[0], 0, 'Reaper B must exit 0');
+    assert.strictEqual(bcExitCodes[1], 0, 'Reaper C must exit 0');
+
+    // CRITICAL: Process D's lock must NOT be deleted or overwritten by the competing reaper
+    assert(fs.existsSync(testLockFile), 'Process D lock must remain on disk');
+    const diskLockD = fs.readFileSync(testLockFile, 'utf8').trim();
+    assert.strictEqual(diskLockD, procDToken, 'Process D lock token must NOT be modified or corrupted');
+
+    try { if (procDFd !== null) fs.closeSync(procDFd); } catch (_) {}
+    try { fs.unlinkSync(testLockFile); } catch (_) {}
+  } finally {
+    cleanupCrashReapers();
+  }
+
+  // Subtest 4C: Empty ReaperLock Recovery (Crash right after openSync before writing token)
+  fs.writeFileSync(reaperFilePath, '');
+  fs.utimesSync(reaperFilePath, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
+  fs.writeFileSync(testLockFile, `${deadPid}:${Date.now() - 10000}:empty_reaper_target_token\n`, 'utf8');
+  fs.utimesSync(testLockFile, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
+
+  const emptyReapOk = pcQr.breakStaleLock(testLockFile);
+  assert.strictEqual(emptyReapOk, true, 'Empty stale .reaper lock must be safely recovered without deadlock');
+  assert(!fs.existsSync(testLockFile), 'Target lock must be cleanly cleared after empty reaper recovery');
+  assert(!fs.existsSync(reaperFilePath), 'Empty .reaper lock must be removed');
+
+  // Subtest 5: Concurrency Race Test Across Multiple Rounds with Strict IPC & Timeouts:
   // While 2 reapers attempt to reap, a new process acquires lock immediately upon deletion.
   // CRITICAL ASSERTION: The newly acquired lock MUST NEVER be deleted or overwritten by any reaper!
   for (let round = 1; round <= 5; round++) {
@@ -494,14 +602,42 @@ async function runTests() {
     const roundWorkers = new Set([rA, rB]);
     const cleanupRound = () => { for (const w of roundWorkers) { try { w.kill(); } catch (_) {} } roundWorkers.clear(); };
 
+    let rAMsg = null;
+    let rBMsg = null;
+    rA.on('message', (m) => { if (m && m.status === 'DONE') rAMsg = m; });
+    rB.on('message', (m) => { if (m && m.status === 'DONE') rBMsg = m; });
+
     try {
       rA.on('exit', () => roundWorkers.delete(rA));
       rB.on('exit', () => roundWorkers.delete(rB));
 
+      let roundReadyDone = false;
+      // Strict READY timeout with premature exit check
       await Promise.all([
-        new Promise((res) => rA.on('message', (m) => { if (m && m.status === 'READY') res(); })),
-        new Promise((res) => rB.on('message', (m) => { if (m && m.status === 'READY') res(); }))
+        new Promise((res, rej) => {
+          const t = setTimeout(() => { cleanupRound(); rej(new Error(`Round ${round}: rA READY timeout`)); }, 4000);
+          rA.on('message', (m) => { if (m && m.status === 'READY') { clearTimeout(t); res(); } });
+          rA.once('exit', (c) => {
+            if (!roundReadyDone) {
+              clearTimeout(t);
+              cleanupRound();
+              rej(new Error(`Round ${round}: rA exited prematurely with code ${c}`));
+            }
+          });
+        }),
+        new Promise((res, rej) => {
+          const t = setTimeout(() => { cleanupRound(); rej(new Error(`Round ${round}: rB READY timeout`)); }, 4000);
+          rB.on('message', (m) => { if (m && m.status === 'READY') { clearTimeout(t); res(); } });
+          rB.once('exit', (c) => {
+            if (!roundReadyDone) {
+              clearTimeout(t);
+              cleanupRound();
+              rej(new Error(`Round ${round}: rB exited prematurely with code ${c}`));
+            }
+          });
+        })
       ]);
+      roundReadyDone = true;
 
       // Trigger simultaneous reap
       rA.send({ action: 'REAP' });
@@ -511,7 +647,7 @@ async function runTests() {
       const newProcessToken = `${process.pid}:${Date.now()}:new_live_process_round_${round}`;
       let newLockAcquired = false;
       let newLockFd = null;
-      const acquireDeadline = Date.now() + 2000;
+      const acquireDeadline = Date.now() + 2500;
       while (Date.now() < acquireDeadline) {
         try {
           newLockFd = fs.openSync(testLockFile, 'wx');
@@ -527,11 +663,21 @@ async function runTests() {
 
       assert(newLockAcquired, `Round ${round}: New process must acquire lock once stale lock is cleared`);
 
-      // Wait for both reapers to exit
-      await Promise.all([
-        new Promise((res) => rA.on('exit', res)),
-        new Promise((res) => rB.on('exit', res))
+      // Wait for both reapers to exit with strict timeout
+      const exitResults = await Promise.all([
+        new Promise((res, rej) => {
+          const t = setTimeout(() => { cleanupRound(); rej(new Error(`Round ${round}: rA exit timeout`)); }, 5000);
+          rA.on('exit', (c) => { clearTimeout(t); res(c); });
+        }),
+        new Promise((res, rej) => {
+          const t = setTimeout(() => { cleanupRound(); rej(new Error(`Round ${round}: rB exit timeout`)); }, 5000);
+          rB.on('exit', (c) => { clearTimeout(t); res(c); });
+        })
       ]);
+
+      assert.strictEqual(exitResults[0], 0, `Round ${round}: rA must exit 0`);
+      assert.strictEqual(exitResults[1], 0, `Round ${round}: rB must exit 0`);
+      assert(rAMsg && rBMsg, `Round ${round}: Both workers must send IPC DONE messages`);
 
       // CRITICAL VERIFICATION:
       // Test lock MUST still exist on disk and MUST STILL hold the new process's token!

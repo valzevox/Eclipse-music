@@ -25,10 +25,45 @@ function exitWith(msg, code) {
 if (process.send) {
   process.send({ status: 'READY', pid: process.pid });
   process.on('message', (msg) => {
-    if (msg && msg.action === 'REAP') {
+    if (!msg || !msg.action) return;
+
+    if (msg.action === 'REAP') {
       try {
         const reaped = qr.breakStaleLock(targetLock);
         exitWith({ status: 'DONE', reaped, pid: process.pid }, 0);
+      } catch (err) {
+        exitWith({ status: 'ERROR', error: err.message, pid: process.pid }, 1);
+      }
+    } else if (msg.action === 'HOLD_REAPER_AND_DIE') {
+      // Simulates sudden process crash while holding .reaper with written PID
+      try {
+        const reaperPath = `${targetLock}.reaper`;
+        const fd = fs.openSync(reaperPath, 'wx');
+        fs.writeSync(fd, `${process.pid}:${Date.now()}:reaper_crash_token`);
+        // Notify parent lock is acquired, then crash immediately without unlinking in finally
+        if (process.send) {
+          process.send({ status: 'LOCKED', pid: process.pid }, () => {
+            process.exit(0);
+          });
+        } else {
+          process.exit(0);
+        }
+      } catch (err) {
+        exitWith({ status: 'ERROR', error: err.message, pid: process.pid }, 1);
+      }
+    } else if (msg.action === 'HOLD_EMPTY_AND_DIE') {
+      // Simulates sudden process crash right after openSync('wx') before writing token
+      try {
+        const reaperPath = `${targetLock}.reaper`;
+        const fd = fs.openSync(reaperPath, 'wx');
+        // Do not write anything (empty lock)
+        if (process.send) {
+          process.send({ status: 'LOCKED', pid: process.pid }, () => {
+            process.exit(0);
+          });
+        } else {
+          process.exit(0);
+        }
       } catch (err) {
         exitWith({ status: 'ERROR', error: err.message, pid: process.pid }, 1);
       }

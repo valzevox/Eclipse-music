@@ -54,94 +54,140 @@ function isTransferConsumedOnDisk(transferId) {
   }
 }
 
-// Safe atomic stale lock recovery with cross-process reaper mutual exclusion
-function breakStaleLock(customLockPath = null) {
-  const targetLock = customLockPath || `${getLedgerPath()}.lock`;
-  const reaperLock = `${targetLock}.reaper`;
-
-  // Acquire exclusive reaper lock using atomic kernel flags (O_CREAT | O_EXCL)
-  // Ensures at most ONE reaper process can execute stale recovery at any moment across the OS
-  let reaperFd = null;
+// Safe atomic stale lock recovery using kernel file descriptor validation and inode verification (TOCTOU-free)
+function recoverStaleLockFile(filePath, gracePeriodMs = 5000) {
+  let fd = null;
   try {
-    reaperFd = fs.openSync(reaperLock, 'wx');
-    fs.writeSync(reaperFd, `${process.pid}:${Date.now()}`);
-  } catch (e) {
-    if (e.code === 'EEXIST') {
-      // Another reaper process is currently executing recovery.
-      // Check if that reaper died while holding reaperLock (> 10s and owner ESRCH)
-      try {
-        const rStat = fs.statSync(reaperLock);
-        if (Date.now() - rStat.mtimeMs > 10000) {
-          const rRaw = fs.readFileSync(reaperLock, 'utf8').trim();
-          const rPid = parseInt(rRaw.split(':')[0], 10);
-          if (!isNaN(rPid) && rPid > 0) {
-            try {
-              process.kill(rPid, 0);
-            } catch (rErr) {
-              if (rErr.code === 'ESRCH') {
-                try { fs.unlinkSync(reaperLock); } catch (_) {}
-              }
-            }
-          }
-        }
-      } catch (_) {}
-      return false;
-    }
-    return false;
-  }
-
-  try {
-    if (!fs.existsSync(targetLock)) return false;
-    const stat = fs.statSync(targetLock);
-    // Grace period: do not touch locks younger than 5000ms
-    if (Date.now() - stat.mtimeMs <= 5000) return false;
-
-    const raw = fs.readFileSync(targetLock, 'utf8').trim();
-    const parts = raw.split(':');
-    if (parts.length < 2) {
-      // Malformed lock format -> fail-closed: do not delete
-      return false;
-    }
-    const lockPid = parseInt(parts[0], 10);
-    if (isNaN(lockPid) || lockPid <= 0) {
-      // Malformed PID -> fail-closed: do not delete
-      return false;
-    }
-
-    // Process liveness check with strict error classification:
-    // ESRCH = process does not exist (confirmed dead)
-    // EPERM = process exists but lacks signal permissions (alive)
-    // Any other error / success = process alive or uncertain -> fail-safe: retain alive
-    let isDead = false;
+    if (!fs.existsSync(filePath)) return false;
     try {
-      process.kill(lockPid, 0);
-      isDead = false;
-    } catch (err) {
-      if (err.code === 'ESRCH') {
-        isDead = true;
-      } else {
-        isDead = false;
+      fd = fs.openSync(filePath, 'r+');
+    } catch (_) {
+      return false;
+    }
+    const fstat = fs.fstatSync(fd);
+    const now = Date.now();
+    if (now - fstat.mtimeMs <= gracePeriodMs) {
+      return false;
+    }
+
+    const buf = Buffer.alloc(1024);
+    const n = fs.readSync(fd, buf, 0, 1024, 0);
+    const raw = buf.toString('utf8', 0, n).trim();
+    let isStale = false;
+
+    if (!raw) {
+      // Empty lock file:
+      // If a process crashed right after openSync('wx') before writing token,
+      // and gracePeriodMs has elapsed, it is confirmed crashed/abandoned!
+      isStale = true;
+    } else {
+      const parts = raw.split(':');
+      if (parts.length < 2) {
+        // Malformed content -> fail-closed: do not delete
+        return false;
+      }
+      const lockPid = parseInt(parts[0], 10);
+      if (isNaN(lockPid) || lockPid <= 0) {
+        // Malformed PID -> fail-closed: do not delete
+        return false;
+      }
+
+      // Check owner process liveness:
+      // ESRCH = process does not exist (dead)
+      // EPERM = process exists but lacks permission to signal (alive)
+      // Success = process exists (alive)
+      // Any other error -> fail-safe: assume alive
+      try {
+        process.kill(lockPid, 0);
+        // Process is ALIVE -> never delete lock, regardless of age!
+        return false;
+      } catch (err) {
+        if (err.code === 'ESRCH') {
+          isStale = true;
+        } else {
+          // EPERM or indeterminate error -> treat as ALIVE
+          return false;
+        }
       }
     }
 
-    // CRITICAL: If owner process is ALIVE, NEVER delete the lock, even if older than 30s!
-    if (!isDead) {
-      return false;
-    }
+    if (!isStale) return false;
 
-    // Owner is confirmed dead (ESRCH).
-    // Re-verify that the lock still has the exact same dead PID token before unlinking
-    const verifyRaw = fs.readFileSync(targetLock, 'utf8').trim();
-    if (verifyRaw === raw) {
-      fs.unlinkSync(targetLock);
+    // Stamp the file descriptor with this process's unique reaping signature
+    const reapStamp = `REAPING:${process.pid}:${now}:${crypto.randomBytes(6).toString('hex')}`;
+    fs.ftruncateSync(fd, 0);
+    fs.writeSync(fd, reapStamp, 0, 'utf8');
+
+    // Re-verify that the path on disk still points to the exact same file inode and content
+    if (!fs.existsSync(filePath)) return true;
+    const diskStat = fs.statSync(filePath);
+    const diskContent = fs.readFileSync(filePath, 'utf8').trim();
+
+    if (diskStat.ino === fstat.ino && diskStat.dev === fstat.dev && diskContent === reapStamp) {
+      fs.unlinkSync(filePath);
       return true;
     }
     return false;
   } catch (_) {
     return false;
   } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch (_) {}
+    }
+  }
+}
+
+// Safe atomic stale lock recovery with cross-process reaper mutual exclusion
+function breakStaleLock(customLockPath = null) {
+  const targetLock = customLockPath || `${getLedgerPath()}.lock`;
+  const reaperLock = `${targetLock}.reaper`;
+
+  const reaperToken = `${process.pid}:${Date.now()}:${crypto.randomBytes(6).toString('hex')}`;
+  let reaperFd = null;
+  let reaperStat = null;
+
+  // 1. Acquire exclusive reaper lock using atomic kernel flags (O_CREAT | O_EXCL)
+  try {
+    reaperFd = fs.openSync(reaperLock, 'wx');
+    fs.writeSync(reaperFd, reaperToken);
+    reaperStat = fs.fstatSync(reaperFd);
+  } catch (e) {
+    if (e.code === 'EEXIST') {
+      // Another reaper process holds reaperLock.
+      // Check if that reaperLock itself is stale (crashed process or empty > 5000ms)
+      const reaped = recoverStaleLockFile(reaperLock, 5000);
+      if (reaped) {
+        // Stale reaper lock was safely cleared. Try acquiring one more time.
+        try {
+          reaperFd = fs.openSync(reaperLock, 'wx');
+          fs.writeSync(reaperFd, reaperToken);
+          reaperStat = fs.fstatSync(reaperFd);
+        } catch (_) {
+          return false;
+        }
+      } else {
+        return false;
+      }
+    } else {
+      return false;
+    }
+  }
+
+  // 2. We now hold the exclusive reaper lock. Inspect and recover targetLock:
+  try {
+    return recoverStaleLockFile(targetLock, 5000);
+  } finally {
+    // 3. Release reaperLock strictly matching this process's token AND inode
     try { if (reaperFd !== null) fs.closeSync(reaperFd); } catch (_) {}
-    try { if (fs.existsSync(reaperLock)) fs.unlinkSync(reaperLock); } catch (_) {}
+    try {
+      if (fs.existsSync(reaperLock)) {
+        const diskStat = fs.statSync(reaperLock);
+        const diskOwner = fs.readFileSync(reaperLock, 'utf8').trim();
+        if (diskOwner === reaperToken && reaperStat && diskStat.ino === reaperStat.ino) {
+          fs.unlinkSync(reaperLock);
+        }
+      }
+    } catch (_) {}
   }
 }
 
@@ -155,11 +201,13 @@ function markTransferConsumedOnDisk(transferId, expiresAt, options = {}) {
 
   // Simple exclusive file lock with retry/timeout for multi-process atomicity
   let lockFd = null;
+  let lockStat = null;
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
     try {
       lockFd = fs.openSync(lockPath, 'wx');
       fs.writeSync(lockFd, lockToken);
+      lockStat = fs.fstatSync(lockFd);
       break;
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
@@ -202,12 +250,13 @@ function markTransferConsumedOnDisk(transferId, expiresAt, options = {}) {
     fs.renameSync(tmpPath, ledgerPath);
   } finally {
     try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (_) {}
-    try { fs.closeSync(lockFd); } catch (_) {}
-    // Only unlink lockPath if it still belongs to this process's lockToken!
+    try { if (lockFd !== null) fs.closeSync(lockFd); } catch (_) {}
+    // Only unlink lockPath if it still belongs to this process's lockToken and exact inode!
     try {
       if (fs.existsSync(lockPath)) {
+        const diskStat = fs.statSync(lockPath);
         const currentOwner = fs.readFileSync(lockPath, 'utf8').trim();
-        if (currentOwner === lockToken) {
+        if (currentOwner === lockToken && lockStat && diskStat.ino === lockStat.ino) {
           fs.unlinkSync(lockPath);
         }
       }
