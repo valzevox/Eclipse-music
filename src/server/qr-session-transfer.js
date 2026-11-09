@@ -62,28 +62,32 @@ function markTransferConsumedOnDisk(transferId, expiresAt, options = {}) {
 
   const lockToken = `${process.pid}:${Date.now()}:${crypto.randomBytes(6).toString('hex')}`;
 
-  // Stale lock recovery: safely verify ownership before removing stale lock to avoid deleting another process's newly created lock
+  // Safe stale lock recovery without race condition:
+  // If lock is held longer than 5000ms, read its PID. If the process is dead, safely unlink it.
   const breakStaleLock = () => {
     try {
       if (fs.existsSync(lockPath)) {
         const stat = fs.statSync(lockPath);
         if (Date.now() - stat.mtimeMs > 5000) {
-          const ownerContent = fs.readFileSync(lockPath, 'utf8').trim();
-          // Re-check mtime after reading owner token
-          const statAfter = fs.statSync(lockPath);
-          if (Date.now() - statAfter.mtimeMs > 5000) {
-            const staleTmp = `${lockPath}.stale.${process.pid}.${Date.now()}`;
+          const raw = fs.readFileSync(lockPath, 'utf8').trim();
+          const [lockPidStr] = raw.split(':');
+          const lockPid = parseInt(lockPidStr, 10);
+          let isProcessAlive = false;
+          if (!isNaN(lockPid)) {
             try {
-              // Rename atomically before unlinking so two processes can't race on unlinking a newly created lock
-              fs.renameSync(lockPath, staleTmp);
-              try {
-                const movedOwner = fs.readFileSync(staleTmp, 'utf8').trim();
-                if (movedOwner === ownerContent) {
-                  fs.unlinkSync(staleTmp);
-                }
-              } catch (_) {}
-              try { if (fs.existsSync(staleTmp)) fs.unlinkSync(staleTmp); } catch (_) {}
-            } catch (_) {}
+              process.kill(lockPid, 0);
+              isProcessAlive = true;
+            } catch (err) {
+              // ESRCH = process does not exist; EPERM = process exists but no permission to signal
+              isProcessAlive = (err.code === 'EPERM');
+            }
+          }
+          // Only remove if the owner process is confirmed dead or lock is ancient (> 30s)
+          if (!isProcessAlive || (Date.now() - stat.mtimeMs > 30000)) {
+            const currentRaw = fs.readFileSync(lockPath, 'utf8').trim();
+            if (currentRaw === raw) {
+              try { fs.unlinkSync(lockPath); } catch (_) {}
+            }
           }
         }
       }

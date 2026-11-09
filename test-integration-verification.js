@@ -228,30 +228,35 @@ async function runTests() {
   const successCount = results.filter(c => c === 0).length;
   assert.strictEqual(successCount, 1, 'Exactly one concurrent process must succeed in claiming the ticket; second must be blocked by atomic ledger lock');
 
-  // 5D-3: True Direct QR Concurrent Replay Regression Test with Sync Barrier
+  // 5D-3: True Direct QR Concurrent Replay Regression Test with Strict IPC Handshake
   // Two independent OS child processes simultaneously claim the direct ticket with payload and PIN
   const directTicket = pcQr.createTransferPayload({ id: 'direct_u', cookie: 'SAPISID=direct_concurrent_cookie' }, 38472, { directPin: true });
   const directWorkerPath = path.join(__dirname, 'test-qr-direct-worker.js');
   const directPayloadStr = JSON.stringify(directTicket.directPayload);
-  const barrierPath = path.join(os.tmpdir(), `barrier-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
 
-  const directClaimPromises = [
-    new Promise((resolve) => {
-      const child = child_process.fork(directWorkerPath, [directTicket.transferId, directTicket.secretKey, directPayloadStr, directTicket.pin, barrierPath], { stdio: 'pipe' });
-      child.on('exit', (c) => resolve(c));
+  const child1 = child_process.fork(directWorkerPath, [directTicket.transferId, directTicket.secretKey, directPayloadStr, directTicket.pin], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  const child2 = child_process.fork(directWorkerPath, [directTicket.transferId, directTicket.secretKey, directPayloadStr, directTicket.pin], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+
+  // Strict IPC Handshake: Wait until BOTH workers report READY before sending GO
+  await Promise.all([
+    new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('Child 1 READY timeout')), 4000);
+      child1.on('message', (m) => { if (m && m.status === 'READY') { clearTimeout(t); resolve(); } });
     }),
-    new Promise((resolve) => {
-      const child = child_process.fork(directWorkerPath, [directTicket.transferId, directTicket.secretKey, directPayloadStr, directTicket.pin, barrierPath], { stdio: 'pipe' });
-      child.on('exit', (c) => resolve(c));
+    new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('Child 2 READY timeout')), 4000);
+      child2.on('message', (m) => { if (m && m.status === 'READY') { clearTimeout(t); resolve(); } });
     })
-  ];
+  ]);
 
-  // Release synchronization barrier so both child processes race simultaneously
-  await new Promise(r => setTimeout(r, 60));
-  fs.writeFileSync(barrierPath, 'GO', 'utf8');
+  // Both processes are ready and waiting at the barrier: dispatch GO simultaneously
+  child1.send({ action: 'GO' });
+  child2.send({ action: 'GO' });
 
-  const directResults = await Promise.all(directClaimPromises);
-  try { if (fs.existsSync(barrierPath)) fs.unlinkSync(barrierPath); } catch (_) {}
+  const directResults = await Promise.all([
+    new Promise((resolve) => child1.on('exit', (c) => resolve(c))),
+    new Promise((resolve) => child2.on('exit', (c) => resolve(c)))
+  ]);
 
   const directSuccess = directResults.filter(c => c === 0).length;
   const directBlocked = directResults.filter(c => c === 1).length;
@@ -259,10 +264,9 @@ async function runTests() {
   assert.strictEqual(directBlocked, 1, 'Direct QR: Second OS process must be blocked by atomic disk ledger exclusion');
 
   // Post-restart persistent replay check: verify that a subsequent independent process restart is also blocked
-  const restartResult = await new Promise((resolve) => {
-    const child = child_process.fork(directWorkerPath, [directTicket.transferId, directTicket.secretKey, directPayloadStr, directTicket.pin, ''], { stdio: 'pipe' });
-    child.on('exit', (c) => resolve(c));
-  });
+  const restartWorker = child_process.fork(directWorkerPath, [directTicket.transferId, directTicket.secretKey, directPayloadStr, directTicket.pin], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  restartWorker.on('message', (m) => { if (m && m.status === 'READY') restartWorker.send({ action: 'GO' }); });
+  const restartResult = await new Promise((resolve) => restartWorker.on('exit', (c) => resolve(c)));
   assert.strictEqual(restartResult, 1, 'Direct QR: Post-restart process must be replay-blocked by persistent disk ledger');
 
   // 5D-4: Ledger Corruption Fail-Closed Verification (Empty or Corrupted File)
@@ -337,6 +341,7 @@ async function runTests() {
   assert.strictEqual(await SmartDownloadManager.isWifiConnection({ onLine: true, connection: { type: 'ethernet' } }), true, 'Must return true on ethernet');
 
   // 6B: Production downloadTrackBatch Mid-Download Cancellation Test (Real HTTP Test Server & Real Production Downloader Module)
+  let serverObservedClientAbort = false;
   const downloadHttpServer = http.createServer((req, res) => {
     if (req.url.startsWith('/api/download')) {
       // Prolonged response stream to test mid-download abortion over network
@@ -347,8 +352,13 @@ async function runTests() {
           res.end(',"success":true}');
         } catch (_) {}
       }, 1000);
-      req.on('close', () => {
+
+      // Verify that server observes client aborting the stream before writableFinished
+      res.on('close', () => {
         clearTimeout(timer);
+        if (!res.writableFinished) {
+          serverObservedClientAbort = true;
+        }
       });
     } else {
       res.writeHead(404);
@@ -380,12 +390,15 @@ async function runTests() {
     return res;
   }, () => Promise.resolve(activeWifi));
 
-  await new Promise(r => setTimeout(r, 60));
+  await new Promise(r => setTimeout(r, 80));
   activeWifi = false; // Connection switched to cellular during stream download
 
   const abortSyncResult = await midAbortPromise;
+  // Give server event loop a brief moment to process client socket close
+  await new Promise(r => setTimeout(r, 60));
   await new Promise(r => downloadHttpServer.close(r));
 
+  assert.strictEqual(serverObservedClientAbort, true, 'Server must observe client aborting prolonged HTTP stream (!res.writableFinished)');
   assert.strictEqual(abortSyncResult.pausedReason, 'network_switched_to_cellular');
   assert.strictEqual(sdmAbortTest.queue.length, 2, 'Unfinished track must be restored to queue');
   assert.strictEqual(sdmAbortTest.queue[0].id, 'trk_prod_1', 'Restored track must remain at front of queue');
