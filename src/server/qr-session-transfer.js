@@ -54,6 +54,81 @@ function isTransferConsumedOnDisk(transferId) {
   }
 }
 
+// Safe atomic stale lock recovery without race conditions (TOCTOU-free):
+function breakStaleLock(customLockPath = null) {
+  const targetLock = customLockPath || `${getLedgerPath()}.lock`;
+  try {
+    if (!fs.existsSync(targetLock)) return false;
+    const stat = fs.statSync(targetLock);
+    // Grace period: do not inspect locks younger than 5000ms
+    if (Date.now() - stat.mtimeMs <= 5000) return false;
+
+    const raw = fs.readFileSync(targetLock, 'utf8').trim();
+    const parts = raw.split(':');
+    if (parts.length < 2) {
+      // Malformed lock format -> fail-closed: do not delete
+      return false;
+    }
+    const lockPid = parseInt(parts[0], 10);
+    if (isNaN(lockPid) || lockPid <= 0) {
+      // Malformed PID -> fail-closed: do not delete
+      return false;
+    }
+
+    // Process liveness check with strict error classification:
+    // ESRCH = process does not exist (confirmed dead)
+    // EPERM = process exists but lacks signal permissions (alive)
+    // Any other error / success = process alive or uncertain -> fail-safe: retain alive
+    let isDead = false;
+    try {
+      process.kill(lockPid, 0);
+      isDead = false;
+    } catch (err) {
+      if (err.code === 'ESRCH') {
+        isDead = true;
+      } else {
+        isDead = false;
+      }
+    }
+
+    // CRITICAL: If owner process is ALIVE, NEVER delete the lock, even if older than 30s!
+    if (!isDead) {
+      return false;
+    }
+
+    // Atomic stale lock recovery: move targetLock to unique graveyard path to eliminate TOCTOU race
+    const graveyardPath = `${targetLock}.dead.${process.pid}.${Date.now()}.${crypto.randomBytes(6).toString('hex')}`;
+    try {
+      fs.renameSync(targetLock, graveyardPath);
+    } catch (renameErr) {
+      // Another process/reaper acquired or renamed it first -> yield cleanly
+      return false;
+    }
+
+    // Verify graveyard content matches the verified dead lock token
+    try {
+      const graveyardRaw = fs.readFileSync(graveyardPath, 'utf8').trim();
+      if (graveyardRaw === raw) {
+        fs.unlinkSync(graveyardPath);
+        return true;
+      } else {
+        // Unexpected mismatch: restore lock
+        try {
+          fs.renameSync(graveyardPath, targetLock);
+        } catch (_) {
+          try { fs.unlinkSync(graveyardPath); } catch (_) {}
+        }
+        return false;
+      }
+    } catch (_) {
+      try { fs.unlinkSync(graveyardPath); } catch (_) {}
+      return false;
+    }
+  } catch (_) {
+    return false;
+  }
+}
+
 function markTransferConsumedOnDisk(transferId, expiresAt, options = {}) {
   if (!transferId) return;
   const ledgerPath = getLedgerPath();
@@ -61,38 +136,6 @@ function markTransferConsumedOnDisk(transferId, expiresAt, options = {}) {
   const tmpPath = `${ledgerPath}.${process.pid}.${Date.now()}.tmp`;
 
   const lockToken = `${process.pid}:${Date.now()}:${crypto.randomBytes(6).toString('hex')}`;
-
-  // Safe stale lock recovery without race condition:
-  // If lock is held longer than 5000ms, read its PID. If the process is dead, safely unlink it.
-  const breakStaleLock = () => {
-    try {
-      if (fs.existsSync(lockPath)) {
-        const stat = fs.statSync(lockPath);
-        if (Date.now() - stat.mtimeMs > 5000) {
-          const raw = fs.readFileSync(lockPath, 'utf8').trim();
-          const [lockPidStr] = raw.split(':');
-          const lockPid = parseInt(lockPidStr, 10);
-          let isProcessAlive = false;
-          if (!isNaN(lockPid)) {
-            try {
-              process.kill(lockPid, 0);
-              isProcessAlive = true;
-            } catch (err) {
-              // ESRCH = process does not exist; EPERM = process exists but no permission to signal
-              isProcessAlive = (err.code === 'EPERM');
-            }
-          }
-          // Only remove if the owner process is confirmed dead or lock is ancient (> 30s)
-          if (!isProcessAlive || (Date.now() - stat.mtimeMs > 30000)) {
-            const currentRaw = fs.readFileSync(lockPath, 'utf8').trim();
-            if (currentRaw === raw) {
-              try { fs.unlinkSync(lockPath); } catch (_) {}
-            }
-          }
-        }
-      }
-    } catch (_) {}
-  };
 
   // Simple exclusive file lock with retry/timeout for multi-process atomicity
   let lockFd = null;
@@ -104,7 +147,7 @@ function markTransferConsumedOnDisk(transferId, expiresAt, options = {}) {
       break;
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
-      breakStaleLock();
+      breakStaleLock(lockPath);
       const endWait = Date.now() + 15;
       while (Date.now() < endWait) {}
     }
@@ -422,5 +465,6 @@ module.exports = {
   encryptAccountForTransit,
   decryptAccountFromTransit,
   isTransferConsumedOnDisk,
-  markTransferConsumedOnDisk
+  markTransferConsumedOnDisk,
+  breakStaleLock
 };

@@ -3,6 +3,22 @@ const pcQr = require('./src/server/qr-session-transfer');
 
 const [,, transferId, secretKey, directPayloadJson, pin] = process.argv;
 
+function exitWith(msg, code) {
+  if (process.send) {
+    try {
+      process.send(msg, () => {
+        process.exit(code);
+      });
+      setTimeout(() => process.exit(code), 500).unref();
+      return;
+    } catch (_) {
+      process.exit(code);
+    }
+  } else {
+    process.exit(code);
+  }
+}
+
 async function run() {
   // If IPC channel is available, perform strict handshake with parent
   if (process.send) {
@@ -24,20 +40,16 @@ async function run() {
     const directPayload = JSON.parse(directPayloadJson);
     const acc = await pcQr.claimRemoteTransferSession(null, transferId, secretKey, directPayload, pin);
     if (acc && acc.cookie === 'SAPISID=direct_concurrent_cookie') {
-      if (process.send) process.send({ status: 'CLAIM_SUCCESS' });
-      process.exit(0);
+      exitWith({ status: 'CLAIM_SUCCESS' }, 0);
     } else {
-      if (process.send) process.send({ status: 'CLAIM_CORRUPT' });
-      process.exit(2);
+      exitWith({ status: 'CLAIM_CORRUPT' }, 2);
     }
   } catch (err) {
     const reason = err.message.includes('replay') ? 'REPLAY_BLOCKED' : (err.message.includes('lock') ? 'LOCK_CONTENTION' : 'ERROR');
-    if (process.send) process.send({ status: 'CLAIM_REJECTED', reason, error: err.message });
-    process.exit(1);
+    exitWith({ status: 'CLAIM_REJECTED', reason, error: err.message }, 1);
   }
 }
 
 run().catch((err) => {
-  if (process.send) process.send({ status: 'HANDSHAKE_FAILED', error: err.message });
-  process.exit(1);
+  exitWith({ status: 'HANDSHAKE_FAILED', error: err.message }, 1);
 });

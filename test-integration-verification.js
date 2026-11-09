@@ -237,6 +237,14 @@ async function runTests() {
   const child1 = child_process.fork(directWorkerPath, [directTicket.transferId, directTicket.secretKey, directPayloadStr, directTicket.pin], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
   const child2 = child_process.fork(directWorkerPath, [directTicket.transferId, directTicket.secretKey, directPayloadStr, directTicket.pin], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
 
+  const workerMessages = [];
+  child1.on('message', (m) => {
+    if (m && m.status && m.status !== 'READY') workerMessages.push(m);
+  });
+  child2.on('message', (m) => {
+    if (m && m.status && m.status !== 'READY') workerMessages.push(m);
+  });
+
   // Strict IPC Handshake: Wait until BOTH workers report READY before sending GO
   await Promise.all([
     new Promise((resolve, reject) => {
@@ -263,11 +271,34 @@ async function runTests() {
   assert.strictEqual(directSuccess, 1, 'Direct QR: Exactly ONE OS process must succeed in claiming the direct ticket');
   assert.strictEqual(directBlocked, 1, 'Direct QR: Second OS process must be blocked by atomic disk ledger exclusion');
 
+  // Explicit IPC Result Message Assertions:
+  assert.strictEqual(workerMessages.length, 2, 'Both workers must send completion IPC messages');
+  const successMsgs = workerMessages.filter(m => m.status === 'CLAIM_SUCCESS');
+  const rejectedMsgs = workerMessages.filter(m => m.status === 'CLAIM_REJECTED');
+  assert.strictEqual(successMsgs.length, 1, 'Exactly one worker must report CLAIM_SUCCESS');
+  assert.strictEqual(rejectedMsgs.length, 1, 'Exactly one worker must report CLAIM_REJECTED');
+  assert(
+    rejectedMsgs[0].reason === 'LOCK_CONTENTION' || rejectedMsgs[0].reason === 'REPLAY_BLOCKED',
+    `Rejection reason must be LOCK_CONTENTION or REPLAY_BLOCKED, got: ${rejectedMsgs[0].reason}`
+  );
+  const badMsgs = workerMessages.filter(m => m.status === 'ERROR' || m.status === 'CLAIM_CORRUPT' || m.status === 'HANDSHAKE_FAILED');
+  assert.strictEqual(badMsgs.length, 0, 'No worker may report unexpected ERROR or CLAIM_CORRUPT');
+
   // Post-restart persistent replay check: verify that a subsequent independent process restart is also blocked
   const restartWorker = child_process.fork(directWorkerPath, [directTicket.transferId, directTicket.secretKey, directPayloadStr, directTicket.pin], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
-  restartWorker.on('message', (m) => { if (m && m.status === 'READY') restartWorker.send({ action: 'GO' }); });
+  let restartMsg = null;
+  restartWorker.on('message', (m) => {
+    if (m && m.status === 'READY') {
+      restartWorker.send({ action: 'GO' });
+    } else if (m && m.status && m.status !== 'READY') {
+      restartMsg = m;
+    }
+  });
   const restartResult = await new Promise((resolve) => restartWorker.on('exit', (c) => resolve(c)));
   assert.strictEqual(restartResult, 1, 'Direct QR: Post-restart process must be replay-blocked by persistent disk ledger');
+  assert(restartMsg, 'Post-restart worker must report IPC result message');
+  assert.strictEqual(restartMsg.status, 'CLAIM_REJECTED', 'Restart worker must report CLAIM_REJECTED');
+  assert.strictEqual(restartMsg.reason, 'REPLAY_BLOCKED', 'Restart worker must report reason REPLAY_BLOCKED');
 
   // 5D-4: Ledger Corruption Fail-Closed Verification (Empty or Corrupted File)
   const corruptLedgerPath = path.join(os.tmpdir(), 'eclipse-qr-transfers', '.consumed-transfers.json');
@@ -303,6 +334,42 @@ async function runTests() {
 
     try { fs.unlinkSync(corruptLedgerPath); } catch (_) {}
   }
+
+  // 5D-5: TOCTOU-Free Stale Lock Recovery Regression Tests
+  const testLockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-lock-test-'));
+  const testLockFile = path.join(testLockDir, 'test.lock');
+
+  // Subtest 1: Malformed lock (invalid PID or format) must NOT be deleted (fail-closed)
+  fs.writeFileSync(testLockFile, 'malformed_lock_content_without_pid\n', 'utf8');
+  fs.utimesSync(testLockFile, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
+  assert.strictEqual(pcQr.breakStaleLock(testLockFile), false, 'breakStaleLock must return false for malformed lock');
+  assert(fs.existsSync(testLockFile), 'Malformed lock file must NOT be deleted');
+
+  // Subtest 2: Owner process is ALIVE even older than 30s -> must NOT be deleted
+  fs.writeFileSync(testLockFile, `${process.pid}:${Date.now() - 35000}:live_token\n`, 'utf8');
+  fs.utimesSync(testLockFile, (Date.now() - 35000) / 1000, (Date.now() - 35000) / 1000);
+  assert.strictEqual(pcQr.breakStaleLock(testLockFile), false, 'breakStaleLock must return false when owner process is alive');
+  assert(fs.existsSync(testLockFile), 'Lock with alive owner process must NOT be deleted regardless of age');
+
+  // Subtest 3: Owner process is DEAD (ESRCH) -> safely reaped
+  const deadPid = 999999;
+  let pidConfirmedDead = false;
+  try { process.kill(deadPid, 0); } catch (e) { if (e.code === 'ESRCH') pidConfirmedDead = true; }
+  assert(pidConfirmedDead, 'Test requires a confirmed non-existent PID (ESRCH)');
+  fs.writeFileSync(testLockFile, `${deadPid}:${Date.now() - 10000}:dead_token\n`, 'utf8');
+  fs.utimesSync(testLockFile, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
+  assert.strictEqual(pcQr.breakStaleLock(testLockFile), true, 'breakStaleLock must return true when owner process is dead');
+  assert(!fs.existsSync(testLockFile), 'Dead owner lock must be cleanly deleted');
+
+  // Subtest 4: Concurrent reapers on dead lock -> no crash, exactly one reaps
+  fs.writeFileSync(testLockFile, `${deadPid}:${Date.now() - 10000}:dead_concurrent_token\n`, 'utf8');
+  fs.utimesSync(testLockFile, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
+  const reapResults = [pcQr.breakStaleLock(testLockFile), pcQr.breakStaleLock(testLockFile)];
+  const reapCount = reapResults.filter(Boolean).length;
+  assert.strictEqual(reapCount, 1, 'Exactly one concurrent reaper must succeed');
+  assert(!fs.existsSync(testLockFile), 'Concurrent reaped lock must not remain on disk');
+
+  try { fs.rmSync(testLockDir, { recursive: true, force: true }); } catch (_) {}
 
   // 5E: Two-Channel PIN Protection for Direct QR (OWASP 600,000 rounds)
   const ticketPin = pcQr.createTransferPayload({ id: 'pin_u', cookie: 'SAPISID=pin_secret' }, 38472, { directPin: true });
@@ -342,16 +409,25 @@ async function runTests() {
 
   // 6B: Production downloadTrackBatch Mid-Download Cancellation Test (Real HTTP Test Server & Real Production Downloader Module)
   let serverObservedClientAbort = false;
+  let onStreamStarted = null;
+  const streamStartedPromise = new Promise((resolve) => {
+    onStreamStarted = resolve;
+  });
+
   const downloadHttpServer = http.createServer((req, res) => {
     if (req.url.startsWith('/api/download')) {
       // Prolonged response stream to test mid-download abortion over network
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.write('{"streaming":true');
+      if (onStreamStarted) {
+        onStreamStarted();
+        onStreamStarted = null;
+      }
       const timer = setTimeout(() => {
         try {
           res.end(',"success":true}');
         } catch (_) {}
-      }, 1000);
+      }, 1500);
 
       // Verify that server observes client aborting the stream before writableFinished
       res.on('close', () => {
@@ -390,8 +466,9 @@ async function runTests() {
     return res;
   }, () => Promise.resolve(activeWifi));
 
-  await new Promise(r => setTimeout(r, 80));
-  activeWifi = false; // Connection switched to cellular during stream download
+  // Handshake: Wait until HTTP server receives request and starts streaming before toggling network
+  await streamStartedPromise;
+  activeWifi = false; // Connection switched to cellular during active stream download
 
   const abortSyncResult = await midAbortPromise;
   // Give server event loop a brief moment to process client socket close
