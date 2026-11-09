@@ -212,7 +212,37 @@ async function runTests() {
   }
   assert(replayBlockedAcrossProcesses, 'CRITICAL: Multi-process persistent anti-replay must block reused ticket');
 
-  // 5E: Two-Channel PIN Protection for Direct QR
+  // 5D-2: Multi-Process Concurrent Claim & Atomic Ledger Exclusion Verification
+  const concurrentTicket = pcQr.createTransferPayload({ id: 'concurrent_u_pc', cookie: 'SAPISID=concurrent_cookie_pc' }, srvPort);
+  const claimPromises = [
+    new Promise((resolve) => {
+      const child = child_process.fork(workerPath, [srvUrl, concurrentTicket.transferId, concurrentTicket.secretKey], { stdio: 'pipe' });
+      child.on('exit', (c) => resolve(c));
+    }),
+    new Promise((resolve) => {
+      const child = child_process.fork(workerPath, [srvUrl, concurrentTicket.transferId, concurrentTicket.secretKey], { stdio: 'pipe' });
+      child.on('exit', (c) => resolve(c));
+    })
+  ];
+  const results = await Promise.all(claimPromises);
+  const successCount = results.filter(c => c === 0).length;
+  assert.strictEqual(successCount, 1, 'Exactly one concurrent process must succeed in claiming the ticket; second must be blocked by atomic ledger lock');
+
+  // 5D-3: Ledger Corruption Fail-Closed Verification
+  const corruptLedgerPath = path.join(os.tmpdir(), 'eclipse-qr-transfers', '.consumed-transfers.json');
+  if (fs.existsSync(corruptLedgerPath)) {
+    fs.writeFileSync(corruptLedgerPath, '{ NOT_VALID_JSON ... CORRUPTED', 'utf8');
+    let failClosedCaught = false;
+    try {
+      pcQr.isTransferConsumedOnDisk('test_corrupt_id_pc');
+    } catch (err) {
+      if (err.message.includes('fail-closed')) failClosedCaught = true;
+    }
+    assert(failClosedCaught, 'Corrupt ledger must trigger fail-closed security error rather than permitting token reuse');
+    try { fs.unlinkSync(corruptLedgerPath); } catch (_) {}
+  }
+
+  // 5E: Two-Channel PIN Protection for Direct QR (OWASP 600,000 rounds)
   const ticketPin = pcQr.createTransferPayload({ id: 'pin_u', cookie: 'SAPISID=pin_secret' }, 38472, { directPin: true });
   assert(ticketPin.directPayload && ticketPin.directPayload.salt, 'Direct mode must have per-ticket CSPRNG salt');
   assert(ticketPin.pin && ticketPin.pin.length === 6, 'Direct mode must generate 6-digit confirmation PIN');

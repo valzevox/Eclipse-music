@@ -209,8 +209,27 @@
       }
     }
 
-    window.claimQrSessionTransfer = async function (qrInput) {
+    window.createQrSessionTransfer = async function (options = {}) {
+      const tkn = getInternalApiToken();
+      const res = await fetch(`${getInternalApiBase()}/api/ytm/session-transfer/create?t=${encodeURIComponent(tkn)}&token=${encodeURIComponent(tkn)}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Eclipse-Token': tkn,
+          'X-Muriel-Token': tkn
+        },
+        body: JSON.stringify({ directPin: !!options.directPin })
+      });
+      const data = await res.json();
+      if (!data || !data.success) {
+        throw new Error((data && data.error) || 'Failed to create QR session transfer');
+      }
+      return data;
+    };
+
+    window.claimQrSessionTransfer = async function (qrInput, pin = '') {
       const parsed = typeof qrInput === 'string' ? JSON.parse(qrInput) : (qrInput || {});
+      if (pin) parsed.pin = pin;
       const tkn = getInternalApiToken();
       const res = await fetch(`${getInternalApiBase()}/api/ytm/session-transfer/claim?t=${encodeURIComponent(tkn)}&token=${encodeURIComponent(tkn)}`, {
         method: 'POST',

@@ -29,39 +29,73 @@ function getLedgerPath() {
 function isTransferConsumedOnDisk(transferId) {
   if (!transferId) return false;
   const ledgerPath = getLedgerPath();
+  if (!fs.existsSync(ledgerPath)) {
+    return false;
+  }
   try {
-    if (fs.existsSync(ledgerPath)) {
-      const data = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
-      if (data && data[transferId]) {
-        if (Date.now() < Number(data[transferId])) {
-          return true;
-        }
+    const raw = fs.readFileSync(ledgerPath, 'utf8');
+    if (!raw.trim()) return false;
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('Corrupt transfer ledger structure');
+    }
+    if (data[transferId]) {
+      if (Date.now() < Number(data[transferId])) {
+        return true;
       }
     }
-  } catch (_) {}
-  return false;
+    return false;
+  } catch (err) {
+    // Fail-closed: if ledger exists and cannot be read/parsed (corruption/permission error), block claim!
+    throw new Error(`Transfer ledger read/parse failed (fail-closed): ${err.message}`);
+  }
 }
 
 function markTransferConsumedOnDisk(transferId, expiresAt) {
   if (!transferId) return;
   const ledgerPath = getLedgerPath();
+  const lockPath = `${ledgerPath}.lock`;
   const tmpPath = `${ledgerPath}.${process.pid}.${Date.now()}.tmp`;
-  let data = {};
-  if (fs.existsSync(ledgerPath)) {
-    try { data = JSON.parse(fs.readFileSync(ledgerPath, 'utf8')) || {}; } catch (_) {}
+
+  // Simple exclusive file lock with retry/timeout for multi-process atomicity
+  let lockFd = null;
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    try {
+      lockFd = fs.openSync(lockPath, 'wx');
+      break;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      const endWait = Date.now() + 15;
+      while (Date.now() < endWait) {}
+    }
   }
-  const now = Date.now();
-  for (const [id, exp] of Object.entries(data)) {
-    if (now > Number(exp)) delete data[id];
+  if (lockFd === null) {
+    throw new Error('Could not acquire transfer ledger lock (concurrent contention)');
   }
-  data[transferId] = Number(expiresAt) || (now + TRANSFER_TOKEN_TTL_MS);
-  // Atomic write via tmp file and rename; do NOT swallow persistence error!
-  fs.writeFileSync(tmpPath, JSON.stringify(data), { encoding: 'utf8', mode: 0o600 });
+
   try {
+    let data = {};
+    if (fs.existsSync(ledgerPath)) {
+      const raw = fs.readFileSync(ledgerPath, 'utf8');
+      if (raw.trim()) {
+        data = JSON.parse(raw);
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+          throw new Error('Corrupt transfer ledger structure');
+        }
+      }
+    }
+    const now = Date.now();
+    for (const [id, exp] of Object.entries(data)) {
+      if (now > Number(exp)) delete data[id];
+    }
+    data[transferId] = Number(expiresAt) || (now + TRANSFER_TOKEN_TTL_MS);
+    fs.writeFileSync(tmpPath, JSON.stringify(data), { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tmpPath, ledgerPath);
-  } catch (err) {
-    fs.writeFileSync(ledgerPath, JSON.stringify(data), { encoding: 'utf8', mode: 0o600 });
-    try { fs.unlinkSync(tmpPath); } catch (_) {}
+  } finally {
+    try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (_) {}
+    try { fs.closeSync(lockFd); } catch (_) {}
+    try { fs.unlinkSync(lockPath); } catch (_) {}
   }
 }
 
@@ -81,8 +115,8 @@ function getPrimaryLocalIp() {
 
 function deriveTransferCipherKey(secretKey, pin = '', salt = 'eclipse-qr-v2-salt') {
   if (pin) {
-    // Two-channel key derivation: PBKDF2 with out-of-band PIN protection, per-ticket salt, and 100,000 iterations
-    return crypto.pbkdf2Sync(secretKey, `eclipse-pin::${salt}::${pin}`, 100000, 32, 'sha256');
+    // Two-channel key derivation: PBKDF2 with out-of-band PIN protection, per-ticket salt, and 600,000 iterations (OWASP standard)
+    return crypto.pbkdf2Sync(secretKey, `eclipse-pin::${salt}::${pin}`, 600000, 32, 'sha256');
   }
   return crypto.createHash('sha256').update(`eclipse-qr-v2::${secretKey}`).digest();
 }

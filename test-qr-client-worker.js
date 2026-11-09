@@ -1,4 +1,4 @@
-// test-qr-client-worker.js — Independent secondary process testing cross-process QR session claim
+// test-qr-client-worker.js - Independent secondary process testing cross-process QR session claim
 const pcQr = require('./src/server/qr-session-transfer');
 
 const [,, serverUrl, transferId, secretKey] = process.argv;
@@ -6,7 +6,7 @@ const [,, serverUrl, transferId, secretKey] = process.argv;
 async function run() {
   try {
     const acc = await pcQr.claimRemoteTransferSession(serverUrl, transferId, secretKey);
-    if (acc && acc.cookie === 'SAPISID=multi_process_secret') {
+    if (acc && (acc.cookie === 'SAPISID=multi_process_secret' || acc.cookie === 'SAPISID=concurrent_cookie_pc' || acc.cookie === 'SAPISID=concurrent_cookie')) {
       process.exit(0);
     } else {
       process.exit(2);
