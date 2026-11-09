@@ -203,13 +203,13 @@ async function runTests() {
   const SmartDownloadManager = require('./src/renderer/smart-downloads');
   
   // 6A: Unit tests for isWifiConnection()
-  assert.strictEqual(SmartDownloadManager.isWifiConnection(null), false, 'Must return false when navigator is null/undefined');
-  assert.strictEqual(SmartDownloadManager.isWifiConnection({ onLine: true, connection: undefined }), false, 'Must return false when connection is unavailable');
-  assert.strictEqual(SmartDownloadManager.isWifiConnection({ onLine: false, connection: { type: 'wifi' } }), false, 'Must return false when offline');
-  assert.strictEqual(SmartDownloadManager.isWifiConnection({ onLine: true, connection: { type: 'cellular' } }), false, 'Must return false on cellular');
-  assert.strictEqual(SmartDownloadManager.isWifiConnection({ onLine: true, connection: { type: 'unknown' } }), false, 'Must NOT allow unknown connection type under wifiOnly');
-  assert.strictEqual(SmartDownloadManager.isWifiConnection({ onLine: true, connection: { type: 'wifi' } }), true, 'Must return true on wifi');
-  assert.strictEqual(SmartDownloadManager.isWifiConnection({ onLine: true, connection: { type: 'ethernet' } }), true, 'Must return true on ethernet');
+  assert.strictEqual(await SmartDownloadManager.isWifiConnection(null), false, 'Must return false when navigator is null/undefined');
+  assert.strictEqual(await SmartDownloadManager.isWifiConnection({ onLine: true, connection: undefined }), false, 'Must return false when connection is unavailable');
+  assert.strictEqual(await SmartDownloadManager.isWifiConnection({ onLine: false, connection: { type: 'wifi' } }), false, 'Must return false when offline');
+  assert.strictEqual(await SmartDownloadManager.isWifiConnection({ onLine: true, connection: { type: 'cellular' } }), false, 'Must return false on cellular');
+  assert.strictEqual(await SmartDownloadManager.isWifiConnection({ onLine: true, connection: { type: 'unknown' } }), false, 'Must NOT allow unknown connection type under wifiOnly');
+  assert.strictEqual(await SmartDownloadManager.isWifiConnection({ onLine: true, connection: { type: 'wifi' } }), true, 'Must return true on wifi');
+  assert.strictEqual(await SmartDownloadManager.isWifiConnection({ onLine: true, connection: { type: 'ethernet' } }), true, 'Must return true on ethernet');
 
   // 6B: Mid-Download Cancellation Test (simulating network dropping to cellular DURING active download)
   const sdmAbortTest = new SmartDownloadManager({ enabled: true, limit: 5, wifiOnly: true, delayMs: 1 });

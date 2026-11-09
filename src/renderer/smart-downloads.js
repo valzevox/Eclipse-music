@@ -88,7 +88,19 @@ class SmartDownloadManager {
    * Strict verification: requires navigator.connection to exist and report wifi/ethernet.
    * Returns false when API is unavailable, when offline, on cellular, or when type is unknown.
    */
-  static isWifiConnection(nav = (typeof navigator !== 'undefined' ? navigator : null)) {
+  static async isWifiConnection(nav = (typeof navigator !== 'undefined' ? navigator : null)) {
+    // 1. Native platform status provider (Capacitor / Android / iOS Native Bridge)
+    if (typeof globalThis !== 'undefined' && typeof globalThis.__eclipseNetworkStatus === 'function') {
+      try {
+        const net = await globalThis.__eclipseNetworkStatus();
+        if (net && typeof net.connectionType === 'string') {
+          const t = net.connectionType.toLowerCase();
+          return t === 'wifi' || t === 'ethernet';
+        }
+      } catch (_) {}
+    }
+
+    // 2. Browser NetworkInformation API fallback
     if (!nav) return false;
     if (nav.onLine === false) return false;
     const conn = nav.connection || nav.mozConnection || nav.webkitConnection;
