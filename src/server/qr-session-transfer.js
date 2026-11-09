@@ -54,19 +54,37 @@ function isTransferConsumedOnDisk(transferId) {
   }
 }
 
-function markTransferConsumedOnDisk(transferId, expiresAt) {
+function markTransferConsumedOnDisk(transferId, expiresAt, options = {}) {
   if (!transferId) return;
   const ledgerPath = getLedgerPath();
   const lockPath = `${ledgerPath}.lock`;
   const tmpPath = `${ledgerPath}.${process.pid}.${Date.now()}.tmp`;
 
-  // Stale lock recovery: if lock file is older than 5000ms, a previous process crashed -> break lock safely
+  const lockToken = `${process.pid}:${Date.now()}:${crypto.randomBytes(6).toString('hex')}`;
+
+  // Stale lock recovery: safely verify ownership before removing stale lock to avoid deleting another process's newly created lock
   const breakStaleLock = () => {
     try {
       if (fs.existsSync(lockPath)) {
         const stat = fs.statSync(lockPath);
         if (Date.now() - stat.mtimeMs > 5000) {
-          try { fs.unlinkSync(lockPath); } catch (_) {}
+          const ownerContent = fs.readFileSync(lockPath, 'utf8').trim();
+          // Re-check mtime after reading owner token
+          const statAfter = fs.statSync(lockPath);
+          if (Date.now() - statAfter.mtimeMs > 5000) {
+            const staleTmp = `${lockPath}.stale.${process.pid}.${Date.now()}`;
+            try {
+              // Rename atomically before unlinking so two processes can't race on unlinking a newly created lock
+              fs.renameSync(lockPath, staleTmp);
+              try {
+                const movedOwner = fs.readFileSync(staleTmp, 'utf8').trim();
+                if (movedOwner === ownerContent) {
+                  fs.unlinkSync(staleTmp);
+                }
+              } catch (_) {}
+              try { if (fs.existsSync(staleTmp)) fs.unlinkSync(staleTmp); } catch (_) {}
+            } catch (_) {}
+          }
         }
       }
     } catch (_) {}
@@ -78,6 +96,7 @@ function markTransferConsumedOnDisk(transferId, expiresAt) {
   while (Date.now() < deadline) {
     try {
       lockFd = fs.openSync(lockPath, 'wx');
+      fs.writeSync(lockFd, lockToken);
       break;
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
@@ -105,7 +124,8 @@ function markTransferConsumedOnDisk(transferId, expiresAt) {
 
     const now = Date.now();
     // Direct claim atomicity: MUST verify inside exclusive lock before writing!
-    if (data[transferId]) {
+    // In LAN claim mode where sender and receiver share the same disk ledger, the receiver records consumption
+    if (data[transferId] && !options.allowPeerConsumption) {
       if (now < Number(data[transferId])) {
         throw new Error('Transfer token has already been claimed (replay blocked inside lock)');
       }
@@ -120,7 +140,15 @@ function markTransferConsumedOnDisk(transferId, expiresAt) {
   } finally {
     try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (_) {}
     try { fs.closeSync(lockFd); } catch (_) {}
-    try { fs.unlinkSync(lockPath); } catch (_) {}
+    // Only unlink lockPath if it still belongs to this process's lockToken!
+    try {
+      if (fs.existsSync(lockPath)) {
+        const currentOwner = fs.readFileSync(lockPath, 'utf8').trim();
+        if (currentOwner === lockToken) {
+          fs.unlinkSync(lockPath);
+        }
+      }
+    } catch (_) {}
   }
 }
 
@@ -266,7 +294,7 @@ function claimTransferSession(transferId, secretKey, options = {}) {
 
   const account = pending.account;
   pendingTransfers.delete(transferId);
-  markTransferConsumedOnDisk(transferId, pending.expiresAt);
+  markTransferConsumedOnDisk(transferId, pending.expiresAt, { allowExistingSameMachine: false });
 
   if (options && options.encryptForTransit) {
     return encryptAccountForTransit(account, secretKey, options.pin || '');
@@ -309,9 +337,8 @@ function claimRemoteTransferSession(sourceServerUrl, transferId, secretKey, dire
             const acc = data.encryptedAccount
               ? decryptAccountFromTransit(data.encryptedAccount, secretKey, pin)
               : data.account;
-            try {
-              markTransferConsumedOnDisk(transferId, Date.now() + TRANSFER_TOKEN_TTL_MS);
-            } catch (_) {}
+            // Fail-closed: MUST persist anti-replay ledger BEFORE resolving account!
+            markTransferConsumedOnDisk(transferId, Date.now() + TRANSFER_TOKEN_TTL_MS, { allowPeerConsumption: true });
             return resolve(acc);
           }
         } else {
@@ -350,9 +377,8 @@ function claimRemoteTransferSession(sourceServerUrl, transferId, secretKey, dire
             req.end();
           });
           if (lanResult) {
-            try {
-              markTransferConsumedOnDisk(transferId, Date.now() + TRANSFER_TOKEN_TTL_MS);
-            } catch (_) {}
+            // Fail-closed: MUST persist anti-replay ledger BEFORE resolving account!
+            markTransferConsumedOnDisk(transferId, Date.now() + TRANSFER_TOKEN_TTL_MS, { allowPeerConsumption: true });
             return resolve(lanResult);
           }
         }
