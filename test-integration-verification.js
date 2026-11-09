@@ -228,7 +228,7 @@ async function runTests() {
   const successCount = results.filter(c => c === 0).length;
   assert.strictEqual(successCount, 1, 'Exactly one concurrent process must succeed in claiming the ticket; second must be blocked by atomic ledger lock');
 
-  // 5D-3: True Direct QR Concurrent Replay Regression Test with Strict IPC Handshake
+  // 5D-3: True Direct QR Concurrent Replay Regression Test with Strict IPC Handshake & Cleanup
   // Two independent OS child processes simultaneously claim the direct ticket with payload and PIN
   const directTicket = pcQr.createTransferPayload({ id: 'direct_u', cookie: 'SAPISID=direct_concurrent_cookie' }, 38472, { directPin: true });
   const directWorkerPath = path.join(__dirname, 'test-qr-direct-worker.js');
@@ -236,6 +236,14 @@ async function runTests() {
 
   const child1 = child_process.fork(directWorkerPath, [directTicket.transferId, directTicket.secretKey, directPayloadStr, directTicket.pin], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
   const child2 = child_process.fork(directWorkerPath, [directTicket.transferId, directTicket.secretKey, directPayloadStr, directTicket.pin], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+
+  const activeWorkers = new Set([child1, child2]);
+  const cleanupWorkers = () => {
+    for (const c of activeWorkers) {
+      try { c.kill(); } catch (_) {}
+    }
+    activeWorkers.clear();
+  };
 
   const workerMessages = [];
   child1.on('message', (m) => {
@@ -245,56 +253,113 @@ async function runTests() {
     if (m && m.status && m.status !== 'READY') workerMessages.push(m);
   });
 
-  // Strict IPC Handshake: Wait until BOTH workers report READY before sending GO
-  await Promise.all([
-    new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('Child 1 READY timeout')), 4000);
-      child1.on('message', (m) => { if (m && m.status === 'READY') { clearTimeout(t); resolve(); } });
-    }),
-    new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('Child 2 READY timeout')), 4000);
-      child2.on('message', (m) => { if (m && m.status === 'READY') { clearTimeout(t); resolve(); } });
-    })
-  ]);
+  let handshakeDone = false;
+  child1.on('exit', (code) => {
+    activeWorkers.delete(child1);
+    if (!handshakeDone) cleanupWorkers();
+  });
+  child2.on('exit', (code) => {
+    activeWorkers.delete(child2);
+    if (!handshakeDone) cleanupWorkers();
+  });
 
-  // Both processes are ready and waiting at the barrier: dispatch GO simultaneously
-  child1.send({ action: 'GO' });
-  child2.send({ action: 'GO' });
+  try {
+    // Strict Handshake Barrier with timeout and early exit detection
+    await Promise.all([
+      new Promise((resolve, reject) => {
+        const t = setTimeout(() => {
+          cleanupWorkers();
+          reject(new Error('Handshake timeout: Child 1 failed to send READY within 4000ms'));
+        }, 4000);
+        child1.on('message', (m) => { if (m && m.status === 'READY') { clearTimeout(t); resolve(); } });
+        child1.once('exit', (code) => {
+          if (!handshakeDone) {
+            clearTimeout(t);
+            cleanupWorkers();
+            reject(new Error(`Child 1 exited prematurely with code ${code} before READY`));
+          }
+        });
+      }),
+      new Promise((resolve, reject) => {
+        const t = setTimeout(() => {
+          cleanupWorkers();
+          reject(new Error('Handshake timeout: Child 2 failed to send READY within 4000ms'));
+        }, 4000);
+        child2.on('message', (m) => { if (m && m.status === 'READY') { clearTimeout(t); resolve(); } });
+        child2.once('exit', (code) => {
+          if (!handshakeDone) {
+            clearTimeout(t);
+            cleanupWorkers();
+            reject(new Error(`Child 2 exited prematurely with code ${code} before READY`));
+          }
+        });
+      })
+    ]);
 
-  const directResults = await Promise.all([
-    new Promise((resolve) => child1.on('exit', (c) => resolve(c))),
-    new Promise((resolve) => child2.on('exit', (c) => resolve(c)))
-  ]);
+    handshakeDone = true;
 
-  const directSuccess = directResults.filter(c => c === 0).length;
-  const directBlocked = directResults.filter(c => c === 1).length;
-  assert.strictEqual(directSuccess, 1, 'Direct QR: Exactly ONE OS process must succeed in claiming the direct ticket');
-  assert.strictEqual(directBlocked, 1, 'Direct QR: Second OS process must be blocked by atomic disk ledger exclusion');
+    // Both processes ready at barrier: dispatch GO simultaneously
+    child1.send({ action: 'GO' });
+    child2.send({ action: 'GO' });
 
-  // Explicit IPC Result Message Assertions:
-  assert.strictEqual(workerMessages.length, 2, 'Both workers must send completion IPC messages');
-  const successMsgs = workerMessages.filter(m => m.status === 'CLAIM_SUCCESS');
-  const rejectedMsgs = workerMessages.filter(m => m.status === 'CLAIM_REJECTED');
-  assert.strictEqual(successMsgs.length, 1, 'Exactly one worker must report CLAIM_SUCCESS');
-  assert.strictEqual(rejectedMsgs.length, 1, 'Exactly one worker must report CLAIM_REJECTED');
-  assert(
-    rejectedMsgs[0].reason === 'LOCK_CONTENTION' || rejectedMsgs[0].reason === 'REPLAY_BLOCKED',
-    `Rejection reason must be LOCK_CONTENTION or REPLAY_BLOCKED, got: ${rejectedMsgs[0].reason}`
-  );
-  const badMsgs = workerMessages.filter(m => m.status === 'ERROR' || m.status === 'CLAIM_CORRUPT' || m.status === 'HANDSHAKE_FAILED');
-  assert.strictEqual(badMsgs.length, 0, 'No worker may report unexpected ERROR or CLAIM_CORRUPT');
+    // Wait for both workers to complete with timeout
+    const directResults = await new Promise((resolve, reject) => {
+      const waitTimer = setTimeout(() => {
+        cleanupWorkers();
+        reject(new Error('Direct QR workers timed out waiting for exit after GO signal'));
+      }, 5000);
+
+      Promise.all([
+        new Promise((res) => child1.on('exit', (c) => res(c))),
+        new Promise((res) => child2.on('exit', (c) => res(c)))
+      ]).then((res) => {
+        clearTimeout(waitTimer);
+        resolve(res);
+      }).catch(reject);
+    });
+
+    const directSuccess = directResults.filter(c => c === 0).length;
+    const directBlocked = directResults.filter(c => c === 1).length;
+    assert.strictEqual(directSuccess, 1, 'Direct QR: Exactly ONE OS process must succeed in claiming the direct ticket');
+    assert.strictEqual(directBlocked, 1, 'Direct QR: Second OS process must be blocked by atomic disk ledger exclusion');
+
+    // Explicit IPC Result Message Assertions:
+    assert.strictEqual(workerMessages.length, 2, 'Both workers must send completion IPC messages');
+    const successMsgs = workerMessages.filter(m => m.status === 'CLAIM_SUCCESS');
+    const rejectedMsgs = workerMessages.filter(m => m.status === 'CLAIM_REJECTED');
+    assert.strictEqual(successMsgs.length, 1, 'Exactly one worker must report CLAIM_SUCCESS');
+    assert.strictEqual(rejectedMsgs.length, 1, 'Exactly one worker must report CLAIM_REJECTED');
+    assert(
+      rejectedMsgs[0].reason === 'LOCK_CONTENTION' || rejectedMsgs[0].reason === 'REPLAY_BLOCKED',
+      `Rejection reason must be LOCK_CONTENTION or REPLAY_BLOCKED, got: ${rejectedMsgs[0].reason}`
+    );
+    const badMsgs = workerMessages.filter(m => m.status === 'ERROR' || m.status === 'CLAIM_CORRUPT' || m.status === 'HANDSHAKE_FAILED');
+    assert.strictEqual(badMsgs.length, 0, 'No worker may report unexpected ERROR or CLAIM_CORRUPT');
+  } finally {
+    cleanupWorkers();
+  }
 
   // Post-restart persistent replay check: verify that a subsequent independent process restart is also blocked
   const restartWorker = child_process.fork(directWorkerPath, [directTicket.transferId, directTicket.secretKey, directPayloadStr, directTicket.pin], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
   let restartMsg = null;
-  restartWorker.on('message', (m) => {
-    if (m && m.status === 'READY') {
-      restartWorker.send({ action: 'GO' });
-    } else if (m && m.status && m.status !== 'READY') {
-      restartMsg = m;
-    }
+  const restartPromise = new Promise((resolve, reject) => {
+    const t = setTimeout(() => {
+      try { restartWorker.kill(); } catch (_) {}
+      reject(new Error('Post-restart worker timed out waiting for completion'));
+    }, 5000);
+    restartWorker.on('message', (m) => {
+      if (m && m.status === 'READY') {
+        restartWorker.send({ action: 'GO' });
+      } else if (m && m.status && m.status !== 'READY') {
+        restartMsg = m;
+      }
+    });
+    restartWorker.on('exit', (c) => {
+      clearTimeout(t);
+      resolve(c);
+    });
   });
-  const restartResult = await new Promise((resolve) => restartWorker.on('exit', (c) => resolve(c)));
+  const restartResult = await restartPromise;
   assert.strictEqual(restartResult, 1, 'Direct QR: Post-restart process must be replay-blocked by persistent disk ledger');
   assert(restartMsg, 'Post-restart worker must report IPC result message');
   assert.strictEqual(restartMsg.status, 'CLAIM_REJECTED', 'Restart worker must report CLAIM_REJECTED');
@@ -335,9 +400,10 @@ async function runTests() {
     try { fs.unlinkSync(corruptLedgerPath); } catch (_) {}
   }
 
-  // 5D-5: TOCTOU-Free Stale Lock Recovery Regression Tests
+  // 5D-5: True Multi-Process Concurrency Regression Tests for Stale Lock Recovery
   const testLockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-lock-test-'));
   const testLockFile = path.join(testLockDir, 'test.lock');
+  const reaperWorkerPath = path.join(__dirname, 'test-stale-reaper-worker.js');
 
   // Subtest 1: Malformed lock (invalid PID or format) must NOT be deleted (fail-closed)
   fs.writeFileSync(testLockFile, 'malformed_lock_content_without_pid\n', 'utf8');
@@ -345,13 +411,19 @@ async function runTests() {
   assert.strictEqual(pcQr.breakStaleLock(testLockFile), false, 'breakStaleLock must return false for malformed lock');
   assert(fs.existsSync(testLockFile), 'Malformed lock file must NOT be deleted');
 
+  // Subtest 1B: Empty lock file must NOT be deleted (fail-closed)
+  fs.writeFileSync(testLockFile, '   \n', 'utf8');
+  fs.utimesSync(testLockFile, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
+  assert.strictEqual(pcQr.breakStaleLock(testLockFile), false, 'breakStaleLock must return false for empty lock file');
+  assert(fs.existsSync(testLockFile), 'Empty lock file must NOT be deleted');
+
   // Subtest 2: Owner process is ALIVE even older than 30s -> must NOT be deleted
   fs.writeFileSync(testLockFile, `${process.pid}:${Date.now() - 35000}:live_token\n`, 'utf8');
   fs.utimesSync(testLockFile, (Date.now() - 35000) / 1000, (Date.now() - 35000) / 1000);
   assert.strictEqual(pcQr.breakStaleLock(testLockFile), false, 'breakStaleLock must return false when owner process is alive');
   assert(fs.existsSync(testLockFile), 'Lock with alive owner process must NOT be deleted regardless of age');
 
-  // Subtest 3: Owner process is DEAD (ESRCH) -> safely reaped
+  // Subtest 3: Owner process is genuinely DEAD (ESRCH) -> safely reaped
   const deadPid = 999999;
   let pidConfirmedDead = false;
   try { process.kill(deadPid, 0); } catch (e) { if (e.code === 'ESRCH') pidConfirmedDead = true; }
@@ -361,13 +433,119 @@ async function runTests() {
   assert.strictEqual(pcQr.breakStaleLock(testLockFile), true, 'breakStaleLock must return true when owner process is dead');
   assert(!fs.existsSync(testLockFile), 'Dead owner lock must be cleanly deleted');
 
-  // Subtest 4: Concurrent reapers on dead lock -> no crash, exactly one reaps
-  fs.writeFileSync(testLockFile, `${deadPid}:${Date.now() - 10000}:dead_concurrent_token\n`, 'utf8');
+  // Subtest 4: True Multi-Process Concurrent Reapers at Synchronized Barrier
+  // Two independent OS child processes attempt to recover the same dead lock at the exact same instant
+  fs.writeFileSync(testLockFile, `${deadPid}:${Date.now() - 10000}:concurrent_dead_token\n`, 'utf8');
   fs.utimesSync(testLockFile, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
-  const reapResults = [pcQr.breakStaleLock(testLockFile), pcQr.breakStaleLock(testLockFile)];
-  const reapCount = reapResults.filter(Boolean).length;
-  assert.strictEqual(reapCount, 1, 'Exactly one concurrent reaper must succeed');
-  assert(!fs.existsSync(testLockFile), 'Concurrent reaped lock must not remain on disk');
+
+  const reaper1 = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  const reaper2 = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  const activeReapers = new Set([reaper1, reaper2]);
+  const cleanupReapers = () => { for (const r of activeReapers) { try { r.kill(); } catch (_) {} } activeReapers.clear(); };
+
+  try {
+    const reaperMsgs = [];
+    reaper1.on('message', (m) => { if (m && m.status === 'DONE') reaperMsgs.push(m); });
+    reaper2.on('message', (m) => { if (m && m.status === 'DONE') reaperMsgs.push(m); });
+    reaper1.on('exit', () => activeReapers.delete(reaper1));
+    reaper2.on('exit', () => activeReapers.delete(reaper2));
+
+    await Promise.all([
+      new Promise((res, rej) => {
+        const t = setTimeout(() => { cleanupReapers(); rej(new Error('Reaper 1 READY timeout')); }, 3000);
+        reaper1.on('message', (m) => { if (m && m.status === 'READY') { clearTimeout(t); res(); } });
+      }),
+      new Promise((res, rej) => {
+        const t = setTimeout(() => { cleanupReapers(); rej(new Error('Reaper 2 READY timeout')); }, 3000);
+        reaper2.on('message', (m) => { if (m && m.status === 'READY') { clearTimeout(t); res(); } });
+      })
+    ]);
+
+    // Dispatch REAP simultaneously
+    reaper1.send({ action: 'REAP' });
+    reaper2.send({ action: 'REAP' });
+
+    const reaperExitCodes = await Promise.all([
+      new Promise((res) => reaper1.on('exit', (c) => res(c))),
+      new Promise((res) => reaper2.on('exit', (c) => res(c)))
+    ]);
+
+    assert.strictEqual(reaperExitCodes[0], 0, 'Reaper 1 must exit 0');
+    assert.strictEqual(reaperExitCodes[1], 0, 'Reaper 2 must exit 0');
+    assert.strictEqual(reaperMsgs.length, 2, 'Both reapers must report completion message');
+    const trueCount = reaperMsgs.filter(m => m.reaped === true).length;
+    const falseCount = reaperMsgs.filter(m => m.reaped === false).length;
+    assert.strictEqual(trueCount, 1, 'Exactly ONE reaper child process must succeed in reaping the dead lock');
+    assert.strictEqual(falseCount, 1, 'The competing reaper must cleanly observe contention/release and return false');
+    assert(!fs.existsSync(testLockFile), 'Dead lock must be cleanly deleted');
+  } finally {
+    cleanupReapers();
+  }
+
+  // Subtest 5: Concurrency Race Test Across Multiple Rounds:
+  // While 2 reapers attempt to reap, a new process acquires lock immediately upon deletion.
+  // CRITICAL ASSERTION: The newly acquired lock MUST NEVER be deleted or overwritten by any reaper!
+  for (let round = 1; round <= 5; round++) {
+    fs.writeFileSync(testLockFile, `${deadPid}:${Date.now() - 10000}:round_${round}_dead_token\n`, 'utf8');
+    fs.utimesSync(testLockFile, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
+
+    const rA = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+    const rB = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+    const roundWorkers = new Set([rA, rB]);
+    const cleanupRound = () => { for (const w of roundWorkers) { try { w.kill(); } catch (_) {} } roundWorkers.clear(); };
+
+    try {
+      rA.on('exit', () => roundWorkers.delete(rA));
+      rB.on('exit', () => roundWorkers.delete(rB));
+
+      await Promise.all([
+        new Promise((res) => rA.on('message', (m) => { if (m && m.status === 'READY') res(); })),
+        new Promise((res) => rB.on('message', (m) => { if (m && m.status === 'READY') res(); }))
+      ]);
+
+      // Trigger simultaneous reap
+      rA.send({ action: 'REAP' });
+      rB.send({ action: 'REAP' });
+
+      // Immediate attempt by new process to acquire the lock as soon as stale lock is reaped
+      const newProcessToken = `${process.pid}:${Date.now()}:new_live_process_round_${round}`;
+      let newLockAcquired = false;
+      let newLockFd = null;
+      const acquireDeadline = Date.now() + 2000;
+      while (Date.now() < acquireDeadline) {
+        try {
+          newLockFd = fs.openSync(testLockFile, 'wx');
+          fs.writeSync(newLockFd, newProcessToken);
+          newLockAcquired = true;
+          break;
+        } catch (e) {
+          if (e.code !== 'EEXIST') throw e;
+          const waitUntil = Date.now() + 5;
+          while (Date.now() < waitUntil) {}
+        }
+      }
+
+      assert(newLockAcquired, `Round ${round}: New process must acquire lock once stale lock is cleared`);
+
+      // Wait for both reapers to exit
+      await Promise.all([
+        new Promise((res) => rA.on('exit', res)),
+        new Promise((res) => rB.on('exit', res))
+      ]);
+
+      // CRITICAL VERIFICATION:
+      // Test lock MUST still exist on disk and MUST STILL hold the new process's token!
+      assert(fs.existsSync(testLockFile), `Round ${round}: Active lock must NOT be deleted by competing reapers`);
+      const currentDiskToken = fs.readFileSync(testLockFile, 'utf8').trim();
+      assert.strictEqual(currentDiskToken, newProcessToken, `Round ${round}: Active lock token must NOT be overwritten or corrupted`);
+
+      // Clean up newly acquired lock for next round
+      try { if (newLockFd !== null) fs.closeSync(newLockFd); } catch (_) {}
+      try { fs.unlinkSync(testLockFile); } catch (_) {}
+    } finally {
+      cleanupRound();
+    }
+  }
 
   try { fs.rmSync(testLockDir, { recursive: true, force: true }); } catch (_) {}
 
@@ -410,8 +588,12 @@ async function runTests() {
   // 6B: Production downloadTrackBatch Mid-Download Cancellation Test (Real HTTP Test Server & Real Production Downloader Module)
   let serverObservedClientAbort = false;
   let onStreamStarted = null;
-  const streamStartedPromise = new Promise((resolve) => {
+  let streamTimer = null;
+  const streamStartedPromise = new Promise((resolve, reject) => {
     onStreamStarted = resolve;
+    streamTimer = setTimeout(() => {
+      reject(new Error('Timed out waiting for HTTP stream to start on /api/download within 6000ms'));
+    }, 6000);
   });
 
   const downloadHttpServer = http.createServer((req, res) => {
@@ -420,6 +602,7 @@ async function runTests() {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.write('{"streaming":true');
       if (onStreamStarted) {
+        clearTimeout(streamTimer);
         onStreamStarted();
         onStreamStarted = null;
       }
@@ -456,30 +639,34 @@ async function runTests() {
   sdmAbortTest.total = 2;
 
   let activeWifi = true;
-  const midAbortPromise = sdmAbortTest.startSync(async (track, opts) => {
-    const res = await productionDownloadTrackBatch([track], {
-      ...opts,
-      getInternalApiBase: () => dlBase,
-      getInternalApiToken: () => 'test-token'
-    });
-    if (res && res.failed && res.failed.length > 0) throw res.failed[0].error;
-    return res;
-  }, () => Promise.resolve(activeWifi));
+  try {
+    const midAbortPromise = sdmAbortTest.startSync(async (track, opts) => {
+      const res = await productionDownloadTrackBatch([track], {
+        ...opts,
+        getInternalApiBase: () => dlBase,
+        getInternalApiToken: () => 'test-token'
+      });
+      if (res && res.failed && res.failed.length > 0) throw res.failed[0].error;
+      return res;
+    }, () => Promise.resolve(activeWifi));
 
-  // Handshake: Wait until HTTP server receives request and starts streaming before toggling network
-  await streamStartedPromise;
-  activeWifi = false; // Connection switched to cellular during active stream download
+    // Handshake: Wait until HTTP server receives request and starts streaming before toggling network
+    await streamStartedPromise;
+    activeWifi = false; // Connection switched to cellular during active stream download
 
-  const abortSyncResult = await midAbortPromise;
-  // Give server event loop a brief moment to process client socket close
-  await new Promise(r => setTimeout(r, 60));
-  await new Promise(r => downloadHttpServer.close(r));
+    const abortSyncResult = await midAbortPromise;
+    // Give server event loop a brief moment to process client socket close
+    await new Promise(r => setTimeout(r, 60));
 
-  assert.strictEqual(serverObservedClientAbort, true, 'Server must observe client aborting prolonged HTTP stream (!res.writableFinished)');
-  assert.strictEqual(abortSyncResult.pausedReason, 'network_switched_to_cellular');
-  assert.strictEqual(sdmAbortTest.queue.length, 2, 'Unfinished track must be restored to queue');
-  assert.strictEqual(sdmAbortTest.queue[0].id, 'trk_prod_1', 'Restored track must remain at front of queue');
-  assert(!sdmAbortTest.queue[0].isCached, 'Aborted track must NOT be marked as cached');
+    assert.strictEqual(serverObservedClientAbort, true, 'Server must observe client aborting prolonged HTTP stream (!res.writableFinished)');
+    assert.strictEqual(abortSyncResult.pausedReason, 'network_switched_to_cellular');
+    assert.strictEqual(sdmAbortTest.queue.length, 2, 'Unfinished track must be restored to queue');
+    assert.strictEqual(sdmAbortTest.queue[0].id, 'trk_prod_1', 'Restored track must remain at front of queue');
+    assert(!sdmAbortTest.queue[0].isCached, 'Aborted track must NOT be marked as cached');
+  } finally {
+    clearTimeout(streamTimer);
+    await new Promise(r => downloadHttpServer.close(r));
+  }
   console.log(' -> SmartDownloads Wi-Fi gate & mid-download abort cancellation verified (PASS).');
 
   // 7. Verify AutoMix DJ Runtime Handover Execution

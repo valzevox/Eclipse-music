@@ -54,13 +54,46 @@ function isTransferConsumedOnDisk(transferId) {
   }
 }
 
-// Safe atomic stale lock recovery without race conditions (TOCTOU-free):
+// Safe atomic stale lock recovery with cross-process reaper mutual exclusion
 function breakStaleLock(customLockPath = null) {
   const targetLock = customLockPath || `${getLedgerPath()}.lock`;
+  const reaperLock = `${targetLock}.reaper`;
+
+  // Acquire exclusive reaper lock using atomic kernel flags (O_CREAT | O_EXCL)
+  // Ensures at most ONE reaper process can execute stale recovery at any moment across the OS
+  let reaperFd = null;
+  try {
+    reaperFd = fs.openSync(reaperLock, 'wx');
+    fs.writeSync(reaperFd, `${process.pid}:${Date.now()}`);
+  } catch (e) {
+    if (e.code === 'EEXIST') {
+      // Another reaper process is currently executing recovery.
+      // Check if that reaper died while holding reaperLock (> 10s and owner ESRCH)
+      try {
+        const rStat = fs.statSync(reaperLock);
+        if (Date.now() - rStat.mtimeMs > 10000) {
+          const rRaw = fs.readFileSync(reaperLock, 'utf8').trim();
+          const rPid = parseInt(rRaw.split(':')[0], 10);
+          if (!isNaN(rPid) && rPid > 0) {
+            try {
+              process.kill(rPid, 0);
+            } catch (rErr) {
+              if (rErr.code === 'ESRCH') {
+                try { fs.unlinkSync(reaperLock); } catch (_) {}
+              }
+            }
+          }
+        }
+      } catch (_) {}
+      return false;
+    }
+    return false;
+  }
+
   try {
     if (!fs.existsSync(targetLock)) return false;
     const stat = fs.statSync(targetLock);
-    // Grace period: do not inspect locks younger than 5000ms
+    // Grace period: do not touch locks younger than 5000ms
     if (Date.now() - stat.mtimeMs <= 5000) return false;
 
     const raw = fs.readFileSync(targetLock, 'utf8').trim();
@@ -96,36 +129,19 @@ function breakStaleLock(customLockPath = null) {
       return false;
     }
 
-    // Atomic stale lock recovery: move targetLock to unique graveyard path to eliminate TOCTOU race
-    const graveyardPath = `${targetLock}.dead.${process.pid}.${Date.now()}.${crypto.randomBytes(6).toString('hex')}`;
-    try {
-      fs.renameSync(targetLock, graveyardPath);
-    } catch (renameErr) {
-      // Another process/reaper acquired or renamed it first -> yield cleanly
-      return false;
+    // Owner is confirmed dead (ESRCH).
+    // Re-verify that the lock still has the exact same dead PID token before unlinking
+    const verifyRaw = fs.readFileSync(targetLock, 'utf8').trim();
+    if (verifyRaw === raw) {
+      fs.unlinkSync(targetLock);
+      return true;
     }
-
-    // Verify graveyard content matches the verified dead lock token
-    try {
-      const graveyardRaw = fs.readFileSync(graveyardPath, 'utf8').trim();
-      if (graveyardRaw === raw) {
-        fs.unlinkSync(graveyardPath);
-        return true;
-      } else {
-        // Unexpected mismatch: restore lock
-        try {
-          fs.renameSync(graveyardPath, targetLock);
-        } catch (_) {
-          try { fs.unlinkSync(graveyardPath); } catch (_) {}
-        }
-        return false;
-      }
-    } catch (_) {
-      try { fs.unlinkSync(graveyardPath); } catch (_) {}
-      return false;
-    }
+    return false;
   } catch (_) {
     return false;
+  } finally {
+    try { if (reaperFd !== null) fs.closeSync(reaperFd); } catch (_) {}
+    try { if (fs.existsSync(reaperLock)) fs.unlinkSync(reaperLock); } catch (_) {}
   }
 }
 
