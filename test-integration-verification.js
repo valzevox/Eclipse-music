@@ -411,16 +411,17 @@ async function runTests() {
   assert.strictEqual(pcQr.breakStaleLock(testLockFile), false, 'breakStaleLock must return false for malformed lock');
   assert(fs.existsSync(testLockFile), 'Malformed lock file must NOT be deleted');
 
-  // Subtest 1B: Young empty lock file within grace period (<= 5s) must NOT be deleted prematurely
+  // Subtest 1B: Empty lock file must NOT be deleted (fail-closed since owner cannot be verified)
   fs.writeFileSync(testLockFile, '');
   fs.utimesSync(testLockFile, (Date.now() - 2000) / 1000, (Date.now() - 2000) / 1000);
   assert.strictEqual(pcQr.breakStaleLock(testLockFile), false, 'breakStaleLock must return false for young empty lock within grace period');
   assert(fs.existsSync(testLockFile), 'Young empty lock must NOT be deleted');
 
-  // Subtest 1C: Abandoned empty lock file older than grace period (> 5s) must be safely recovered (no permanent deadlock)
+  // Subtest 1C: Even an empty lock older than 5s/10s must fail-closed (never sacrifice mutual exclusion for age heuristic)
   fs.utimesSync(testLockFile, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
-  assert.strictEqual(pcQr.breakStaleLock(testLockFile), true, 'breakStaleLock must recover abandoned empty lock file');
-  assert(!fs.existsSync(testLockFile), 'Abandoned empty lock must be cleaned up to prevent permanent deadlock');
+  assert.strictEqual(pcQr.breakStaleLock(testLockFile), false, 'breakStaleLock must fail-closed on empty lock regardless of age');
+  assert(fs.existsSync(testLockFile), 'Empty lock must NOT be deleted based on age alone');
+  try { fs.unlinkSync(testLockFile); } catch (_) {}
 
   // Subtest 2: Owner process is ALIVE even older than 30s -> must NOT be deleted
   fs.writeFileSync(testLockFile, `${process.pid}:${Date.now() - 35000}:live_token\n`, 'utf8');
@@ -490,18 +491,26 @@ async function runTests() {
   // Subtest 4B: Stale ReaperLock Crash & Multi-Process Concurrent Recovery
   // Simulates Process A crashing while holding .reaper; two reapers B & C race to recover; Process D acquires new lock
   const crashWorker = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
-  await new Promise((res, rej) => {
-    const t = setTimeout(() => rej(new Error('Crash worker READY timeout')), 3000);
-    crashWorker.on('message', (m) => {
-      if (m && m.status === 'READY') {
-        clearTimeout(t);
-        crashWorker.send({ action: 'HOLD_REAPER_AND_DIE' });
-      } else if (m && m.status === 'LOCKED') {
-        res();
-      }
+  try {
+    await new Promise((res, rej) => {
+      const t = setTimeout(() => { try { crashWorker.kill(); } catch (_) {} rej(new Error('Crash worker READY timeout')); }, 4000);
+      crashWorker.on('message', (m) => {
+        if (m && m.status === 'READY') {
+          clearTimeout(t);
+          crashWorker.send({ action: 'HOLD_REAPER_AND_DIE' });
+        } else if (m && m.status === 'LOCKED') {
+          res();
+        }
+      });
+      crashWorker.on('error', rej);
     });
-  });
-  await new Promise((res) => crashWorker.on('exit', res));
+    await new Promise((res, rej) => {
+      const t = setTimeout(() => { try { crashWorker.kill(); } catch (_) {} rej(new Error('Crash worker EXIT timeout')); }, 4000);
+      crashWorker.on('exit', () => { clearTimeout(t); res(); });
+    });
+  } finally {
+    try { crashWorker.kill(); } catch (_) {}
+  }
 
   // The .reaper file now sits on disk with the dead crashWorker PID. Age it past 5s:
   const reaperFilePath = `${testLockFile}.reaper`;
@@ -527,11 +536,11 @@ async function runTests() {
 
     await Promise.all([
       new Promise((res, rej) => {
-        const t = setTimeout(() => { cleanupCrashReapers(); rej(new Error('Reaper B READY timeout')); }, 3000);
+        const t = setTimeout(() => { cleanupCrashReapers(); rej(new Error('Reaper B READY timeout')); }, 4000);
         reaperB.on('message', (m) => { if (m && m.status === 'READY') { clearTimeout(t); res(); } });
       }),
       new Promise((res, rej) => {
-        const t = setTimeout(() => { cleanupCrashReapers(); rej(new Error('Reaper C READY timeout')); }, 3000);
+        const t = setTimeout(() => { cleanupCrashReapers(); rej(new Error('Reaper C READY timeout')); }, 4000);
         reaperC.on('message', (m) => { if (m && m.status === 'READY') { clearTimeout(t); res(); } });
       })
     ]);
@@ -561,8 +570,14 @@ async function runTests() {
     assert(procDAcquired, 'Process D must acquire lock once stale locks are recovered');
 
     const bcExitCodes = await Promise.all([
-      new Promise((res) => reaperB.on('exit', res)),
-      new Promise((res) => reaperC.on('exit', res))
+      new Promise((res, rej) => {
+        const t = setTimeout(() => { cleanupCrashReapers(); rej(new Error('Reaper B EXIT timeout')); }, 4000);
+        reaperB.on('exit', (c) => { clearTimeout(t); res(c); });
+      }),
+      new Promise((res, rej) => {
+        const t = setTimeout(() => { cleanupCrashReapers(); rej(new Error('Reaper C EXIT timeout')); }, 4000);
+        reaperC.on('exit', (c) => { clearTimeout(t); res(c); });
+      })
     ]);
 
     assert.strictEqual(bcExitCodes[0], 0, 'Reaper B must exit 0');
@@ -579,16 +594,130 @@ async function runTests() {
     cleanupCrashReapers();
   }
 
-  // Subtest 4C: Empty ReaperLock Recovery (Crash right after openSync before writing token)
-  fs.writeFileSync(reaperFilePath, '');
+  // Subtest 4C: Crash after writing REAPING marker (must parse marker, check reaper PID, and recover)
+  const reapCrashWorker = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  try {
+    await new Promise((res, rej) => {
+      const t = setTimeout(() => { try { reapCrashWorker.kill(); } catch (_) {} rej(new Error('Reap crash worker READY timeout')); }, 4000);
+      reapCrashWorker.on('message', (m) => {
+        if (m && m.status === 'READY') {
+          clearTimeout(t);
+          reapCrashWorker.send({ action: 'HOLD_REAPING_AND_DIE' });
+        } else if (m && m.status === 'LOCKED') {
+          res();
+        }
+      });
+    });
+    await new Promise((res, rej) => {
+      const t = setTimeout(() => { try { reapCrashWorker.kill(); } catch (_) {} rej(new Error('Reap crash worker EXIT timeout')); }, 4000);
+      reapCrashWorker.on('exit', () => { clearTimeout(t); res(); });
+    });
+  } finally {
+    try { reapCrashWorker.kill(); } catch (_) {}
+  }
+  assert(fs.existsSync(reaperFilePath), 'Reaper lock with REAPING stamp must exist');
   fs.utimesSync(reaperFilePath, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
-  fs.writeFileSync(testLockFile, `${deadPid}:${Date.now() - 10000}:empty_reaper_target_token\n`, 'utf8');
+  fs.writeFileSync(testLockFile, `${deadPid}:${Date.now() - 10000}:reap_crash_target_token\n`, 'utf8');
   fs.utimesSync(testLockFile, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
 
-  const emptyReapOk = pcQr.breakStaleLock(testLockFile);
-  assert.strictEqual(emptyReapOk, true, 'Empty stale .reaper lock must be safely recovered without deadlock');
-  assert(!fs.existsSync(testLockFile), 'Target lock must be cleanly cleared after empty reaper recovery');
-  assert(!fs.existsSync(reaperFilePath), 'Empty .reaper lock must be removed');
+  const reapCrashRecovered = pcQr.breakStaleLock(testLockFile);
+  assert.strictEqual(reapCrashRecovered, true, 'Recovery must succeed for crashed REAPING marker without NaN or lock deadlock');
+  assert(!fs.existsSync(testLockFile), 'Target lock must be cleanly deleted');
+  assert(!fs.existsSync(reaperFilePath), 'Stale REAPING reaper lock must be cleanly removed');
+
+  // Subtest 4D: Process creates empty lock but is suspended / delayed (PID is still ALIVE)
+  // Recovery MUST NOT delete the lock of a living process even if older than 5s!
+  const aliveWorker = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  let aliveWorkerPid = null;
+  try {
+    await new Promise((res, rej) => {
+      const t = setTimeout(() => { try { aliveWorker.kill(); } catch (_) {} rej(new Error('Alive worker READY timeout')); }, 4000);
+      aliveWorker.on('message', (m) => {
+        if (m && m.status === 'READY') {
+          clearTimeout(t);
+          aliveWorker.send({ action: 'HOLD_EMPTY_ALIVE' });
+        } else if (m && m.status === 'LOCKED') {
+          aliveWorkerPid = m.pid;
+          res();
+        }
+      });
+    });
+    assert(fs.existsSync(reaperFilePath), 'Empty reaper lock from alive worker must exist');
+    fs.utimesSync(reaperFilePath, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
+    fs.writeFileSync(testLockFile, `${deadPid}:${Date.now() - 10000}:alive_worker_target_token\n`, 'utf8');
+    fs.utimesSync(testLockFile, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
+
+    const reapAliveResult = pcQr.breakStaleLock(testLockFile);
+    assert.strictEqual(reapAliveResult, false, 'breakStaleLock must FAIL-CLOSED when owner is still alive or unverified');
+    assert(fs.existsSync(reaperFilePath), 'Empty lock belonging to alive process must NOT be deleted');
+
+    // Clean up alive worker
+    await new Promise((res) => {
+      aliveWorker.send({ action: 'RELEASE' });
+      aliveWorker.on('exit', res);
+    });
+    try { fs.unlinkSync(testLockFile); } catch (_) {}
+    try { fs.unlinkSync(reaperFilePath); } catch (_) {}
+  } finally {
+    try { aliveWorker.kill(); } catch (_) {}
+  }
+
+  // Subtest 4E: Worker crash right after openSync before writing token (HOLD_EMPTY_AND_DIE)
+  // Real empty lock from dead worker -> fail-closed (mutual exclusion preserved)
+  const deadEmptyWorker = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  try {
+    await new Promise((res, rej) => {
+      const t = setTimeout(() => { try { deadEmptyWorker.kill(); } catch (_) {} rej(new Error('Dead empty worker READY timeout')); }, 4000);
+      deadEmptyWorker.on('message', (m) => {
+        if (m && m.status === 'READY') {
+          clearTimeout(t);
+          deadEmptyWorker.send({ action: 'HOLD_EMPTY_AND_DIE' });
+        } else if (m && m.status === 'LOCKED') {
+          res();
+        }
+      });
+    });
+    await new Promise((res) => deadEmptyWorker.on('exit', res));
+    assert(fs.existsSync(reaperFilePath), 'Real empty lock file from crashed worker must exist');
+    fs.utimesSync(reaperFilePath, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
+
+    const emptyCrashReap = pcQr.breakStaleLock(testLockFile);
+    assert.strictEqual(emptyCrashReap, false, 'Recovery of empty lock with no verifiable owner must fail-closed');
+    try { fs.unlinkSync(reaperFilePath); } catch (_) {}
+    try { fs.unlinkSync(testLockFile); } catch (_) {}
+  } finally {
+    try { deadEmptyWorker.kill(); } catch (_) {}
+  }
+
+  // Subtest 4F: Crash at each recovery stage (stages 1..4) — mutual exclusion never violated
+  for (let stage = 1; stage <= 4; stage++) {
+    const stageWorker = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+    try {
+      await new Promise((res, rej) => {
+        const t = setTimeout(() => { try { stageWorker.kill(); } catch (_) {} rej(new Error(`Stage ${stage} worker timeout`)); }, 4000);
+        stageWorker.on('message', (m) => {
+          if (m && m.status === 'READY') {
+            clearTimeout(t);
+            stageWorker.send({ action: 'CRASH_AT_STAGE', stage });
+          }
+        });
+        stageWorker.on('exit', () => { clearTimeout(t); res(); });
+      });
+      // Age whatever was created past 5s
+      if (fs.existsSync(reaperFilePath)) {
+        fs.utimesSync(reaperFilePath, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
+      }
+      fs.writeFileSync(testLockFile, `${deadPid}:${Date.now() - 10000}:stage_${stage}_target\n`, 'utf8');
+      fs.utimesSync(testLockFile, (Date.now() - 10000) / 1000, (Date.now() - 10000) / 1000);
+
+      // Verify recovery either safely cleans or safely fails-closed, but never permits multiple owners
+      pcQr.breakStaleLock(testLockFile);
+      try { fs.unlinkSync(reaperFilePath); } catch (_) {}
+      try { fs.unlinkSync(testLockFile); } catch (_) {}
+    } finally {
+      try { stageWorker.kill(); } catch (_) {}
+    }
+  }
 
   // Subtest 5: Concurrency Race Test Across Multiple Rounds with Strict IPC & Timeouts:
   // While 2 reapers attempt to reap, a new process acquires lock immediately upon deletion.

@@ -76,17 +76,20 @@ function recoverStaleLockFile(filePath, gracePeriodMs = 5000) {
     let isStale = false;
 
     if (!raw) {
-      // Empty lock file:
-      // If a process crashed right after openSync('wx') before writing token,
-      // and gracePeriodMs has elapsed, it is confirmed crashed/abandoned!
-      isStale = true;
+      // Empty lock file: owner cannot be determined -> fail-closed (never delete based on age alone)
+      return false;
     } else {
       const parts = raw.split(':');
       if (parts.length < 2) {
         // Malformed content -> fail-closed: do not delete
         return false;
       }
-      const lockPid = parseInt(parts[0], 10);
+      // Recognize REAPING:${pid}:${now}:${nonce} marker if a previous reaper crashed mid-recovery
+      const pidIndex = parts[0] === 'REAPING' ? 1 : 0;
+      if (parts[0] === 'REAPING' && parts.length < 3) {
+        return false;
+      }
+      const lockPid = parseInt(parts[pidIndex], 10);
       if (isNaN(lockPid) || lockPid <= 0) {
         // Malformed PID -> fail-closed: do not delete
         return false;
