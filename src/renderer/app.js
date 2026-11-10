@@ -4441,6 +4441,52 @@ document.addEventListener('DOMContentLoaded', async () => {
   let currentTrackSponsorSegments = [];
   let lastSkippedSegmentEnd = -1;
 
+    async function loadCanvasForTrack(track) {
+    const vidEl = document.getElementById('canvas-video-bg');
+    if (!vidEl) return;
+    if (localStorage.getItem('riff_canvas_enabled') === '0' || !track) {
+      vidEl.classList.remove('active');
+      vidEl.classList.add('hidden');
+      try { vidEl.pause(); vidEl.removeAttribute('src'); vidEl.load(); } catch (_) {}
+      return;
+    }
+    const vid = track.id || track.videoId || '';
+    const title = track.title || '';
+    const artist = track.artist || '';
+    try {
+      const origin = typeof state !== 'undefined' && state.serverPort ? `http://127.0.0.1:${state.serverPort}` : (window.location && window.location.origin ? window.location.origin : 'http://127.0.0.1:3000');
+      const res = await fetch(`${origin}/api/canvas?videoId=${encodeURIComponent(vid)}&title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist)}`);
+      const data = await res.json();
+      if (data && data.success && data.canvasUrl && data.isVideo) {
+        if (vidEl.src !== data.canvasUrl) {
+          vidEl.src = data.canvasUrl;
+        }
+        vidEl.classList.remove('hidden');
+        vidEl.classList.add('active');
+        vidEl.play().catch(() => {});
+      } else {
+        vidEl.classList.remove('active');
+        vidEl.classList.add('hidden');
+        try { vidEl.pause(); } catch (_) {}
+      }
+    } catch (_) {
+      vidEl.classList.remove('active');
+      vidEl.classList.add('hidden');
+    }
+  }
+
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      const vidEl = document.getElementById('canvas-video-bg');
+      if (!vidEl || !vidEl.src) return;
+      if (document.hidden) {
+        try { vidEl.pause(); } catch (_) {}
+      } else if (vidEl.classList.contains('active')) {
+        vidEl.play().catch(() => {});
+      }
+    });
+  }
+
   async function loadSponsorBlockSegments(track) {
     currentTrackSponsorSegments = [];
     lastSkippedSegmentEnd = -1;
@@ -4684,6 +4730,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
     loadSyncedLyrics(track.title, track.artist, currentToken);
     loadSponsorBlockSegments(track);
+    loadCanvasForTrack(track);
 
     // AutoMix seamless handover: transfer playing stream and time offset from crossfade without restarting from 0:00
     if (state._autoMixHandover && (track.id === state._autoMixHandover.trackId || (track.videoId && track.videoId === state._autoMixHandover.trackId) || (track._matchedYtId && track._matchedYtId === state._autoMixHandover.trackId))) {

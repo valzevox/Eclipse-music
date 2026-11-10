@@ -6097,6 +6097,47 @@ function isLyricsExplicit(lyrics) {
 }
 
 
+const canvasCache = new Map();
+async function fetchCanvasForTrack(title, artist, videoId) {
+  const key = `${(title || '').toLowerCase()}:${(artist || '').toLowerCase()}:${videoId || ''}`;
+  if (canvasCache.has(key)) return canvasCache.get(key);
+
+  const fallback = { success: true, canvasUrl: null, isVideo: false };
+  if (!title && !videoId) return fallback;
+
+  try {
+    const term = encodeURIComponent(`${title || ''} ${artist || ''}`.trim());
+    const itunesUrl = `https://itunes.apple.com/search?term=${term}&entity=musicVideo&limit=1`;
+    const res = await new Promise((resolve) => {
+      const req = https.get(itunesUrl, { headers: { 'User-Agent': 'Eclipse-Music-Player' }, timeout: 3500 }, (resp) => {
+        if (resp.statusCode !== 200) return resolve(null);
+        let raw = '';
+        resp.on('data', chunk => raw += chunk);
+        resp.on('end', () => {
+          try { resolve(JSON.parse(raw)); } catch (_) { resolve(null); }
+        });
+      });
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+    });
+
+    if (res && res.results && res.results.length > 0) {
+      const item = res.results[0];
+      const previewUrl = item.previewUrl;
+      if (previewUrl && (previewUrl.endsWith('.m4v') || previewUrl.endsWith('.mp4'))) {
+        const result = { success: true, canvasUrl: previewUrl, isVideo: true };
+        if (canvasCache.size > 200) canvasCache.clear();
+        canvasCache.set(key, result);
+        return result;
+      }
+    }
+  } catch (_) {}
+
+  if (canvasCache.size > 200) canvasCache.clear();
+  canvasCache.set(key, fallback);
+  return fallback;
+}
+
 const sponsorBlockCache = new Map();
 function fetchSponsorBlockSegments(videoId) {
   if (!videoId || typeof videoId !== 'string') return Promise.resolve([]);
@@ -10057,6 +10098,17 @@ if (parsedUrl.pathname === '/api/ytm/login-url') {
     }
     res.writeHead(200);
     return res.end(JSON.stringify({ success: false, lines: [] }));
+  }
+
+    if (parsedUrl.pathname === '/api/canvas') {
+    const videoId = parsedUrl.query.videoId || '';
+    const title = parsedUrl.query.title || '';
+    const artist = parsedUrl.query.artist || '';
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    const result = await fetchCanvasForTrack(title, artist, videoId);
+    res.writeHead(200);
+    return res.end(JSON.stringify(result));
   }
 
   if (parsedUrl.pathname === '/api/sponsorblock') {

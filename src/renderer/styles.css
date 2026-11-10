@@ -11280,3 +11280,22 @@ body.perf .np-queue-panel { transition: none; }
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+
+.canvas-video-bg {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 600ms ease;
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(2px) brightness(0.45);
+}
+.canvas-video-bg.active {
+  opacity: 1;
+}
+.canvas-video-bg.hidden {
+  display: none;
+}
