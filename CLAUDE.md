@@ -86,6 +86,13 @@ D:\Eclipse\
   - **CRITICAL BATTERY & GPU PROTECTION**: Bắt buộc lắng nghe sự kiện `visibilitychange` để `pause()` video khi `document.hidden` (ẩn tab, chuyển ứng dụng background) và `play()` trở lại khi mở lại app.
   - Lưu trạng thái bật/tắt người dùng qua `localStorage.getItem('riff_canvas_enabled')`.
 
+### Rule 8: End-to-End GUI Verification via Windows MCP (`windows-mcp`)
+- Không chỉ dựa vào script test headless (`node test-integration-verification.js`).
+- Sau khi thêm hoặc chỉnh sửa tính năng UI/Menu trên Desktop (`eclipse-pc`), AI agent **PHẢI** sử dụng các công cụ `windows-mcp` (`App`, `Process`, `Snapshot`, `Screenshot`, `Click`) để:
+  1. Khởi chạy bản build/source mới nhất của Eclipse PC.
+  2. Chụp ảnh màn hình và đọc UI Tree (`Snapshot` / `Screenshot`) để xác nhận các nút bấm, menu Settings, dialog, và Canvas render đúng vị trí, không bị che khuất hoặc lỗi layout.
+  3. Tương tác thử trực tiếp (bấm mở Cài đặt, chuyển tab, kiểm tra toggle) để đảm bảo hoạt động thực sự trên giao diện người dùng.
+
 ---
 
 ## 3. Traps That Have Already Cost Time Here (Footguns & Pitfalls)
