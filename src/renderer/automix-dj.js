@@ -65,18 +65,31 @@ class AutoMixDJ {
   }
 
   /**
+   * Compute safe tempo-match playbackRate ratio (clamped to +-6% so pitch stays natural)
+   */
+  computeTempoRatio(sourceBpm, targetBpm) {
+    if (!sourceBpm || !targetBpm || sourceBpm <= 0 || targetBpm <= 0) return 1.0;
+    const ratio = sourceBpm / targetBpm;
+    return Math.max(0.94, Math.min(1.06, ratio));
+  }
+
+  /**
    * Execute programmatic crossfade between outgoing audio node/element and incoming one
    */
-  async executeCrossfade(outgoingAudio, incomingAudio, duration = this.durationSec) {
+  async executeCrossfade(outgoingAudio, incomingAudio, duration = this.durationSec, options = {}) {
     if (!outgoingAudio || !incomingAudio || this.isCrossfading) return false;
 
     this.isCrossfading = true;
     const startTime = Date.now();
     const durationMs = duration * 1000;
+    const startInRate = this.mode === 'tempo_synced'
+      ? this.computeTempoRatio(options.outgoingBpm || this.bpm, options.incomingBpm || this.bpm)
+      : 1.0;
 
-    // Start incoming audio at 0 volume
+    // Start incoming audio at 0 volume and matched tempo
     try {
       incomingAudio.volume = 0;
+      incomingAudio.playbackRate = startInRate;
       await incomingAudio.play();
     } catch (_) {}
 
@@ -91,7 +104,9 @@ class AutoMixDJ {
           try {
             outgoingAudio.pause();
             outgoingAudio.volume = 1.0;
+            outgoingAudio.playbackRate = 1.0;
             incomingAudio.volume = 1.0;
+            incomingAudio.playbackRate = 1.0;
           } catch (_) {}
           resolve(true);
           return;
@@ -101,6 +116,9 @@ class AutoMixDJ {
         try {
           outgoingAudio.volume = Math.max(0, Math.min(1, gains.fadeOutGain));
           incomingAudio.volume = Math.max(0, Math.min(1, gains.fadeInGain));
+          if (this.mode === 'tempo_synced' && startInRate !== 1.0) {
+            incomingAudio.playbackRate = 1.0 + (startInRate - 1.0) * (1.0 - progress);
+          }
         } catch (_) {}
       }, 50);
     });

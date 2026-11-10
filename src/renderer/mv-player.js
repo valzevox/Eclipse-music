@@ -36,18 +36,39 @@
         this.btnToggleMv.addEventListener('click', () => this.toggle());
       }
 
-      // Handle YouTube IFrame postMessage events (end of video, playback state)
+      // Handle YouTube IFrame postMessage events (end of video, playback state, time sync & errors)
       window.addEventListener('message', (event) => {
-        if (!event.data || typeof event.data !== 'string') return;
-        try {
-          const msg = JSON.parse(event.data);
-          // YouTube Player state change: 0 = ENDED, 1 = PLAYING, 2 = PAUSED
-          if (msg.event === 'onStateChange' && msg.info === 0) {
-            if (typeof this.onNextTrack === 'function') {
-              this.onNextTrack();
+        if (!event.data) return;
+        let msg = null;
+        if (typeof event.data === 'string') {
+          try { msg = JSON.parse(event.data); } catch (_) {}
+        } else if (typeof event.data === 'object') {
+          msg = event.data;
+        }
+        if (!msg) return;
+
+        // Track real-time playback position from YouTube IFrame API
+        if (msg.event === 'infoDelivery' && msg.info && typeof msg.info.currentTime === 'number') {
+          this.lastTimestamp = msg.info.currentTime;
+        }
+
+        // YouTube Player state change: 0 = ENDED, 1 = PLAYING, 2 = PAUSED
+        if (msg.event === 'onStateChange' && msg.info === 0) {
+          if (typeof this.onNextTrack === 'function') {
+            this.onNextTrack();
+          }
+        }
+
+        // Graceful fallback on embed restriction / blocked video (codes 2, 5, 100, 101, 150)
+        if (msg.event === 'onError') {
+          console.warn('[EclipseMvPlayer] YouTube IFrame error:', msg.info);
+          if (this.mode === 'video') {
+            this.switchToSong();
+            if (typeof window.showToast === 'function') {
+              window.showToast('Music Video embedding is restricted, switched to audio mode', 'info');
             }
           }
-        } catch (_) {}
+        }
       });
     }
 

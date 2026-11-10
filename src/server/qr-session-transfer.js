@@ -508,7 +508,7 @@ function getOsLockPipePath(lockKey = 'eclipse-qr-ledger', platform = process.env
     return `\0eclipse-lock-${hash}`;
   }
   // macOS / POSIX fallback: Loopback TCP port (kernel-managed port, zero disk files, auto-released)
-  const port = 49152 + (parseInt(hash.slice(0, 4), 16) % 16000);
+  const port = 25000 + (parseInt(hash.slice(0, 4), 16) % 15000);
   return { port, host: '127.0.0.1', exclusive: true };
 }
 

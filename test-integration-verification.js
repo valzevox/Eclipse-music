@@ -962,7 +962,10 @@ async function runTests() {
 
     // 2a. Port Conflict Fail-Closed: occupies port before acquireOsLock
     const occupiedServer = require('net').createServer();
-    await new Promise((res) => occupiedServer.listen({ port: macTarget.port, host: '127.0.0.1', exclusive: true }, res));
+    await new Promise((res, rej) => {
+      occupiedServer.once('error', rej);
+      occupiedServer.listen({ port: macTarget.port, host: '127.0.0.1', exclusive: true }, res);
+    });
     let conflictRejected = false;
     const prevEnv = process.env.ECLIPSE_OS_LOCK_PLATFORM;
     process.env.ECLIPSE_OS_LOCK_PLATFORM = 'darwin';
