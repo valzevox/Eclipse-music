@@ -587,6 +587,7 @@ async function runTests() {
     assert(fs.existsSync(testLockFile), 'Process D lock must remain on disk');
     const diskLockD = fs.readFileSync(testLockFile, 'utf8').trim();
     assert.strictEqual(diskLockD, procDToken, 'Process D lock token must NOT be modified or corrupted');
+    console.log('    -> Subtest 4B: Stale ReaperLock Crash & Multi-Process Concurrent Recovery (PASS)');
 
     try { if (procDFd !== null) fs.closeSync(procDFd); } catch (_) {}
     try { fs.unlinkSync(testLockFile); } catch (_) {}
@@ -624,6 +625,7 @@ async function runTests() {
   assert.strictEqual(reapCrashRecovered, true, 'Recovery must succeed for crashed REAPING marker without NaN or lock deadlock');
   assert(!fs.existsSync(testLockFile), 'Target lock must be cleanly deleted');
   assert(!fs.existsSync(reaperFilePath), 'Stale REAPING reaper lock must be cleanly removed');
+  console.log('    -> Subtest 4C: REAPING Marker Crash Recovery (PASS)');
 
   // Subtest 4D: Process creates empty lock but is suspended / delayed (PID is still ALIVE)
   // Recovery MUST NOT delete the lock of a living process even if older than 5s!
@@ -658,6 +660,7 @@ async function runTests() {
     });
     try { fs.unlinkSync(testLockFile); } catch (_) {}
     try { fs.unlinkSync(reaperFilePath); } catch (_) {}
+    console.log('    -> Subtest 4D: Suspended Living Process Empty Lock Protection (PASS)');
   } finally {
     try { aliveWorker.kill(); } catch (_) {}
   }
@@ -685,6 +688,7 @@ async function runTests() {
     assert.strictEqual(emptyCrashReap, false, 'Recovery of empty lock with no verifiable owner must fail-closed');
     try { fs.unlinkSync(reaperFilePath); } catch (_) {}
     try { fs.unlinkSync(testLockFile); } catch (_) {}
+    console.log('    -> Subtest 4E: Dead Process Empty Lock Fail-Closed (PASS)');
   } finally {
     try { deadEmptyWorker.kill(); } catch (_) {}
   }
@@ -716,6 +720,86 @@ async function runTests() {
       try { fs.unlinkSync(testLockFile); } catch (_) {}
     } finally {
       try { stageWorker.kill(); } catch (_) {}
+    }
+  }
+  console.log('    -> Subtest 4F: Stage-by-Stage Crash & Mutual Exclusion Invariant (PASS)');
+
+  // Subtest 4G: Deterministic OS-Managed Kernel Lock Crash Recovery & Active-Owner Counter Invariant
+  // 1) Worker A acquires OS lock and crashes immediately
+  // 2) Workers B, C, D concurrently compete for the OS lock
+  // 3) IPC tracks active-owner counter; asserts active owners <= 1 at all times
+  const osLockKey = `test-os-lock-${Date.now()}`;
+  const osCrashWorker = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  try {
+    await new Promise((res, rej) => {
+      const t = setTimeout(() => { try { osCrashWorker.kill(); } catch (_) {} rej(new Error('OS Crash worker timeout')); }, 4000);
+      osCrashWorker.on('message', (m) => {
+        if (m && m.status === 'READY') {
+          clearTimeout(t);
+          osCrashWorker.send({ action: 'OS_LOCK_HOLD_AND_DIE', lockKey: osLockKey });
+        } else if (m && m.status === 'LOCKED') {
+          res();
+        }
+      });
+    });
+    await new Promise((res) => osCrashWorker.on('exit', res));
+  } finally {
+    try { osCrashWorker.kill(); } catch (_) {}
+  }
+
+  // OS lock owner is dead. Competing workers B, C, D attempt to acquire and enter critical section
+  const compWorkers = [
+    child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] }),
+    child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] }),
+    child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] })
+  ];
+  let currentActiveOwners = 0;
+  let maxObservedOwners = 0;
+  const completedTokens = new Set();
+
+  try {
+    await Promise.all(compWorkers.map((w, idx) => new Promise((res, rej) => {
+      const t = setTimeout(() => { for (const cw of compWorkers) { try { cw.kill(); } catch (_) {} } rej(new Error(`Worker ${idx} READY timeout`)); }, 4000);
+      w.on('message', (m) => {
+        if (m && m.status === 'READY') {
+          clearTimeout(t);
+          res();
+        }
+      });
+    })));
+
+    for (const w of compWorkers) {
+      w.on('message', (m) => {
+        if (!m) return;
+        if (m.status === 'ENTERED') {
+          currentActiveOwners++;
+          if (currentActiveOwners > maxObservedOwners) {
+            maxObservedOwners = currentActiveOwners;
+          }
+        } else if (m.status === 'EXITED') {
+          currentActiveOwners--;
+        } else if (m.status === 'DONE') {
+          completedTokens.add(m.token);
+        }
+      });
+      w.send({ action: 'OS_LOCK_COMPETE', lockKey: osLockKey });
+    }
+
+    const compExitCodes = await Promise.all(compWorkers.map(w => new Promise((res, rej) => {
+      const t = setTimeout(() => { for (const cw of compWorkers) { try { cw.kill(); } catch (_) {} } rej(new Error('Comp worker EXIT timeout')); }, 5000);
+      w.on('exit', (c) => { clearTimeout(t); res(c); });
+    })));
+
+    for (const code of compExitCodes) {
+      assert.strictEqual(code, 0, 'All competing workers must exit 0');
+    }
+    assert.strictEqual(completedTokens.size, 3, 'All 3 competing workers must successfully complete critical section');
+    assert.strictEqual(currentActiveOwners, 0, 'Final active owner counter must be 0');
+    assert.strictEqual(maxObservedOwners, 1, 'Active owner counter must NEVER exceed 1 (strict mutual exclusion)');
+    console.log('    -> Subtest 4G: OS-Managed Kernel Lock Multi-Process Crash Recovery & Active-Owner Invariant (PASS)');
+  } finally {
+    for (const w of compWorkers) {
+      try { w.kill(); } catch (_) {}
     }
   }
 

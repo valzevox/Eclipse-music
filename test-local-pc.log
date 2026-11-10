@@ -10,6 +10,12 @@ error ytm-auth: Failed to save accounts: AndroidKeyStore native hardware write f
 error ytm-auth: Failed to save accounts: Hardware vault write rejected or not durably persisted by native keystore
  -> Vault persistence, 06e1427 migration, & async failure safety verified (PASS).
 [5/8] Verifying Real Multi-Process Server-to-Server QR Claim & anti-replay...
+    -> Subtest 4B: Stale ReaperLock Crash & Multi-Process Concurrent Recovery (PASS)
+    -> Subtest 4C: REAPING Marker Crash Recovery (PASS)
+    -> Subtest 4D: Suspended Living Process Empty Lock Protection (PASS)
+    -> Subtest 4E: Dead Process Empty Lock Fail-Closed (PASS)
+    -> Subtest 4F: Stage-by-Stage Crash & Mutual Exclusion Invariant (PASS)
+    -> Subtest 4G: OS-Managed Kernel Lock Multi-Process Crash Recovery & Active-Owner Invariant (PASS)
  -> Real multi-process QR transfer & two-channel PIN security verified (PASS).
 [6/8] Verifying SmartDownloads Wi-Fi gate & mid-download abort cancellation...
  -> SmartDownloads Wi-Fi gate & mid-download abort cancellation verified (PASS).

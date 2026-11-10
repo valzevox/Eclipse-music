@@ -4,6 +4,7 @@
 const crypto = require('crypto');
 const os = require('os');
 const http = require('http');
+const net = require('net');
 const fs = require('fs');
 const path = require('path');
 
@@ -526,6 +527,66 @@ function claimRemoteTransferSession(sourceServerUrl, transferId, secretKey, dire
   });
 }
 
+function getOsLockPipePath(lockKey = 'eclipse-qr-ledger') {
+  const hash = crypto.createHash('sha256').update(lockKey).digest('hex').slice(0, 16);
+  if (process.platform === 'win32') {
+    return `\\\\.\\pipe\\eclipse-lock-${hash}`;
+  }
+  return path.join(os.tmpdir(), `eclipse-lock-${hash}.sock`);
+}
+
+function acquireOsLock(lockKey = 'eclipse-qr-ledger', timeoutMs = 4000) {
+  return new Promise((resolve, reject) => {
+    const pipePath = getOsLockPipePath(lockKey);
+    const deadline = Date.now() + timeoutMs;
+
+    function tryAcquire() {
+      const server = net.createServer();
+      server.unref();
+
+      server.once('error', (err) => {
+        try { server.close(); } catch (_) {}
+        if (err.code === 'EADDRINUSE') {
+          if (process.platform !== 'win32') {
+            const client = net.connect(pipePath);
+            client.once('error', (connErr) => {
+              if (connErr.code === 'ECONNREFUSED' || connErr.code === 'ENOENT') {
+                try { fs.unlinkSync(pipePath); } catch (_) {}
+              }
+            });
+            client.once('connect', () => {
+              client.destroy();
+            });
+          }
+          if (Date.now() >= deadline) {
+            return reject(new Error(`OS lock acquisition timeout (${timeoutMs}ms) for ${lockKey}`));
+          }
+          setTimeout(tryAcquire, 15);
+        } else {
+          return reject(err);
+        }
+      });
+
+      server.listen(pipePath, () => {
+        let released = false;
+        resolve({
+          pipePath,
+          release: () => {
+            if (released) return;
+            released = true;
+            try { server.close(); } catch (_) {}
+            if (process.platform !== 'win32') {
+              try { fs.unlinkSync(pipePath); } catch (_) {}
+            }
+          }
+        });
+      });
+    }
+
+    tryAcquire();
+  });
+}
+
 module.exports = {
   createTransferPayload,
   claimTransferSession,
@@ -534,5 +595,6 @@ module.exports = {
   decryptAccountFromTransit,
   isTransferConsumedOnDisk,
   markTransferConsumedOnDisk,
-  breakStaleLock
+  breakStaleLock,
+  acquireOsLock
 };

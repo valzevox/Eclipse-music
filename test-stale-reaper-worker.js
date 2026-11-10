@@ -133,6 +133,34 @@ if (process.send) {
       } catch (err) {
         exitWith({ status: 'ERROR', error: err.message, pid: process.pid }, 1);
       }
+    } else if (msg.action === 'OS_LOCK_HOLD_AND_DIE') {
+      (async () => {
+        try {
+          await qr.acquireOsLock(msg.lockKey || targetLock, 3000);
+          if (process.send) {
+            process.send({ status: 'LOCKED', pid: process.pid }, () => process.exit(0));
+          } else {
+            process.exit(0);
+          }
+        } catch (err) {
+          exitWith({ status: 'ERROR', error: err.message, pid: process.pid }, 1);
+        }
+      })();
+    } else if (msg.action === 'OS_LOCK_COMPETE') {
+      (async () => {
+        try {
+          const lock = await qr.acquireOsLock(msg.lockKey || targetLock, 4000);
+          const token = `${process.pid}:${Date.now()}:${Math.random()}`;
+          if (process.send) process.send({ status: 'ENTERED', pid: process.pid, token });
+          // Hold critical section briefly
+          await new Promise(r => setTimeout(r, 40));
+          if (process.send) process.send({ status: 'EXITED', pid: process.pid, token });
+          lock.release();
+          exitWith({ status: 'DONE', pid: process.pid, token }, 0);
+        } catch (err) {
+          exitWith({ status: 'ERROR', error: err.message, pid: process.pid }, 1);
+        }
+      })();
     }
   });
 } else {
