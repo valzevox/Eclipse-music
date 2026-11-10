@@ -78,6 +78,14 @@ D:\Eclipse\
 - Eclipse's signature visual identity is **Dark Neon Glassmorphism** (`backdrop-filter: blur(20px)`, `rgba(255, 255, 255, 0.08)` borders, deep violet/magenta glowing accents).
 - **NEVER** copy Material 3 Expressive shapes or Compose default widgets into Eclipse UI.
 
+### Rule 7: Spotify Canvas & Animated Artwork Invariant
+- Backend (`/api/canvas`):
+  - Tra cứu animated video loop theo `title` + `artist` + `videoId`, cache LRU 200 bài, fail-soft trả `{ success: true, canvasUrl: null, isVideo: false }`.
+- Frontend (`canvas-video-bg`):
+  - Render thẻ `<video autoplay loop muted playsinline class="canvas-video-bg">` làm nền mờ Now Playing.
+  - **CRITICAL BATTERY & GPU PROTECTION**: Bắt buộc lắng nghe sự kiện `visibilitychange` để `pause()` video khi `document.hidden` (ẩn tab, chuyển ứng dụng background) và `play()` trở lại khi mở lại app.
+  - Lưu trạng thái bật/tắt người dùng qua `localStorage.getItem('riff_canvas_enabled')`.
+
 ---
 
 ## 3. Traps That Have Already Cost Time Here (Footguns & Pitfalls)
