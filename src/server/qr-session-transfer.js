@@ -498,14 +498,23 @@ function claimRemoteTransferSession(sourceServerUrl, transferId, secretKey, dire
 function getOsLockPipePath(lockKey = 'eclipse-qr-ledger') {
   const hash = crypto.createHash('sha256').update(lockKey).digest('hex').slice(0, 16);
   if (process.platform === 'win32') {
+    // Windows Kernel-managed Named Pipe: auto-released by kernel on exit/crash, zero disk files
     return `\\\\.\\pipe\\eclipse-lock-${hash}`;
   }
-  return path.join(os.tmpdir(), `eclipse-lock-${hash}.sock`);
+  if (process.platform === 'linux') {
+    // Linux Kernel-managed Abstract Namespace Unix Socket:
+    // Starts with null byte '\0'. Has NO filesystem path, cannot be corrupted,
+    // and is 100% automatically reclaimed by Linux kernel on exit/crash! Zero TOCTOU!
+    return `\0eclipse-lock-${hash}`;
+  }
+  // macOS / POSIX fallback: Loopback TCP port (kernel-managed port, zero disk files, auto-released)
+  const port = 49152 + (parseInt(hash.slice(0, 4), 16) % 16000);
+  return { port, host: '127.0.0.1', exclusive: true };
 }
 
 function acquireOsLock(lockKey = 'eclipse-qr-ledger', timeoutMs = 4000) {
   return new Promise((resolve, reject) => {
-    const pipePath = getOsLockPipePath(lockKey);
+    const lockTarget = getOsLockPipePath(lockKey);
     const deadline = Date.now() + timeoutMs;
 
     function tryAcquire() {
@@ -515,26 +524,6 @@ function acquireOsLock(lockKey = 'eclipse-qr-ledger', timeoutMs = 4000) {
       server.once('error', (err) => {
         try { server.close(); } catch (_) {}
         if (err.code === 'EADDRINUSE') {
-          if (process.platform !== 'win32') {
-            const client = net.connect(pipePath);
-            client.once('error', (connErr) => {
-              if (connErr.code === 'ECONNREFUSED') {
-                // Owner process died leaving stale Unix socket file.
-                // Atomic takeover: rename stale socket to unique dead path before unlink!
-                try {
-                  const graveyard = `${pipePath}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.dead`;
-                  fs.renameSync(pipePath, graveyard);
-                  try { fs.unlinkSync(graveyard); } catch (_) {}
-                } catch (_) {
-                  // Another competing reaper process already renamed it -> safe
-                }
-              }
-            });
-            client.once('connect', () => {
-              // Owner process is alive
-              client.destroy();
-            });
-          }
           if (Date.now() >= deadline) {
             return reject(new Error(`OS lock acquisition timeout (${timeoutMs}ms) for ${lockKey}`));
           }
@@ -544,41 +533,25 @@ function acquireOsLock(lockKey = 'eclipse-qr-ledger', timeoutMs = 4000) {
         }
       });
 
-      server.listen(pipePath, () => {
+      const onBound = () => {
         let released = false;
-        let boundStat = null;
-        if (process.platform !== 'win32') {
-          try { boundStat = fs.statSync(pipePath); } catch (_) {}
-        }
-
         resolve({
-          pipePath,
+          lockTarget,
           release: () => {
             if (released) return Promise.resolve();
             released = true;
             return new Promise((resRel) => {
-              server.close(() => {
-                if (process.platform !== 'win32' && boundStat) {
-                  try {
-                    if (fs.existsSync(pipePath)) {
-                      const curStat = fs.statSync(pipePath);
-                      // Inode check: only remove if the file still belongs to our exact socket!
-                      if (curStat.ino === boundStat.ino && curStat.dev === boundStat.dev) {
-                        const graveyard = `${pipePath}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.dead`;
-                        try {
-                          fs.renameSync(pipePath, graveyard);
-                          try { fs.unlinkSync(graveyard); } catch (_) {}
-                        } catch (_) {}
-                      }
-                    }
-                  } catch (_) {}
-                }
-                resRel();
-              });
+              server.close(() => resRel());
             });
           }
         });
-      });
+      };
+
+      if (typeof lockTarget === 'object' && lockTarget.port) {
+        server.listen(lockTarget, onBound);
+      } else {
+        server.listen(lockTarget, onBound);
+      }
     }
 
     tryAcquire();

@@ -895,28 +895,17 @@ async function runTests() {
     }
   }
 
-  // Subtest 4I: POSIX Socket Inode Verification & Atomic Rename Race Defense
-  // Verifies that stale socket recovery uses atomic rename and inode validation
-  const posixSimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'posix-sim-'));
-  const simSocketPath = path.join(posixSimDir, 'test.sock');
-  fs.writeFileSync(simSocketPath, 'simulated_stale_socket');
-  const simStatBefore = fs.statSync(simSocketPath);
-  // Atomic rename to dead path prevents TOCTOU
-  const simDeadPath = `${simSocketPath}.${process.pid}.${Date.now()}.dead`;
-  fs.renameSync(simSocketPath, simDeadPath);
-  fs.unlinkSync(simDeadPath);
-  assert(!fs.existsSync(simSocketPath), 'Stale simulated socket cleanly removed via atomic rename');
-
-  // Verify that an old process with an outdated inode CANNOT delete a new socket created by another process
-  fs.writeFileSync(simSocketPath, 'newly_created_socket_by_other_process');
-  const newStat = fs.statSync(simSocketPath);
-  // An old process holding simStatBefore checks inode match:
-  const shouldDelete = (newStat.ino === simStatBefore.ino && newStat.dev === simStatBefore.dev);
-  assert.strictEqual(shouldDelete, false, 'Old process MUST NOT delete socket with differing inode');
-  assert(fs.existsSync(simSocketPath), 'New socket must remain untouched on disk');
-  try { fs.unlinkSync(simSocketPath); } catch (_) {}
-  try { fs.rmdirSync(posixSimDir); } catch (_) {}
-  console.log('    -> Subtest 4I: POSIX Socket Inode Verification & Atomic Rename Race Defense (PASS)');
+  // Subtest 4I: Kernel-Managed OS Lock Primitive Verification (Zero Pathname TOCTOU)
+  // Verifies real Windows Named Pipe / Linux Abstract Unix Socket without any disk pathname
+  const lockKey4I = `kernel-lock-verify-${Date.now()}`;
+  const lock4I = await pcQr.acquireOsLock(lockKey4I, 2000);
+  if (process.platform === 'linux') {
+    assert(typeof lock4I.lockTarget === 'string' && lock4I.lockTarget.startsWith('\0'), 'Linux MUST use kernel abstract namespace socket (no disk pathname)');
+  } else if (process.platform === 'win32') {
+    assert(typeof lock4I.lockTarget === 'string' && lock4I.lockTarget.startsWith('\\\\.\\pipe\\'), 'Windows MUST use kernel named pipe (no disk pathname)');
+  }
+  await lock4I.release();
+  console.log(`    -> Subtest 4I: Kernel-Managed OS Lock Primitive (Zero Pathname TOCTOU on ${process.platform}) (PASS)`);
 
   // Subtest 4J: Production QR Transfer uses acquireOsLock verification
   let osLockInvoked = 0;
