@@ -9477,7 +9477,7 @@ const server = http.createServer(async (req, res) => {
 
         // Case 1: Remote LAN peer claiming token generated on this PC server
         if (transitEncrypted) {
-          const encryptedAccount = qrTransfer.claimTransferSession(transferId, secretKey, { encryptForTransit: true, pin });
+          const encryptedAccount = await qrTransfer.claimTransferSession(transferId, secretKey, { encryptForTransit: true, pin });
           res.writeHead(200, { 'Content-Type': 'application/json' });
           return res.end(JSON.stringify({ success: true, encryptedAccount }));
         }
@@ -9485,7 +9485,7 @@ const server = http.createServer(async (req, res) => {
         // Case 2: Local client claiming from a remote sourceServerUrl, directPayload, or local pendingTransfers
         let account = null;
         try {
-          account = qrTransfer.claimTransferSession(transferId, secretKey);
+          account = await qrTransfer.claimTransferSession(transferId, secretKey);
         } catch (localErr) {
           if (sourceServerUrl || directPayload) {
             account = await qrTransfer.claimRemoteTransferSession(sourceServerUrl, transferId, secretKey, directPayload, pin);

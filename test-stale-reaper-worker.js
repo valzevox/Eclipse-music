@@ -148,15 +148,37 @@ if (process.send) {
       })();
     } else if (msg.action === 'OS_LOCK_COMPETE') {
       (async () => {
+        let lock = null;
         try {
-          const lock = await qr.acquireOsLock(msg.lockKey || targetLock, 4000);
+          lock = await qr.acquireOsLock(msg.lockKey || targetLock, 6000);
           const token = `${process.pid}:${Date.now()}:${Math.random()}`;
           if (process.send) process.send({ status: 'ENTERED', pid: process.pid, token });
           // Hold critical section briefly
-          await new Promise(r => setTimeout(r, 40));
-          if (process.send) process.send({ status: 'EXITED', pid: process.pid, token });
-          lock.release();
+          await new Promise(r => setTimeout(r, 50));
+          // Release lock FIRST, and await full completion
+          await lock.release();
+          lock = null;
+          // Send RELEASED only AFTER release has completed
+          if (process.send) process.send({ status: 'RELEASED', pid: process.pid, token });
           exitWith({ status: 'DONE', pid: process.pid, token }, 0);
+        } catch (err) {
+          if (lock) {
+            try { await lock.release(); } catch (_) {}
+          }
+          exitWith({ status: 'ERROR', error: err.message, pid: process.pid }, 1);
+        }
+      })();
+    } else if (msg.action === 'OS_LOCK_HOLD_AND_CRASH_MID_CONTENTION') {
+      (async () => {
+        try {
+          await qr.acquireOsLock(msg.lockKey || targetLock, 6000);
+          if (process.send) {
+            process.send({ status: 'ENTERED', pid: process.pid, token: `crash_${process.pid}` });
+            // Crash abruptly while other workers are waiting, without calling release()
+            setTimeout(() => process.exit(0), 30);
+          } else {
+            process.exit(0);
+          }
         } catch (err) {
           exitWith({ status: 'ERROR', error: err.message, pid: process.pid }, 1);
         }

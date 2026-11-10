@@ -1,4 +1,7 @@
 --- STARTING ARCHITECTURE & INTEGRATION VERIFICATION (PC) ---
+[SYS-INFO] OS/Platform: win32 (10.0.19045) x64
+[SYS-INFO] Node.js Version: v26.11.1
+[SYS-INFO] Git HEAD SHA: 873b78041a115d795f4b90f98d9ad588ac383063
 [1/8] Verifying Eclipse PC backend services...
  -> PC backend services verified (PASS).
 [2/8] Verifying HTML script injections...
@@ -15,7 +18,10 @@ error ytm-auth: Failed to save accounts: Hardware vault write rejected or not du
     -> Subtest 4D: Suspended Living Process Empty Lock Protection (PASS)
     -> Subtest 4E: Dead Process Empty Lock Fail-Closed (PASS)
     -> Subtest 4F: Stage-by-Stage Crash & Mutual Exclusion Invariant (PASS)
-    -> Subtest 4G: OS-Managed Kernel Lock Multi-Process Crash Recovery & Active-Owner Invariant (PASS)
+    -> Subtest 4G: OS-Managed Kernel Lock Multi-Process Crash Recovery & Active-Owner Invariant (PASS, maxActiveOwners=1, finalActiveOwners=0)
+    -> Subtest 4H: Crash Mid-Contention Multi-Process Recovery (PASS, maxActiveOwners=1, finalActiveOwners=0)
+    -> Subtest 4I: POSIX Socket Inode Verification & Atomic Rename Race Defense (PASS)
+    -> Subtest 4J: Production QR Transfer uses acquireOsLock verification (PASS, calls=1)
  -> Real multi-process QR transfer & two-channel PIN security verified (PASS).
 [6/8] Verifying SmartDownloads Wi-Fi gate & mid-download abort cancellation...
  -> SmartDownloads Wi-Fi gate & mid-download abort cancellation verified (PASS).

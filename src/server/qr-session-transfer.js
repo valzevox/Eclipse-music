@@ -195,34 +195,12 @@ function breakStaleLock(customLockPath = null) {
   }
 }
 
-function markTransferConsumedOnDisk(transferId, expiresAt, options = {}) {
+async function markTransferConsumedOnDisk(transferId, expiresAt, options = {}) {
   if (!transferId) return;
+  // Production OS-Managed Kernel Lock: strict mutual exclusion across processes & platforms
+  const lock = await module.exports.acquireOsLock('eclipse-qr-ledger', 4000);
   const ledgerPath = getLedgerPath();
-  const lockPath = `${ledgerPath}.lock`;
   const tmpPath = `${ledgerPath}.${process.pid}.${Date.now()}.tmp`;
-
-  const lockToken = `${process.pid}:${Date.now()}:${crypto.randomBytes(6).toString('hex')}`;
-
-  // Simple exclusive file lock with retry/timeout for multi-process atomicity
-  let lockFd = null;
-  let lockStat = null;
-  const deadline = Date.now() + 3000;
-  while (Date.now() < deadline) {
-    try {
-      lockFd = fs.openSync(lockPath, 'wx');
-      fs.writeSync(lockFd, lockToken);
-      lockStat = fs.fstatSync(lockFd);
-      break;
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
-      breakStaleLock(lockPath);
-      const endWait = Date.now() + 15;
-      while (Date.now() < endWait) {}
-    }
-  }
-  if (lockFd === null) {
-    throw new Error('Could not acquire transfer ledger lock (concurrent contention)');
-  }
 
   try {
     let data = {};
@@ -238,7 +216,7 @@ function markTransferConsumedOnDisk(transferId, expiresAt, options = {}) {
     }
 
     const now = Date.now();
-    // Direct claim atomicity: MUST verify inside exclusive lock before writing!
+    // Direct claim atomicity: MUST verify inside OS-managed lock before writing!
     // In LAN claim mode where sender and receiver share the same disk ledger, the receiver records consumption
     if (data[transferId] && !options.allowPeerConsumption) {
       if (now < Number(data[transferId])) {
@@ -254,17 +232,7 @@ function markTransferConsumedOnDisk(transferId, expiresAt, options = {}) {
     fs.renameSync(tmpPath, ledgerPath);
   } finally {
     try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (_) {}
-    try { if (lockFd !== null) fs.closeSync(lockFd); } catch (_) {}
-    // Only unlink lockPath if it still belongs to this process's lockToken and exact inode!
-    try {
-      if (fs.existsSync(lockPath)) {
-        const diskStat = fs.statSync(lockPath);
-        const currentOwner = fs.readFileSync(lockPath, 'utf8').trim();
-        if (currentOwner === lockToken && lockStat && diskStat.ino === lockStat.ino) {
-          fs.unlinkSync(lockPath);
-        }
-      }
-    } catch (_) {}
+    await lock.release();
   }
 }
 
@@ -386,7 +354,7 @@ function createTransferPayload(accountData = {}, port = 38472, options = {}) {
 /**
  * Claim session from local pendingTransfers (burns token on first valid claim)
  */
-function claimTransferSession(transferId, secretKey, options = {}) {
+async function claimTransferSession(transferId, secretKey, options = {}) {
   // Check multi-process persistent ledger
   if (isTransferConsumedOnDisk(transferId)) {
     throw new Error('Transfer token has already been claimed (replay blocked)');
@@ -410,7 +378,7 @@ function claimTransferSession(transferId, secretKey, options = {}) {
 
   const account = pending.account;
   pendingTransfers.delete(transferId);
-  markTransferConsumedOnDisk(transferId, pending.expiresAt, { allowExistingSameMachine: false });
+  await markTransferConsumedOnDisk(transferId, pending.expiresAt, { allowExistingSameMachine: false });
 
   if (options && options.encryptForTransit) {
     return encryptAccountForTransit(account, secretKey, options.pin || '');
@@ -454,7 +422,7 @@ function claimRemoteTransferSession(sourceServerUrl, transferId, secretKey, dire
               ? decryptAccountFromTransit(data.encryptedAccount, secretKey, pin)
               : data.account;
             // Fail-closed: MUST persist anti-replay ledger BEFORE resolving account!
-            markTransferConsumedOnDisk(transferId, Date.now() + TRANSFER_TOKEN_TTL_MS, { allowPeerConsumption: true });
+            await markTransferConsumedOnDisk(transferId, Date.now() + TRANSFER_TOKEN_TTL_MS, { allowPeerConsumption: true });
             return resolve(acc);
           }
         } else {
@@ -494,7 +462,7 @@ function claimRemoteTransferSession(sourceServerUrl, transferId, secretKey, dire
           });
           if (lanResult) {
             // Fail-closed: MUST persist anti-replay ledger BEFORE resolving account!
-            markTransferConsumedOnDisk(transferId, Date.now() + TRANSFER_TOKEN_TTL_MS, { allowPeerConsumption: true });
+            await markTransferConsumedOnDisk(transferId, Date.now() + TRANSFER_TOKEN_TTL_MS, { allowPeerConsumption: true });
             return resolve(lanResult);
           }
         }
@@ -516,7 +484,7 @@ function claimRemoteTransferSession(sourceServerUrl, transferId, secretKey, dire
         if (!acc || (!acc.cookie && !acc.id)) {
           throw new Error('Invalid PIN or corrupt payload');
         }
-        markTransferConsumedOnDisk(transferId, directPayload.expiresAt);
+        await markTransferConsumedOnDisk(transferId, directPayload.expiresAt);
         return resolve(acc);
       } catch (err) {
         return reject(err);
@@ -550,11 +518,20 @@ function acquireOsLock(lockKey = 'eclipse-qr-ledger', timeoutMs = 4000) {
           if (process.platform !== 'win32') {
             const client = net.connect(pipePath);
             client.once('error', (connErr) => {
-              if (connErr.code === 'ECONNREFUSED' || connErr.code === 'ENOENT') {
-                try { fs.unlinkSync(pipePath); } catch (_) {}
+              if (connErr.code === 'ECONNREFUSED') {
+                // Owner process died leaving stale Unix socket file.
+                // Atomic takeover: rename stale socket to unique dead path before unlink!
+                try {
+                  const graveyard = `${pipePath}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.dead`;
+                  fs.renameSync(pipePath, graveyard);
+                  try { fs.unlinkSync(graveyard); } catch (_) {}
+                } catch (_) {
+                  // Another competing reaper process already renamed it -> safe
+                }
               }
             });
             client.once('connect', () => {
+              // Owner process is alive
               client.destroy();
             });
           }
@@ -569,15 +546,36 @@ function acquireOsLock(lockKey = 'eclipse-qr-ledger', timeoutMs = 4000) {
 
       server.listen(pipePath, () => {
         let released = false;
+        let boundStat = null;
+        if (process.platform !== 'win32') {
+          try { boundStat = fs.statSync(pipePath); } catch (_) {}
+        }
+
         resolve({
           pipePath,
           release: () => {
-            if (released) return;
+            if (released) return Promise.resolve();
             released = true;
-            try { server.close(); } catch (_) {}
-            if (process.platform !== 'win32') {
-              try { fs.unlinkSync(pipePath); } catch (_) {}
-            }
+            return new Promise((resRel) => {
+              server.close(() => {
+                if (process.platform !== 'win32' && boundStat) {
+                  try {
+                    if (fs.existsSync(pipePath)) {
+                      const curStat = fs.statSync(pipePath);
+                      // Inode check: only remove if the file still belongs to our exact socket!
+                      if (curStat.ino === boundStat.ino && curStat.dev === boundStat.dev) {
+                        const graveyard = `${pipePath}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.dead`;
+                        try {
+                          fs.renameSync(pipePath, graveyard);
+                          try { fs.unlinkSync(graveyard); } catch (_) {}
+                        } catch (_) {}
+                      }
+                    }
+                  } catch (_) {}
+                }
+                resRel();
+              });
+            });
           }
         });
       });

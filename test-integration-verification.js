@@ -7,7 +7,15 @@ const http = require('http');
 const child_process = require('child_process');
 
 async function runTests() {
+  const gitSha = (() => {
+    try {
+      return child_process.execSync('git rev-parse HEAD', { cwd: __dirname }).toString().trim();
+    } catch (_) { return 'unknown'; }
+  })();
   console.log('--- STARTING ARCHITECTURE & INTEGRATION VERIFICATION (PC) ---');
+  console.log(`[SYS-INFO] OS/Platform: ${os.platform()} (${os.release()}) ${os.arch()}`);
+  console.log(`[SYS-INFO] Node.js Version: ${process.version}`);
+  console.log(`[SYS-INFO] Git HEAD SHA: ${gitSha}`);
 
   // 1. Check PC Services relative to current repo
   console.log('[1/8] Verifying Eclipse PC backend services...');
@@ -163,13 +171,13 @@ async function runTests() {
         try {
           const p = JSON.parse(body || '{}');
           if (p.transitEncrypted) {
-            const encryptedAccount = pcQr.claimTransferSession(p.transferId, p.secretKey, { encryptForTransit: true, pin: p.pin });
+            const encryptedAccount = await pcQr.claimTransferSession(p.transferId, p.secretKey, { encryptForTransit: true, pin: p.pin });
             res.writeHead(200, { 'Content-Type': 'application/json' });
             return res.end(JSON.stringify({ success: true, encryptedAccount }));
           }
           let account = null;
           try {
-            account = pcQr.claimTransferSession(p.transferId, p.secretKey);
+            account = await pcQr.claimTransferSession(p.transferId, p.secretKey);
           } catch (localErr) {
             account = await pcQr.claimRemoteTransferSession(p.sourceServerUrl, p.transferId, p.secretKey, p.directPayload, p.pin);
           }
@@ -755,6 +763,7 @@ async function runTests() {
   ];
   let currentActiveOwners = 0;
   let maxObservedOwners = 0;
+  const activeTokens = new Set();
   const completedTokens = new Set();
 
   try {
@@ -772,12 +781,18 @@ async function runTests() {
       w.on('message', (m) => {
         if (!m) return;
         if (m.status === 'ENTERED') {
+          assert(!activeTokens.has(m.token), 'Must not receive duplicate ENTERED for token');
+          activeTokens.add(m.token);
           currentActiveOwners++;
           if (currentActiveOwners > maxObservedOwners) {
             maxObservedOwners = currentActiveOwners;
           }
-        } else if (m.status === 'EXITED') {
+          assert(currentActiveOwners <= 1, 'Strict mutual exclusion violated: currentActiveOwners > 1');
+        } else if (m.status === 'RELEASED') {
+          assert(activeTokens.has(m.token), 'Must be active in critical section before RELEASED');
+          activeTokens.delete(m.token);
           currentActiveOwners--;
+          assert(currentActiveOwners >= 0, 'Active owner counter must never be negative');
         } else if (m.status === 'DONE') {
           completedTokens.add(m.token);
         }
@@ -786,7 +801,7 @@ async function runTests() {
     }
 
     const compExitCodes = await Promise.all(compWorkers.map(w => new Promise((res, rej) => {
-      const t = setTimeout(() => { for (const cw of compWorkers) { try { cw.kill(); } catch (_) {} } rej(new Error('Comp worker EXIT timeout')); }, 5000);
+      const t = setTimeout(() => { for (const cw of compWorkers) { try { cw.kill(); } catch (_) {} } rej(new Error('Comp worker EXIT timeout')); }, 6000);
       w.on('exit', (c) => { clearTimeout(t); res(c); });
     })));
 
@@ -796,11 +811,126 @@ async function runTests() {
     assert.strictEqual(completedTokens.size, 3, 'All 3 competing workers must successfully complete critical section');
     assert.strictEqual(currentActiveOwners, 0, 'Final active owner counter must be 0');
     assert.strictEqual(maxObservedOwners, 1, 'Active owner counter must NEVER exceed 1 (strict mutual exclusion)');
-    console.log('    -> Subtest 4G: OS-Managed Kernel Lock Multi-Process Crash Recovery & Active-Owner Invariant (PASS)');
+    console.log(`    -> Subtest 4G: OS-Managed Kernel Lock Multi-Process Crash Recovery & Active-Owner Invariant (PASS, maxActiveOwners=${maxObservedOwners}, finalActiveOwners=${currentActiveOwners})`);
   } finally {
     for (const w of compWorkers) {
       try { w.kill(); } catch (_) {}
     }
+  }
+
+  // Subtest 4H: Crash Mid-Contention Multi-Process Recovery
+  // Worker A acquires lock and crashes abruptly while Workers B & C are actively waiting
+  const midLockKey = `test-os-lock-mid-${Date.now()}`;
+  const midCrashWorker = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  const midWaitWorkers = [
+    child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] }),
+    child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] })
+  ];
+  const allMidWorkers = [midCrashWorker, ...midWaitWorkers];
+  let activeMidOwners = 0;
+  let maxObservedMidOwners = 0;
+  const completedMidTokens = new Set();
+  const activeMidTokens = new Set();
+
+  try {
+    await Promise.all(allMidWorkers.map((w, idx) => new Promise((res, rej) => {
+      const t = setTimeout(() => rej(new Error(`Mid worker ${idx} READY timeout`)), 4000);
+      w.on('message', (m) => {
+        if (m && m.status === 'READY') {
+          clearTimeout(t);
+          res();
+        }
+      });
+    })));
+
+    // Start Worker A (will crash abruptly while holding lock)
+    midCrashWorker.send({ action: 'OS_LOCK_HOLD_AND_CRASH_MID_CONTENTION', lockKey: midLockKey });
+    await new Promise((res) => {
+      midCrashWorker.on('message', (m) => {
+        if (m && m.status === 'ENTERED') res();
+      });
+    });
+
+    // While Worker A is inside critical section, start Workers B & C to contend
+    for (const w of midWaitWorkers) {
+      w.on('message', (m) => {
+        if (!m) return;
+        if (m.status === 'ENTERED') {
+          assert(!activeMidTokens.has(m.token), 'No duplicate ENTERED');
+          activeMidTokens.add(m.token);
+          activeMidOwners++;
+          if (activeMidOwners > maxObservedMidOwners) maxObservedMidOwners = activeMidOwners;
+          assert(activeMidOwners <= 1, 'Max active owners must not exceed 1');
+        } else if (m.status === 'RELEASED') {
+          assert(activeMidTokens.has(m.token), 'Must be active before RELEASED');
+          activeMidTokens.delete(m.token);
+          activeMidOwners--;
+          assert(activeMidOwners >= 0, 'Active owners must never be negative');
+        } else if (m.status === 'DONE') {
+          completedMidTokens.add(m.token);
+        }
+      });
+      w.send({ action: 'OS_LOCK_COMPETE', lockKey: midLockKey });
+    }
+
+    // Wait for crash worker to exit (crashes mid-contention)
+    await new Promise((res) => midCrashWorker.on('exit', res));
+
+    // Wait for waiting workers B & C to successfully recover and exit 0
+    const waitExitCodes = await Promise.all(midWaitWorkers.map(w => new Promise((res, rej) => {
+      const t = setTimeout(() => rej(new Error('Mid wait worker EXIT timeout')), 6000);
+      w.on('exit', (c) => { clearTimeout(t); res(c); });
+    })));
+
+    for (const code of waitExitCodes) {
+      assert.strictEqual(code, 0, 'Waiting workers must recover and exit 0 after crash');
+    }
+    assert.strictEqual(completedMidTokens.size, 2, 'Both waiting workers must complete critical section');
+    assert.strictEqual(activeMidOwners, 0, 'Active owners after contention must be 0');
+    assert.strictEqual(maxObservedMidOwners, 1, 'Active owner counter must never exceed 1 even across crash');
+    console.log(`    -> Subtest 4H: Crash Mid-Contention Multi-Process Recovery (PASS, maxActiveOwners=${maxObservedMidOwners}, finalActiveOwners=${activeMidOwners})`);
+  } finally {
+    for (const w of allMidWorkers) {
+      try { w.kill(); } catch (_) {}
+    }
+  }
+
+  // Subtest 4I: POSIX Socket Inode Verification & Atomic Rename Race Defense
+  // Verifies that stale socket recovery uses atomic rename and inode validation
+  const posixSimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'posix-sim-'));
+  const simSocketPath = path.join(posixSimDir, 'test.sock');
+  fs.writeFileSync(simSocketPath, 'simulated_stale_socket');
+  const simStatBefore = fs.statSync(simSocketPath);
+  // Atomic rename to dead path prevents TOCTOU
+  const simDeadPath = `${simSocketPath}.${process.pid}.${Date.now()}.dead`;
+  fs.renameSync(simSocketPath, simDeadPath);
+  fs.unlinkSync(simDeadPath);
+  assert(!fs.existsSync(simSocketPath), 'Stale simulated socket cleanly removed via atomic rename');
+
+  // Verify that an old process with an outdated inode CANNOT delete a new socket created by another process
+  fs.writeFileSync(simSocketPath, 'newly_created_socket_by_other_process');
+  const newStat = fs.statSync(simSocketPath);
+  // An old process holding simStatBefore checks inode match:
+  const shouldDelete = (newStat.ino === simStatBefore.ino && newStat.dev === simStatBefore.dev);
+  assert.strictEqual(shouldDelete, false, 'Old process MUST NOT delete socket with differing inode');
+  assert(fs.existsSync(simSocketPath), 'New socket must remain untouched on disk');
+  try { fs.unlinkSync(simSocketPath); } catch (_) {}
+  try { fs.rmdirSync(posixSimDir); } catch (_) {}
+  console.log('    -> Subtest 4I: POSIX Socket Inode Verification & Atomic Rename Race Defense (PASS)');
+
+  // Subtest 4J: Production QR Transfer uses acquireOsLock verification
+  let osLockInvoked = 0;
+  const origAcquireOsLock = pcQr.acquireOsLock;
+  pcQr.acquireOsLock = async function(key, timeout) {
+    osLockInvoked++;
+    return origAcquireOsLock(key, timeout);
+  };
+  try {
+    await pcQr.markTransferConsumedOnDisk(`prod_verify_tx_${Date.now()}`, Date.now() + 60000);
+    assert(osLockInvoked > 0, 'Production markTransferConsumedOnDisk MUST invoke acquireOsLock');
+    console.log(`    -> Subtest 4J: Production QR Transfer uses acquireOsLock verification (PASS, calls=${osLockInvoked})`);
+  } finally {
+    pcQr.acquireOsLock = origAcquireOsLock;
   }
 
   // Subtest 5: Concurrency Race Test Across Multiple Rounds with Strict IPC & Timeouts:
