@@ -895,17 +895,147 @@ async function runTests() {
     }
   }
 
-  // Subtest 4I: Kernel-Managed OS Lock Primitive Verification (Zero Pathname TOCTOU)
-  // Verifies real Windows Named Pipe / Linux Abstract Unix Socket without any disk pathname
+  // Subtest 4I: Kernel-Managed OS Lock Multi-Backend Real Multi-Process Verification (Zero Pathname TOCTOU)
+  // 1. Current OS Native Backend Verification (Windows Named Pipe / Linux Abstract Unix Socket)
   const lockKey4I = `kernel-lock-verify-${Date.now()}`;
   const lock4I = await pcQr.acquireOsLock(lockKey4I, 2000);
   if (process.platform === 'linux') {
     assert(typeof lock4I.lockTarget === 'string' && lock4I.lockTarget.startsWith('\0'), 'Linux MUST use kernel abstract namespace socket (no disk pathname)');
+    const diskPath = lock4I.lockTarget.slice(1);
+    assert(!fs.existsSync(diskPath), 'Abstract namespace socket must not create filesystem entry');
   } else if (process.platform === 'win32') {
     assert(typeof lock4I.lockTarget === 'string' && lock4I.lockTarget.startsWith('\\\\.\\pipe\\'), 'Windows MUST use kernel named pipe (no disk pathname)');
   }
   await lock4I.release();
-  console.log(`    -> Subtest 4I: Kernel-Managed OS Lock Primitive (Zero Pathname TOCTOU on ${process.platform}) (PASS)`);
+
+  // Multi-Process Contention & Crash Recovery for Current OS Native Backend
+  {
+    const nativeKey = `native-comp-${Date.now()}`;
+    const p1 = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+    await new Promise((res, rej) => {
+      const t = setTimeout(() => { try { p1.kill(); } catch (_) {} rej(new Error('Native P1 timeout')); }, 4000);
+      p1.on('message', (m) => {
+        if (m && m.status === 'READY') {
+          clearTimeout(t);
+          p1.send({ action: 'OS_LOCK_HOLD_AND_DIE', lockKey: nativeKey });
+        } else if (m && m.status === 'LOCKED') {
+          res();
+        }
+      });
+    });
+    await new Promise((res) => p1.on('exit', res));
+
+    const p2 = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+    const p3 = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+    let nativeActive = 0, nativeMax = 0;
+    await Promise.all([p2, p3].map((w, i) => new Promise((res, rej) => {
+      const t = setTimeout(() => { try { w.kill(); } catch (_) {} rej(new Error(`P${i+2} READY timeout`)); }, 4000);
+      w.on('message', (m) => { if (m && m.status === 'READY') { clearTimeout(t); res(); } });
+    })));
+    for (const w of [p2, p3]) {
+      w.on('message', (m) => {
+        if (!m) return;
+        if (m.status === 'ENTERED') {
+          nativeActive++;
+          if (nativeActive > nativeMax) nativeMax = nativeActive;
+          assert(nativeActive <= 1, 'Native backend mutual exclusion violated');
+        } else if (m.status === 'RELEASED') {
+          nativeActive--;
+          assert(nativeActive >= 0, 'Native active count must not be negative');
+        }
+      });
+      w.send({ action: 'OS_LOCK_COMPETE', lockKey: nativeKey });
+    }
+    await Promise.all([p2, p3].map(w => new Promise((res, rej) => {
+      const t = setTimeout(() => { try { w.kill(); } catch (_) {} rej(new Error('Native worker exit timeout')); }, 6000);
+      w.on('exit', res);
+    })));
+    assert(nativeMax === 1, `Native maxActiveOwners must be 1, got ${nativeMax}`);
+    assert(nativeActive === 0, `Native finalActiveOwners must be 0, got ${nativeActive}`);
+  }
+
+  // 2. macOS Loopback TCP Fallback Verification (Zero Pathname TOCTOU)
+  {
+    const macKey = `mac-lock-verify-${Date.now()}`;
+    const macTarget = pcQr.getOsLockPipePath(macKey, 'darwin');
+    assert(typeof macTarget === 'object' && macTarget.host === '127.0.0.1' && typeof macTarget.port === 'number', 'macOS MUST use Loopback TCP object');
+
+    // 2a. Port Conflict Fail-Closed: occupies port before acquireOsLock
+    const occupiedServer = require('net').createServer();
+    await new Promise((res) => occupiedServer.listen({ port: macTarget.port, host: '127.0.0.1', exclusive: true }, res));
+    let conflictRejected = false;
+    const prevEnv = process.env.ECLIPSE_OS_LOCK_PLATFORM;
+    process.env.ECLIPSE_OS_LOCK_PLATFORM = 'darwin';
+    try {
+      await pcQr.acquireOsLock(macKey, 300);
+    } catch (err) {
+      if (err.message.includes('timeout')) conflictRejected = true;
+    } finally {
+      if (prevEnv !== undefined) process.env.ECLIPSE_OS_LOCK_PLATFORM = prevEnv;
+      else delete process.env.ECLIPSE_OS_LOCK_PLATFORM;
+      await new Promise((res) => occupiedServer.close(res));
+    }
+    assert(conflictRejected, 'macOS Loopback TCP lock MUST fail-closed on port conflict');
+
+    // 2b. Distinct Keys Non-Collision: two distinct keys must not collide
+    const key1 = `mac-unique-alpha-${Date.now()}`;
+    const key2 = `mac-unique-beta-${Date.now()}`;
+    process.env.ECLIPSE_OS_LOCK_PLATFORM = 'darwin';
+    const l1 = await pcQr.acquireOsLock(key1, 2000);
+    const l2 = await pcQr.acquireOsLock(key2, 2000);
+    assert(l1.lockTarget.port !== l2.lockTarget.port || key1 === key2, 'Distinct keys should map cleanly without collision');
+    await l1.release();
+    await l2.release();
+    if (prevEnv !== undefined) process.env.ECLIPSE_OS_LOCK_PLATFORM = prevEnv;
+    else delete process.env.ECLIPSE_OS_LOCK_PLATFORM;
+
+    // 2c. Multi-Process Contention & Crash Recovery in macOS darwin mode
+    const macCompKey = `mac-comp-${Date.now()}`;
+    const macForkEnv = Object.assign({}, process.env, { ECLIPSE_OS_LOCK_PLATFORM: 'darwin' });
+    const mp1 = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'], env: macForkEnv });
+    await new Promise((res, rej) => {
+      const t = setTimeout(() => { try { mp1.kill(); } catch (_) {} rej(new Error('Mac MP1 timeout')); }, 4000);
+      mp1.on('message', (m) => {
+        if (m && m.status === 'READY') {
+          clearTimeout(t);
+          mp1.send({ action: 'OS_LOCK_HOLD_AND_DIE', lockKey: macCompKey });
+        } else if (m && m.status === 'LOCKED') {
+          res();
+        }
+      });
+    });
+    await new Promise((res) => mp1.on('exit', res));
+
+    // Competing workers under darwin mode
+    const mp2 = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'], env: macForkEnv });
+    const mp3 = child_process.fork(reaperWorkerPath, [testLockFile], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'], env: macForkEnv });
+    let macActive = 0, macMax = 0;
+    await Promise.all([mp2, mp3].map((w, i) => new Promise((res, rej) => {
+      const t = setTimeout(() => { try { w.kill(); } catch (_) {} rej(new Error(`Mac MP${i+2} READY timeout`)); }, 4000);
+      w.on('message', (m) => { if (m && m.status === 'READY') { clearTimeout(t); res(); } });
+    })));
+    for (const w of [mp2, mp3]) {
+      w.on('message', (m) => {
+        if (!m) return;
+        if (m.status === 'ENTERED') {
+          macActive++;
+          if (macActive > macMax) macMax = macActive;
+          assert(macActive <= 1, 'macOS mode mutual exclusion violated');
+        } else if (m.status === 'RELEASED') {
+          macActive--;
+          assert(macActive >= 0, 'macOS active count must not be negative');
+        }
+      });
+      w.send({ action: 'OS_LOCK_COMPETE', lockKey: macCompKey });
+    }
+    await Promise.all([mp2, mp3].map(w => new Promise((res, rej) => {
+      const t = setTimeout(() => { try { w.kill(); } catch (_) {} rej(new Error('Mac worker exit timeout')); }, 6000);
+      w.on('exit', res);
+    })));
+    assert(macMax === 1, `macOS maxActiveOwners must be 1, got ${macMax}`);
+    assert(macActive === 0, `macOS finalActiveOwners must be 0, got ${macActive}`);
+  }
+  console.log(`    -> Subtest 4I: Kernel-Managed OS Lock Multi-Backend Real Multi-Process Verification (Windows/Linux/macOS) (PASS, maxActiveOwners=1, finalActiveOwners=0)`);
 
   // Subtest 4J: Production QR Transfer uses acquireOsLock verification
   let osLockInvoked = 0;

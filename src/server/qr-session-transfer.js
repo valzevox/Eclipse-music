@@ -495,13 +495,13 @@ function claimRemoteTransferSession(sourceServerUrl, transferId, secretKey, dire
   });
 }
 
-function getOsLockPipePath(lockKey = 'eclipse-qr-ledger') {
+function getOsLockPipePath(lockKey = 'eclipse-qr-ledger', platform = process.env.ECLIPSE_OS_LOCK_PLATFORM || process.platform) {
   const hash = crypto.createHash('sha256').update(lockKey).digest('hex').slice(0, 16);
-  if (process.platform === 'win32') {
+  if (platform === 'win32') {
     // Windows Kernel-managed Named Pipe: auto-released by kernel on exit/crash, zero disk files
     return `\\\\.\\pipe\\eclipse-lock-${hash}`;
   }
-  if (process.platform === 'linux') {
+  if (platform === 'linux') {
     // Linux Kernel-managed Abstract Namespace Unix Socket:
     // Starts with null byte '\0'. Has NO filesystem path, cannot be corrupted,
     // and is 100% automatically reclaimed by Linux kernel on exit/crash! Zero TOCTOU!
@@ -567,5 +567,6 @@ module.exports = {
   isTransferConsumedOnDisk,
   markTransferConsumedOnDisk,
   breakStaleLock,
-  acquireOsLock
+  acquireOsLock,
+  getOsLockPipePath
 };
