@@ -102,7 +102,7 @@
     if (typeof window.AutoMixDJ !== 'undefined') {
       try {
         window.autoMixDjInstance = new window.AutoMixDJ({
-          enabled: true,
+          enabled: localStorage.getItem('eclipse_automix') === '1',
           durationSec: 6.0,
           mode: 'equal_power',
           bpm: 120

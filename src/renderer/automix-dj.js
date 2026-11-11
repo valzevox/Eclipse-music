@@ -103,7 +103,17 @@ class AutoMixDJ {
           this.isCrossfading = false;
           try {
             outgoingAudio.pause();
-            const targetMaxVol = (typeof state !== 'undefined' && state && state.volume != null) ? Math.max(0, Math.min(1, state.volume)) : 1.0;
+            const getSafeUserVol = () => {
+      if (typeof window !== 'undefined' && window.EclipseCore && window.EclipseCore.state && window.EclipseCore.state.volume != null) {
+        return Math.max(0, Math.min(1, Number(window.EclipseCore.state.volume)));
+      }
+      try {
+        const v = localStorage.getItem('riff_volume');
+        if (v !== null) return Math.max(0, Math.min(1, parseFloat(v)));
+      } catch (_) {}
+      return 1.0;
+    };
+            const targetMaxVol = getSafeUserVol();
             outgoingAudio.volume = targetMaxVol;
             outgoingAudio.playbackRate = 1.0;
             incomingAudio.volume = targetMaxVol;
@@ -114,7 +124,17 @@ class AutoMixDJ {
         }
 
         const gains = this.computeGainValues(progress);
-        const userVol = (typeof state !== 'undefined' && state && state.volume != null) ? Math.max(0, Math.min(1, state.volume)) : 1.0;
+        const getSafeUserVol = () => {
+      if (typeof window !== 'undefined' && window.EclipseCore && window.EclipseCore.state && window.EclipseCore.state.volume != null) {
+        return Math.max(0, Math.min(1, Number(window.EclipseCore.state.volume)));
+      }
+      try {
+        const v = localStorage.getItem('riff_volume');
+        if (v !== null) return Math.max(0, Math.min(1, parseFloat(v)));
+      } catch (_) {}
+      return 1.0;
+    };
+        const userVol = getSafeUserVol();
         try {
           outgoingAudio.volume = Math.max(0, Math.min(userVol, gains.fadeOutGain * userVol));
           incomingAudio.volume = Math.max(0, Math.min(userVol, gains.fadeInGain * userVol));
