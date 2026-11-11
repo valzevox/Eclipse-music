@@ -21568,7 +21568,7 @@ function bindCoverHoldZoom(wrapEl) {
       }
     }
     if (btnGoogleLogin) {
-      btnGoogleLogin.textContent = googleConnected ? 'Switch account' : 'Log in with Google';
+      btnGoogleLogin.classList.toggle('hidden', !!googleConnected);
     }
     if (btnGoogleLogout) {
       btnGoogleLogout.classList.toggle('hidden', !googleConnected);
@@ -21688,6 +21688,7 @@ function bindCoverHoldZoom(wrapEl) {
             showToast(active && active.name ? `Đã kết nối YouTube Music: ${active.name}` : 'Đã kết nối YouTube Music', 'success');
           }
           fetch(`http://127.0.0.1:${state.serverPort}/api/ytm/library`).catch(() => {});
+          if (typeof handleGoogleImportConfirm === 'function') handleGoogleImportConfirm();
         } catch (_) {}
       }
     });
