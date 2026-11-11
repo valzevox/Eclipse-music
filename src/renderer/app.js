@@ -444,7 +444,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const { message, type, duration } = toastQueue.shift();
 
     const toast = document.createElement('div');
-    toast.className = `riff-toast ${type}${duration ? ' wide' : ''}`;
+    toast.className = `eclipse-toast ${type}${duration ? ' wide' : ''}`;
 
     let iconSvg = '';
     if (type === 'error') {
@@ -9619,7 +9619,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
   function getSavedAlbums() {
     try {
-      const raw = localStorage.getItem('riff_saved_albums');
+      const raw = (localStorage.getItem('eclipse_saved_albums') || localStorage.getItem('riff_saved_albums'));
       const parsed = raw ? JSON.parse(raw) : [];
       return Array.isArray(parsed) ? parsed : [];
     } catch (_) {
@@ -9629,7 +9629,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
   function setSavedAlbums(list) {
     try {
-      localStorage.setItem('riff_saved_albums', JSON.stringify(list));
+      localStorage.setItem('eclipse_saved_albums', JSON.stringify(list)); localStorage.setItem('riff_saved_albums', JSON.stringify(list));
     } catch (_) {}
     updateAlbumsCount();
   }
@@ -10689,7 +10689,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     const container = document.getElementById('toast-container');
     if (!container) return () => {};
     const toast = document.createElement('div');
-    toast.className = 'riff-toast info riff-share-spinner-toast';
+    toast.className = 'eclipse-toast info riff-share-spinner-toast';
     toast.innerHTML = '<svg class="g-spinner" style="width:20px;height:20px;" viewBox="0 0 48 48"><circle cx="24" cy="24" r="20"/></svg>';
     container.appendChild(toast);
     return () => {
@@ -20248,7 +20248,7 @@ function bindCoverHoldZoom(wrapEl) {
     }
     const toast = document.createElement('div');
     const spinnerSvg = '<svg class="g-spinner" style="width:18px;height:18px;" viewBox="0 0 48 48"><circle cx="24" cy="24" r="20"/></svg>';
-    toast.className = 'riff-toast info wide';
+    toast.className = 'eclipse-toast info wide';
     toast.innerHTML = `<span class="toast-icon">${spinnerSvg}</span><span class="toast-text">${escapeHtml(msg)}</span>`;
     container.appendChild(toast);
     activeImportToast = toast;
@@ -20297,7 +20297,7 @@ function bindCoverHoldZoom(wrapEl) {
       if (textSpan) textSpan.textContent = `Importing ${escapeHtml(playlistName)}... (0/${total})`;
     } else if (container) {
       toast = document.createElement('div');
-      toast.className = 'riff-toast info wide';
+      toast.className = 'eclipse-toast info wide';
       toast.innerHTML = `<span class="toast-icon">${spinnerSvg}</span><span class="toast-text">Importing ${escapeHtml(playlistName)}... (0/${total})</span>`;
       container.appendChild(toast);
       textSpan = toast.querySelector('.toast-text');
@@ -20409,7 +20409,7 @@ function bindCoverHoldZoom(wrapEl) {
     };
 
     if (toast) {
-      toast.className = 'riff-toast success wide';
+      toast.className = 'eclipse-toast success wide';
       if (iconSpan) iconSpan.innerHTML = checkmarkSvg;
       if (textSpan) textSpan.textContent = `Imported ${validTracks.length} tracks${failedCount > 0 ? ' (' + failedCount + ' not found)' : ''}`;
       if (activeImportToast === toast) activeImportToast = null;
@@ -22104,7 +22104,7 @@ function bindCoverHoldZoom(wrapEl) {
         const iconSpan = toast.querySelector('.toast-icon');
         const textSpan = toast.querySelector('.toast-text');
         const checkmarkSvg = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><polyline points="5 12.5 10 17.5 19 7.5"/></svg>';
-        toast.className = 'riff-toast success wide';
+        toast.className = 'eclipse-toast success wide';
         if (iconSpan) iconSpan.innerHTML = checkmarkSvg;
         if (textSpan) textSpan.textContent = finishMsg;
         activeImportToast = null;
@@ -22428,7 +22428,7 @@ function bindCoverHoldZoom(wrapEl) {
         }
       } catch (_) {}
       const payload = {
-        app: 'Riff',
+        app: 'Eclipse',
         version: '1.0',
         exportedAt: Date.now(),
         localStorage: dump
@@ -25656,7 +25656,7 @@ function bindCoverHoldZoom(wrapEl) {
     const sp = (localStorage.getItem('riff_home_layout') || 'spotify') === 'spotify';
     document.body.classList.toggle('home-spotify', sp);
     const btnSp = document.getElementById('home-layout-spotify');
-    const btnRiff = document.getElementById('home-layout-riff');
+    const btnRiff = document.getElementById('home-layout-eclipse');
     if (btnSp) btnSp.classList.toggle('active', sp);
     if (btnRiff) btnRiff.classList.toggle('active', !sp);
     if (sp) renderSpotifyHome();
@@ -27085,7 +27085,7 @@ function bindCoverHoldZoom(wrapEl) {
   if (typeof m3cInit === 'function') m3cInit();
   requestAnimationFrame(() => requestAnimationFrame(() => updateNavIndicator(false)));
 
-  const heroBanner = document.querySelector('.riff-hero-banner');
+  const heroBanner = document.querySelector('.eclipse-hero-banner');
   if (heroBanner) {
     heroBanner.addEventListener('pointermove', (e) => {
       if (document.body.classList.contains('perf')) return;

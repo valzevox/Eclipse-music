@@ -74,7 +74,7 @@ const METADATA_PATH = path.join(DATA_DIR, 'metadata.json');
 const LIBRARY_DIR = path.join(DATA_DIR, 'library');
 const LIBRARY_PATH = path.join(DATA_DIR, 'library.json');
 const BIN_DIR = path.join(DATA_DIR, 'bin');
-const TUTORIAL_MARKER = IS_WIN ? 'C:\\Riff\\.rifftutorial' : path.join(os.homedir(), '.rifftutorial');
+const TUTORIAL_MARKER = IS_WIN ? 'C:\\Eclipse\\.eclipsetutorial' : path.join(os.homedir(), '.rifftutorial');
 const TUTORIAL_MARKER_FALLBACK = path.join(DATA_DIR, '.rifftutorial');
 const STARTUP_PATH = path.join(DATA_DIR, 'startup.json');
 function readStartupConfig() { try { return JSON.parse(fs.readFileSync(STARTUP_PATH, 'utf8')) || {}; } catch (e) { return {}; } }

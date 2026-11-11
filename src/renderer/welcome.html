@@ -216,18 +216,18 @@
       filter: url(#iconTint);
     }
 
-    .riff-icon {
+    .eclipse-icon {
       width: 118px;
       height: 118px;
       display: block;
       opacity: 0;
     }
 
-    body.intro .riff-icon {
+    body.intro .eclipse-icon {
       animation: heroIconAnim 1.9s cubic-bezier(0.1, 0.8, 0.15, 1) forwards;
     }
 
-    .riff-title {
+    .eclipse-title {
       font-size: 68px;
       font-weight: 700;
       letter-spacing: -0.04em;
@@ -237,21 +237,21 @@
       transition: color 0.3s ease;
     }
 
-    .riff-title span {
+    .eclipse-title span {
       display: inline-block;
       opacity: 0;
       transform: translateY(48px) scale(1.4);
       filter: blur(20px);
     }
 
-    body.intro .riff-title span {
+    body.intro .eclipse-title span {
       animation: heroLetterAnim 1.9s cubic-bezier(0.1, 0.8, 0.15, 1) forwards;
     }
 
-    .riff-title span:nth-child(1) { animation-delay: 0.9s; }
-    .riff-title span:nth-child(2) { animation-delay: 1.05s; }
-    .riff-title span:nth-child(3) { animation-delay: 1.2s; }
-    .riff-title span:nth-child(4) { animation-delay: 1.35s; }
+    .eclipse-title span:nth-child(1) { animation-delay: 0.9s; }
+    .eclipse-title span:nth-child(2) { animation-delay: 1.05s; }
+    .eclipse-title span:nth-child(3) { animation-delay: 1.2s; }
+    .eclipse-title span:nth-child(4) { animation-delay: 1.35s; }
 
     body:not(.intro) #step1 .stacked-group {
       opacity: 0;
@@ -1078,10 +1078,10 @@
             <g class="shape-spin"><path class="shape-path" id="shapePath" d=""/></g>
           </svg>
           <div class="icon-tint">
-            <img class="riff-icon" src="../../assets/icon.png" alt="Eclipse" onerror="this.onerror=null; this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 24 24\' fill=\'%23ffffff\'><path d=\'M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z\'/></svg>';" >
+            <img class="eclipse-icon" src="../../assets/icon.png" alt="Eclipse" onerror="this.onerror=null; this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 24 24\' fill=\'%23ffffff\'><path d=\'M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z\'/></svg>';" >
           </div>
         </div>
-        <h1 class="riff-title">
+        <h1 class="eclipse-title">
           <span>E</span><span>c</span><span>l</span><span>i</span><span>p</span><span>s</span><span>e</span>
         </h1>
       </div>
@@ -1248,7 +1248,7 @@
             <div class="row-title" data-i18n>Local library</div>
             <div class="row-sub" data-i18n>Show the My files tab for music stored on your computer</div>
           </div>
-          <button class="sw on" role="switch" aria-checked="true" data-key="riff_show_local"></button>
+          <button class="sw on" role="switch" aria-checked="true" data-key="eclipse_show_local"></button>
         </div>
 
         <div class="stacked-container stacked-3-middle row">
@@ -1260,7 +1260,7 @@
             <div class="row-sub" id="bgSub" data-i18n>Use your own image or video behind the app</div>
           </div>
           <button class="btn small secondary is-hidden" id="bgPickBtn" data-i18n>Choose file</button>
-          <button class="sw" role="switch" aria-checked="false" data-key="riff_custom_bg_enabled"></button>
+          <button class="sw" role="switch" aria-checked="false" data-key="eclipse_custom_bg_enabled"></button>
         </div>
 
         <div class="stacked-container stacked-3-middle row">
@@ -1271,7 +1271,7 @@
             <div class="row-title" data-i18n>No-Hand cursor</div>
             <div class="row-sub" data-i18n>Keep the normal arrow instead of the hand on buttons</div>
           </div>
-          <button class="sw" role="switch" aria-checked="false" data-key="riff_no_hand_cursor"></button>
+          <button class="sw" role="switch" aria-checked="false" data-key="eclipse_no_hand_cursor"></button>
         </div>
 
         <div class="stacked-container stacked-3-middle row">
@@ -1282,7 +1282,7 @@
             <div class="row-title" data-i18n>Performance mode</div>
             <div class="row-sub" data-i18n>Turn off blur and heavy animations on slower computers</div>
           </div>
-          <button class="sw" role="switch" aria-checked="false" data-key="riff_perf_mode"></button>
+          <button class="sw" role="switch" aria-checked="false" data-key="eclipse_perf_mode"></button>
         </div>
 
         <div class="stacked-container stacked-3-bottom">
@@ -1955,8 +1955,8 @@
       toggles[key] = on;
       bridge.set(key, on ? '1' : '0');
 
-      if (key === 'riff_no_hand_cursor') document.body.classList.toggle('no-hand-cursor', on);
-      if (key === 'riff_custom_bg_enabled') bgPickBtn.classList.toggle('is-hidden', !on);
+      if (key === 'eclipse_no_hand_cursor') document.body.classList.toggle('no-hand-cursor', on);
+      if (key === 'eclipse_custom_bg_enabled') bgPickBtn.classList.toggle('is-hidden', !on);
     }
 
     document.querySelectorAll('.sw[data-key]').forEach((sw) => {
@@ -1972,7 +1972,7 @@
       const picked = await bridge.pickMedia();
       if (!picked) return;
       bgUrl = picked;
-      bridge.set('riff_welcome_bg', bgUrl);
+      bridge.set('eclipse_welcome_bg', bgUrl);
       bgSub.textContent = bgDisplayName(bgUrl);
     });
 
@@ -1994,7 +1994,7 @@
       discordOn = discordSwitch.classList.toggle('on');
       discordSwitch.setAttribute('aria-checked', discordOn ? 'true' : 'false');
       bridge.discordSetEnabled(discordOn);
-      bridge.set('riff_discord_rpc', discordOn ? '1' : '0');
+      bridge.set('eclipse_discord_rpc', discordOn ? '1' : '0');
       refreshDiscord();
       if (discordOn) setTimeout(refreshDiscord, 1800);
     });
@@ -2110,8 +2110,8 @@
         spotify: pendingImport
       };
 
-      bridge.set('riff_welcome_theme', JSON.stringify(detail.theme));
-      bridge.set('riff_welcome_done', '1');
+      bridge.set('eclipse_welcome_theme', JSON.stringify(detail.theme));
+      bridge.set('eclipse_welcome_done', '1');
 
       setTimeout(() => {
         viewport.classList.add('closing');
@@ -2272,7 +2272,7 @@
     ];
 
     async function translateWelcome(lang) {
-      bridge.set('riff_ui_lang', lang);
+      bridge.set('eclipse_ui_lang', lang);
       const found = TRANSLATION_LANGUAGES.find(l => l.code === lang);
       const langBtnLabel = document.getElementById('langBtnLabel');
       if (langBtnLabel) {
@@ -2354,7 +2354,7 @@
     const langList = document.getElementById('langList');
 
     if (langBtn && langMenu && langList) {
-      const curLang = bridge.get('riff_ui_lang', 'en');
+      const curLang = bridge.get('eclipse_ui_lang', 'en');
       const foundCur = TRANSLATION_LANGUAGES.find(l => l.code === curLang);
       const langBtnLabel = document.getElementById('langBtnLabel');
       if (foundCur && langBtnLabel) {

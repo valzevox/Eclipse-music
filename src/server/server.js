@@ -125,14 +125,14 @@ const { getSystemAudioOutputInfo } = require('../shared/audio-output');
 let serverActiveProxy = '';
 
 const _nativeFetch = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
-function riffFetch(...args) {
-  if (serverActiveProxy && typeof global.riffSessionFetch === 'function') {
-    return global.riffSessionFetch(...args);
+function eclipseFetch(...args) {
+  if (serverActiveProxy && typeof global.eclipseSessionFetch === 'function') {
+    return global.eclipseSessionFetch(...args);
   }
   return _nativeFetch ? _nativeFetch(...args) : Promise.reject(new Error('fetch not available'));
 }
-globalThis.fetch = riffFetch;
-const fetch = riffFetch;
+globalThis.fetch = eclipseFetch;
+const fetch = eclipseFetch;
 
 function stripYoutubeTopic(artist) {
   if (!artist || typeof artist !== 'string') return artist || '';
@@ -5622,7 +5622,7 @@ async function fetchYoutubeCaptionSubtitles(videoId, songTitle = "", songArtist 
               if (subs[k]) { targetList = subs[k]; break; }
               if (auto[k]) { targetList = auto[k]; break; }
             }
-            // If Vietnamese song but no Vietnamese subtitle track exists, do NOT grab English auto-captions to avoid conflict with Riff translate
+            // If Vietnamese song but no Vietnamese subtitle track exists, do NOT grab English auto-captions to avoid conflict with Eclipse translate
             if (!targetList) return resolve(null);
           } else {
             for (const lang of ['vi', 'vi-orig', 'en', 'en-orig']) {
