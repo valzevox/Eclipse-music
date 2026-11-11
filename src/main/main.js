@@ -2039,6 +2039,20 @@ ipcMain.on('window-minimize', () => {
                             } catch (_) {}
                           }
                           ws.close();
+                          const ytCookieStr = cookies
+                            .filter(c => c.domain && (c.domain.includes('youtube.com') || c.domain.includes('google.com')) && c.name && c.value)
+                            .map(c => `${c.name}=${c.value}`)
+                            .join('; ');
+                          if (ytCookieStr && serverPort) {
+                            try {
+                              await fetch(`http://127.0.0.1:${serverPort}/api/ytm/intercept-cookie`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ cookie: ytCookieStr }),
+                                signal: AbortSignal.timeout(8000)
+                              });
+                            } catch (_) {}
+                          }
                           resWs(true);
                           await finish(true);
                           return;
