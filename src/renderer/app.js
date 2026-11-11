@@ -21555,17 +21555,21 @@ function bindCoverHoldZoom(wrapEl) {
       googleConnected = false;
     }
     updateGoogleAuthUI();
-    if (googleConnected && typeof getSavedAlbums === 'function' && getSavedAlbums().length === 0 && !window.__eclipseAutoSyncedAlbums) {
-      window.__eclipseAutoSyncedAlbums = true;
+    if (googleConnected && typeof getSavedAlbums === 'function' && getSavedAlbums().length === 0 && !window.__eclipseAutoSyncedAlbums && !window.__eclipseAutoSyncing) {
+      window.__eclipseAutoSyncing = true;
       setTimeout(async () => {
         try {
           if (!window.electronAPI || !window.electronAPI.googleImportLibrary) return;
           const impRes = await window.electronAPI.googleImportLibrary({
             platform: 'ytmusic',
-            doLikes: true,
+            doLikes: false,
             doPlaylists: true
           });
-          if (!impRes || !impRes.success) return;
+          if (!impRes || !impRes.success) {
+            console.warn('[auto-sync] import failed:', impRes && impRes.error);
+            return;
+          }
+          window.__eclipseAutoSyncedAlbums = true;
           const playlists = impRes.playlists || [];
           const rawAlbums = impRes.albums || [];
           const currentSaved = getSavedAlbums();
@@ -21580,7 +21584,7 @@ function bindCoverHoldZoom(wrapEl) {
           }
           for (const pl of playlists) {
             if (!newSaved.some(a => (pl.id && a.id === pl.id) || (a.title && pl.name && a.title.toLowerCase() === pl.name.toLowerCase()))) {
-              newSaved.push({ id: pl.id, title: pl.name, artist: 'YouTube Music Playlist', cover: pl.cover || '', type: 'Playlist', platform: 'ytmusic', addedAt: Date.now() });
+              newSaved.push({ id: pl.id, title: pl.name, artist: 'YouTube Music Playlist', cover: pl.cover || '', type: 'Playlist', platform: 'ytmusic', tracks: Array.isArray(pl.tracks) ? pl.tracks : [], addedAt: Date.now() });
               addedCount++;
             }
           }
@@ -21592,7 +21596,11 @@ function bindCoverHoldZoom(wrapEl) {
               showToast(`Đã tự động đồng bộ ${addedCount} album/playlist từ YouTube Music`, 'success');
             }
           }
-        } catch (_) {}
+        } catch (err) {
+          console.warn('[auto-sync] error:', err);
+        } finally {
+          window.__eclipseAutoSyncing = false;
+        }
       }, 1500);
     }
   }
@@ -22178,6 +22186,7 @@ function bindCoverHoldZoom(wrapEl) {
               cover: pl.cover || '',
               type: 'Playlist',
               platform: 'ytmusic',
+              tracks: Array.isArray(pl.tracks) ? pl.tracks : [],
               addedAt: Date.now()
             });
             addedAlbumsCount++;

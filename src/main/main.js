@@ -17,6 +17,8 @@ const {
   refreshAccessToken
 } = require('./google-oauth');
 const { fetchYouTubeLibrary } = require('./youtube-data');
+const googleOAuthCfg = require('./google-oauth');
+const GOOGLE_CLIENT_ID = String(googleOAuthCfg.GOOGLE_CLIENT_ID || process.env.ECLIPSE_GOOGLE_CLIENT_ID || '').trim();
 const RFACC_KEY = crypto.createHash('sha256').update('riff-account-key-v1').digest();
 
 function encryptAccount(dataObj) {
@@ -1524,7 +1526,8 @@ ipcMain.on('window-minimize', () => {
         youtubeCookieImportPromise = (async () => {
           const txt = fs.readFileSync(YT_COOKIES_FILE, 'utf8');
           const googleSession = session.fromPartition('persist:eclipse-google');
-          await googleSession.clearStorageData({ storages: ['cookies'] });
+          const existingSap = await googleSession.cookies.get({ name: 'SAPISID' }).catch(() => []);
+        if (Array.isArray(existingSap) && existingSap.some(c => c && c.value)) return;
           const rows = txt.split(/\r?\n/);
           for (const row of rows) {
             const line = row.startsWith('#HttpOnly_') ? row.slice(10) : row;
@@ -1547,7 +1550,8 @@ ipcMain.on('window-minimize', () => {
             };
             const expiration = Number(expires);
             if (Number.isFinite(expiration) && expiration > 0) details.expirationDate = expiration;
-            await googleSession.cookies.set(details);
+            if (name.startsWith('__Host-')) delete details.domain;
+          try { await googleSession.cookies.set(details); } catch (_) {}
           }
         })();
         try {
@@ -2156,7 +2160,7 @@ ipcMain.on('window-minimize', () => {
           } catch (_) {}
         }
 
-        await exportYoutubeCookiesToDisk().catch(() => {});
+        exportYoutubeCookiesToDisk().catch(() => {});
 
         const s = session.fromPartition('persist:eclipse-google');
         const cookies = await s.cookies.get({ name: 'SAPISID' });
@@ -2416,7 +2420,8 @@ ipcMain.on('window-minimize', () => {
           const res = await s.fetch(targetUrl, {
             method: 'POST',
             headers,
-            body: JSON.stringify(body)
+            body: JSON.stringify(body),
+            credentials: 'include'
           });
           if (!res.ok) {
             throw new Error(`Innertube request failed: ${res.status}`);
