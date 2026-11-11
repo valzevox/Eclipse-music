@@ -2031,7 +2031,7 @@ ipcMain.on('window-minimize', () => {
                                 url,
                                 name: c.name,
                                 value: c.value,
-                                domain: cleanDomain,
+                                domain: c.domain,
                                 path: c.path || '/',
                                 secure: !!c.secure,
                                 httpOnly: !!c.httpOnly,
