@@ -2131,7 +2131,7 @@ ipcMain.on('window-minimize', () => {
       });
 
       ipcMain.handle('google-import-library', async (event, opts) => {
-        const platform = (opts && opts.platform === 'ytmusic') ? 'ytmusic' : 'youtube';
+        const platform = 'ytmusic';
         const doLikes = !opts || opts.doLikes !== false;
         const doPlaylists = !opts || opts.doPlaylists !== false;
 
@@ -2164,6 +2164,7 @@ ipcMain.on('window-minimize', () => {
         const clientVersion = isYtm ? '1.20240401.01.00' : '2.20240401.01.00';
         const likedBrowseId = isYtm ? 'VLLM' : 'VLLL';
         const playlistsBrowseId = isYtm ? 'FEmusic_liked_playlists' : 'FEplaylist_aggregation';
+        const albumsBrowseId = isYtm ? 'FEmusic_liked_albums' : null;
 
         function extractText(node) {
           if (!node) return '';
@@ -2282,6 +2283,43 @@ ipcMain.on('window-minimize', () => {
           }
           walk(root);
           return tracks;
+        }
+
+        function extractAlbumsGeneric(root) {
+          const albums = [];
+          const seenIds = new Set();
+          function walk(node, visited = new Set()) {
+            if (!node || typeof node !== 'object') return;
+            if (visited.has(node)) return;
+            visited.add(node);
+            if (node.musicTwoRowItemRenderer) {
+              const r = node.musicTwoRowItemRenderer;
+              const title = extractText(r.title);
+              let browseId = r.navigationEndpoint && r.navigationEndpoint.browseEndpoint && r.navigationEndpoint.browseEndpoint.browseId;
+              if (browseId && !seenIds.has(browseId)) {
+                seenIds.add(browseId);
+                let artist = '';
+                if (r.subtitle) {
+                  const runs = r.subtitle.runs;
+                  if (Array.isArray(runs) && runs.length > 0) {
+                    artist = runs.map(x => x.text || '').join('').replace(/^Album\s*•\s*/i, '').replace(/\s*•\s*\d{4}.*$/, '').trim();
+                  } else {
+                    artist = extractText(r.subtitle);
+                  }
+                }
+                const thumbs = r.thumbnailRenderer && r.thumbnailRenderer.musicThumbnailRenderer && r.thumbnailRenderer.musicThumbnailRenderer.thumbnail && r.thumbnailRenderer.musicThumbnailRenderer.thumbnail.thumbnails;
+                const cover = (Array.isArray(thumbs) && thumbs.length > 0) ? thumbs[thumbs.length - 1].url : '';
+                albums.push({ id: browseId, title: title || 'Album', artist: artist || '', cover, type: 'Album' });
+              }
+            }
+            if (Array.isArray(node)) {
+              for (const item of node) walk(item, visited);
+            } else {
+              for (const k of Object.keys(node)) walk(node[k], visited);
+            }
+          }
+          walk(root);
+          return albums;
         }
 
         function extractPlaylistsGeneric(root) {
@@ -2457,7 +2495,29 @@ ipcMain.on('window-minimize', () => {
             }
           }
 
-          return { success: true, likes, playlists };
+          let albums = [];
+          if (albumsBrowseId) {
+            try {
+              let initialAlbums = await fetchInnertube(albumsBrowseId);
+              albums = extractAlbumsGeneric(initialAlbums);
+              let albumToken = findContinuationToken(initialAlbums);
+              let albumSafety = 0;
+              while (albumToken && albumSafety < 20) {
+                albumSafety++;
+                const contData = await fetchInnertube(null, albumToken);
+                const nextAlbums = extractAlbumsGeneric(contData);
+                if (!nextAlbums.length) break;
+                albums = albums.concat(nextAlbums);
+                const nextToken = findContinuationToken(contData);
+                if (!nextToken || nextToken === albumToken) break;
+                albumToken = nextToken;
+              }
+            } catch (err) {
+              console.warn('[google-import-library] failed fetching albums:', err);
+            }
+          }
+
+          return { success: true, likes, playlists, albums };
         } catch (err) {
           return { success: false, error: (err && err.message) ? err.message : 'Failed to fetch library' };
         }

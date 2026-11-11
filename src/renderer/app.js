@@ -21560,10 +21560,12 @@ function bindCoverHoldZoom(wrapEl) {
   function updateGoogleAuthUI() {
     if (googleLoginStatus) {
       if (googleConnected) {
-        googleLoginStatus.textContent = 'Connected';
-        googleLoginStatus.style.color = 'var(--md-sys-color-primary, #6750A4)';
+        const lbl = typeof t === 'function' ? t('Connected') : 'Connected';
+        googleLoginStatus.textContent = (lbl === 'Connected' || !lbl) ? 'Đã kết nối' : lbl;
+        googleLoginStatus.style.color = '#4caf50';
       } else {
-        googleLoginStatus.textContent = 'Not connected';
+        const lbl = typeof t === 'function' ? t('Not connected') : 'Not connected';
+        googleLoginStatus.textContent = (lbl === 'Not connected' || !lbl) ? 'Chưa kết nối' : lbl;
         googleLoginStatus.style.color = 'var(--md-sys-color-outline)';
       }
     }
@@ -22035,11 +22037,12 @@ function bindCoverHoldZoom(wrapEl) {
 
       const likes = res.likes || [];
       const playlists = res.playlists || [];
+      const rawAlbums = res.albums || [];
       const totalTracks = likes.length + playlists.reduce((acc, p) => acc + (p.tracks ? p.tracks.length : 0), 0);
 
-      if (totalTracks === 0) {
+      if (totalTracks === 0 && rawAlbums.length === 0) {
         dismissImportSpinnerToast();
-        showToast('No tracks found to import', 'warning');
+        showToast('Không tìm thấy bài hát hay album nào để nhập', 'warning');
         return;
       }
 
@@ -22099,6 +22102,57 @@ function bindCoverHoldZoom(wrapEl) {
             updateProgress(importedCount);
           }
         }
+      }
+
+      // Save imported YouTube Music albums & playlists to Saved Albums (eclipse_saved_albums)
+      try {
+        const currentSaved = getSavedAlbums();
+        const newSaved = [...currentSaved];
+        let addedAlbumsCount = 0;
+
+        // 1. YouTube Music Liked Albums
+        for (const alb of rawAlbums) {
+          const exists = newSaved.some(a => (alb.id && a.id === alb.id) || (a.title && alb.title && a.title.toLowerCase() === alb.title.toLowerCase()));
+          if (!exists) {
+            newSaved.push({
+              id: alb.id,
+              title: alb.title,
+              artist: alb.artist || '',
+              cover: alb.cover || '',
+              type: 'Album',
+              platform: 'ytmusic',
+              addedAt: Date.now()
+            });
+            addedAlbumsCount++;
+          }
+        }
+
+        // 2. YouTube Music Playlists as album cards in Albums view
+        for (const pl of playlists) {
+          const exists = newSaved.some(a => (pl.id && a.id === pl.id) || (a.title && pl.name && a.title.toLowerCase() === pl.name.toLowerCase()));
+          if (!exists) {
+            newSaved.push({
+              id: pl.id,
+              title: pl.name,
+              artist: 'YouTube Music Playlist',
+              cover: pl.cover || '',
+              type: 'Playlist',
+              platform: 'ytmusic',
+              addedAt: Date.now()
+            });
+            addedAlbumsCount++;
+          }
+        }
+
+        if (addedAlbumsCount > 0) {
+          setSavedAlbums(newSaved);
+          if (state.currentView === 'albums') {
+            renderSavedAlbums();
+          }
+          updateAlbumsCount();
+        }
+      } catch (errSaveAlbums) {
+        console.warn('[handleGoogleLoginImport] failed saving albums:', errSaveAlbums);
       }
 
       const finishMsg = `Imported ${totalTracks} tracks`;
