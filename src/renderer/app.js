@@ -21688,7 +21688,10 @@ function bindCoverHoldZoom(wrapEl) {
             showToast(active && active.name ? `Đã kết nối YouTube Music: ${active.name}` : 'Đã kết nối YouTube Music', 'success');
           }
           fetch(`http://127.0.0.1:${state.serverPort}/api/ytm/library`).catch(() => {});
-          if (typeof handleGoogleImportConfirm === 'function') handleGoogleImportConfirm();
+          if (btnConfirmLinkImport) {
+            btnConfirmLinkImport.disabled = false;
+            btnConfirmLinkImport.click();
+          }
         } catch (_) {}
       }
     });
