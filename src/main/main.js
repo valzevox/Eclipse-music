@@ -1900,13 +1900,22 @@ ipcMain.on('window-minimize', () => {
         }
       });
 
+      let capturedGoogleCookieHeader = '';
+      function getSapisidFromCookieStr(str) {
+        if (!str) return '';
+        const m = String(str).match(/(?:^|;\s*)SAPISID=([^;]+)/);
+        return m ? m[1].trim() : '';
+      }
+
       ipcMain.handle('google-auth-status', async () => {
         try {
           const auth = readGoogleOAuthData();
           if (auth && auth.refreshToken) return { loggedIn: true };
           const s = session.fromPartition('persist:eclipse-google');
           const cookies = await s.cookies.get({ name: 'SAPISID' });
-          const loggedIn = Array.isArray(cookies) && cookies.some(c => c && c.value);
+          const hasSessionSap = Array.isArray(cookies) && cookies.some(c => c && c.value);
+          const hasMemSap = !!getSapisidFromCookieStr(capturedGoogleCookieHeader);
+          const loggedIn = hasSessionSap || hasMemSap || hasValidYtCookiesFile();
           if (loggedIn && !hasValidYtCookiesFile()) {
             exportSessionCookiesToFile().catch(() => {});
           }
@@ -1917,6 +1926,7 @@ ipcMain.on('window-minimize', () => {
       });
 
       ipcMain.handle('google-logout', async () => {
+        capturedGoogleCookieHeader = '';
         let revokeToken = '';
         try {
           const auth = readGoogleOAuthData();
@@ -2044,6 +2054,7 @@ ipcMain.on('window-minimize', () => {
                             .filter(c => c.domain && (c.domain.includes('youtube.com') || c.domain.includes('google.com')) && c.name && c.value)
                             .map(c => `${c.name}=${c.value}`)
                             .join('; ');
+                          if (ytCookieStr) capturedGoogleCookieHeader = ytCookieStr;
                           if (ytCookieStr && serverPort) {
                             try {
                               await fetch(`http://127.0.0.1:${serverPort}/api/ytm/intercept-cookie`, {
@@ -2150,10 +2161,10 @@ ipcMain.on('window-minimize', () => {
         const s = session.fromPartition('persist:eclipse-google');
         const cookies = await s.cookies.get({ name: 'SAPISID' });
         const sapisidCookie = Array.isArray(cookies) ? cookies.find(c => c && c.value) : null;
-        if (!sapisidCookie) {
+        const sapisid = (sapisidCookie && sapisidCookie.value) || getSapisidFromCookieStr(capturedGoogleCookieHeader);
+        if (!sapisid) {
           return { success: false, error: 'Not logged in to Google' };
         }
-        const sapisid = sapisidCookie.value;
 
         const isYtm = platform === 'ytmusic';
         const browseUrl = isYtm
@@ -2383,6 +2394,9 @@ ipcMain.on('window-minimize', () => {
             'X-Origin': origin,
             'X-Goog-AuthUser': '0'
           };
+          if (capturedGoogleCookieHeader) {
+            headers['Cookie'] = capturedGoogleCookieHeader;
+          }
           const body = {
             context: {
               client: {
