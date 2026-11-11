@@ -725,7 +725,41 @@ document.addEventListener('DOMContentLoaded', async () => {
     get isRepeat() { return this.repeatMode === 'one'; },
     set isRepeat(v) { this.repeatMode = v ? 'one' : 'off'; },
     isShuffle: localStorage.getItem('riff_shuffle') === '1',
-    isAutoRemix: false,
+    isAutoRemix: localStorage.getItem('eclipse_automix') === '1',
+    autoMixPlayedIds: new Set(),
+    findAutoMixNextTrack() {
+      if (!this.isAutoRemix || !Array.isArray(this.queue) || this.queue.length <= 1) return null;
+      const cur = this.currentTrack;
+      const curBpm = (cur && typeof cur.bpm === 'number' && cur.bpm > 0) ? cur.bpm : (window.autoMixDjInstance ? window.autoMixDjInstance.bpm : 120);
+      
+      // Look for unplayed tracks in current queue matching tempo and melody
+      const unplayed = this.queue.filter((t, idx) => {
+        if (idx === this.queueIndex) return false;
+        const tid = t.id || t.videoId;
+        return tid && !this.autoMixPlayedIds.has(tid) && !isTrackBlocked(t) && !isArtistBlocked(t.artist);
+      });
+
+      if (unplayed.length === 0) {
+        // If all played, reset history so album can continue without getting stuck
+        this.autoMixPlayedIds.clear();
+        if (cur && (cur.id || cur.videoId)) this.autoMixPlayedIds.add(cur.id || cur.videoId);
+        return null;
+      }
+
+      // Rank by BPM proximity
+      unplayed.sort((a, b) => {
+        const bpmA = (typeof a.bpm === 'number' && a.bpm > 0) ? a.bpm : 120;
+        const bpmB = (typeof b.bpm === 'number' && b.bpm > 0) ? b.bpm : 120;
+        const diffA = Math.abs(bpmA - curBpm);
+        const diffB = Math.abs(bpmB - curBpm);
+        return diffA - diffB;
+      });
+
+      const chosen = unplayed[0];
+      const chosenId = chosen.id || chosen.videoId;
+      if (chosenId) this.autoMixPlayedIds.add(chosenId);
+      return chosen;
+    },
     myWaveActive: false,
     isRadioQueue: false,
     _waveReplenishBusy: false,
@@ -8524,7 +8558,21 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       }
     }
 
-    if (state.isShuffle) {
+    if (state.isAutoRemix) {
+      // AutoMix Mode: picks tempo/melody-aligned track in album/playlist, never loops back to recently played
+      const nextAutoTrack = typeof state.findAutoMixNextTrack === 'function' ? state.findAutoMixNextTrack() : null;
+      if (nextAutoTrack) {
+        const foundIdx = state.queue.findIndex(t => isSameTrack(t, nextAutoTrack));
+        if (foundIdx >= 0) {
+          state.queueIndex = foundIdx;
+          recordPlayedIndex(foundIdx);
+          playTrack(state.queue[foundIdx]);
+          return;
+        }
+      }
+    }
+
+    if (state.isShuffle && !state.isAutoRemix) {
       const provider = shuffleProvider;
       let nextIdx = -1;
       if (provider) {
@@ -14300,8 +14348,27 @@ function updateNavIndicator(animate) {
   if (addLocalFilesEmptyBtn) addLocalFilesEmptyBtn.addEventListener('click', () => addLocalFiles());
 
   if (el.btnAutoRemix) {
+    el.btnAutoRemix.classList.toggle('active', state.isAutoRemix);
     el.btnAutoRemix.addEventListener('click', () => {
       state.isAutoRemix = !state.isAutoRemix;
+      localStorage.setItem('eclipse_automix', state.isAutoRemix ? '1' : '0');
+      if (window.autoMixDjInstance) {
+        window.autoMixDjInstance.enabled = state.isAutoRemix;
+      }
+      if (state.isAutoRemix) {
+        // Tắt Shuffle khi bật AutoMix (Mutual Exclusion)
+        state.isShuffle = false;
+        localStorage.setItem('riff_shuffle', '0');
+        if (el.btnShuffle) el.btnShuffle.classList.remove('active');
+        if (state.autoMixPlayedIds) state.autoMixPlayedIds.clear();
+        if (state.currentTrack) {
+          const tid = state.currentTrack.id || state.currentTrack.videoId;
+          if (tid) state.autoMixPlayedIds.add(tid);
+        }
+        if (typeof showToast === 'function') showToast('AutoMix DJ bật — Đã tắt Shuffle', 'success');
+      } else {
+        if (typeof showToast === 'function') showToast('AutoMix DJ đã tắt', 'info');
+      }
       el.btnAutoRemix.classList.toggle('active', state.isAutoRemix);
     });
   }
@@ -14739,6 +14806,14 @@ function bindCoverHoldZoom(wrapEl) {
     el.btnShuffle.classList.toggle('active', state.isShuffle);
     el.btnShuffle.addEventListener('click', () => {
       state.isShuffle = !state.isShuffle;
+      if (state.isShuffle && state.isAutoRemix) {
+        state.isAutoRemix = false;
+        localStorage.setItem('eclipse_automix', '0');
+        if (window.autoMixDjInstance) window.autoMixDjInstance.enabled = false;
+        const btnAutoMixEl = document.getElementById('btn-auto-remix') || el.btnAutoRemix;
+        if (btnAutoMixEl) btnAutoMixEl.classList.remove('active');
+        if (typeof showToast === 'function') showToast('Shuffle bật — Đã tắt AutoMix', 'info');
+      }
       localStorage.setItem('riff_shuffle', state.isShuffle ? '1' : '0');
       el.btnShuffle.classList.toggle('active', state.isShuffle);
     });

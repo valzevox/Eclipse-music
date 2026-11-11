@@ -103,9 +103,10 @@ class AutoMixDJ {
           this.isCrossfading = false;
           try {
             outgoingAudio.pause();
-            outgoingAudio.volume = 1.0;
+            const targetMaxVol = (typeof state !== 'undefined' && state && state.volume != null) ? Math.max(0, Math.min(1, state.volume)) : 1.0;
+            outgoingAudio.volume = targetMaxVol;
             outgoingAudio.playbackRate = 1.0;
-            incomingAudio.volume = 1.0;
+            incomingAudio.volume = targetMaxVol;
             incomingAudio.playbackRate = 1.0;
           } catch (_) {}
           resolve(true);
@@ -113,9 +114,10 @@ class AutoMixDJ {
         }
 
         const gains = this.computeGainValues(progress);
+        const userVol = (typeof state !== 'undefined' && state && state.volume != null) ? Math.max(0, Math.min(1, state.volume)) : 1.0;
         try {
-          outgoingAudio.volume = Math.max(0, Math.min(1, gains.fadeOutGain));
-          incomingAudio.volume = Math.max(0, Math.min(1, gains.fadeInGain));
+          outgoingAudio.volume = Math.max(0, Math.min(userVol, gains.fadeOutGain * userVol));
+          incomingAudio.volume = Math.max(0, Math.min(userVol, gains.fadeInGain * userVol));
           if (this.mode === 'tempo_synced' && startInRate !== 1.0) {
             incomingAudio.playbackRate = 1.0 + (startInRate - 1.0) * (1.0 - progress);
           }

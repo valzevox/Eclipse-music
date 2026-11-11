@@ -152,9 +152,16 @@
             if (dur > 20 && remaining <= threshold && remaining > 0.8) {
               automixTriggeredForTrack = true;
               const st = getCoreState();
-              const nextTrack = (st && Array.isArray(st.queue) && st.queueIndex + 1 < st.queue.length)
-                ? st.queue[st.queueIndex + 1]
-                : null;
+              let nextTrack = null;
+              if (st && Array.isArray(st.queue) && st.queue.length > 0) {
+                if (typeof st.findAutoMixNextTrack === 'function') {
+                  const autoNext = st.findAutoMixNextTrack();
+                  if (autoNext) nextTrack = autoNext;
+                }
+                if (!nextTrack && st.queueIndex + 1 < st.queue.length) {
+                  nextTrack = st.queue[st.queueIndex + 1];
+                }
+              }
 
               if (nextTrack) {
                 try {
