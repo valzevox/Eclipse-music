@@ -21555,6 +21555,46 @@ function bindCoverHoldZoom(wrapEl) {
       googleConnected = false;
     }
     updateGoogleAuthUI();
+    if (googleConnected && typeof getSavedAlbums === 'function' && getSavedAlbums().length === 0 && !window.__eclipseAutoSyncedAlbums) {
+      window.__eclipseAutoSyncedAlbums = true;
+      setTimeout(async () => {
+        try {
+          if (!window.electronAPI || !window.electronAPI.googleImportLibrary) return;
+          const impRes = await window.electronAPI.googleImportLibrary({
+            platform: 'ytmusic',
+            doLikes: true,
+            doPlaylists: true
+          });
+          if (!impRes || !impRes.success) return;
+          const playlists = impRes.playlists || [];
+          const rawAlbums = impRes.albums || [];
+          const currentSaved = getSavedAlbums();
+          const newSaved = [...currentSaved];
+          let addedCount = 0;
+
+          for (const alb of rawAlbums) {
+            if (!newSaved.some(a => (alb.id && a.id === alb.id) || (a.title && alb.title && a.title.toLowerCase() === alb.title.toLowerCase()))) {
+              newSaved.push({ id: alb.id, title: alb.title, artist: alb.artist || '', cover: alb.cover || '', type: 'Album', platform: 'ytmusic', addedAt: Date.now() });
+              addedCount++;
+            }
+          }
+          for (const pl of playlists) {
+            if (!newSaved.some(a => (pl.id && a.id === pl.id) || (a.title && pl.name && a.title.toLowerCase() === pl.name.toLowerCase()))) {
+              newSaved.push({ id: pl.id, title: pl.name, artist: 'YouTube Music Playlist', cover: pl.cover || '', type: 'Playlist', platform: 'ytmusic', addedAt: Date.now() });
+              addedCount++;
+            }
+          }
+          if (addedCount > 0) {
+            setSavedAlbums(newSaved);
+            if (state.currentView === 'albums') renderSavedAlbums();
+            updateAlbumsCount();
+            if (typeof showToast === 'function') {
+              showToast(`Đã tự động đồng bộ ${addedCount} album/playlist từ YouTube Music`, 'success');
+            }
+          }
+        } catch (_) {}
+      }, 1500);
+    }
   }
 
   function updateGoogleAuthUI() {

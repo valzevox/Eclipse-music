@@ -2479,15 +2479,16 @@ ipcMain.on('window-minimize', () => {
           let playlists = [];
           if (doPlaylists) {
             const rawPlaylists = await fetchAllPlaylists(playlistsBrowseId);
-            for (const pl of rawPlaylists) {
+            const plResults = await Promise.allSettled(rawPlaylists.map(async (pl) => {
               try {
                 const plBrowseId = pl.id.startsWith('VL') ? pl.id : `VL${pl.id}`;
-                const plTracks = await fetchAllTracks(plBrowseId);
-                playlists.push({
+                const timeoutP = new Promise((_, rej) => setTimeout(() => rej(new Error('pl timeout')), 5000));
+                const plTracks = await Promise.race([fetchAllTracks(plBrowseId), timeoutP]);
+                return {
                   id: pl.id,
                   name: pl.name,
                   cover: pl.cover,
-                  tracks: plTracks.map(t => ({
+                  tracks: (plTracks || []).map(t => ({
                     title: t.title,
                     artist: t.artist,
                     duration: t.duration,
@@ -2497,16 +2498,12 @@ ipcMain.on('window-minimize', () => {
                     thumbnail: t.cover,
                     cover: t.cover
                   }))
-                });
-              } catch (e) {
-                playlists.push({
-                  id: pl.id,
-                  name: pl.name,
-                  cover: pl.cover,
-                  tracks: []
-                });
+                };
+              } catch (_) {
+                return { id: pl.id, name: pl.name, cover: pl.cover, tracks: [] };
               }
-            }
+            }));
+            playlists = plResults.map(r => r.status === 'fulfilled' ? r.value : null).filter(Boolean);
           }
 
           let albums = [];
