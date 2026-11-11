@@ -1947,6 +1947,113 @@ ipcMain.on('window-minimize', () => {
 
       ipcMain.handle('google-login', async (event) => {
         const s = session.fromPartition('persist:eclipse-google');
+        const loginUrl = 'https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F';
+
+        // Find real system Chrome or Edge so Google never blocks with "This browser or app may not be secure"
+        const { spawn } = require('child_process');
+        const os = require('os');
+        const net = require('net');
+        const candidates = [
+          process.env['PROGRAMFILES(X86)'] && path.join(process.env['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+          process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+          process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+          process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+          process.env['PROGRAMFILES(X86)'] && path.join(process.env['PROGRAMFILES(X86)'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
+          process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        ].filter(Boolean);
+        const browserExe = candidates.find(p => { try { return fs.existsSync(p); } catch (_) { return false; } });
+
+        if (browserExe) {
+          const port = await new Promise((res) => {
+            const srv = net.createServer();
+            srv.listen(0, '127.0.0.1', () => {
+              const p = srv.address().port;
+              srv.close(() => res(p));
+            });
+          });
+          const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-yt-login-'));
+          const proc = spawn(browserExe, [
+            `--remote-debugging-port=${port}`,
+            `--user-data-dir=${userDataDir}`,
+            '--no-first-run',
+            '--no-default-browser-check',
+            `--app=${loginUrl}`
+          ], { stdio: 'ignore' });
+
+          return new Promise((resolve) => {
+            let finished = false;
+            const cleanup = () => {
+              clearInterval(timer);
+              try { proc.kill(); } catch (_) {}
+              setTimeout(() => {
+                try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch (_) {}
+              }, 800);
+            };
+            const finish = async (loggedIn) => {
+              if (finished) return;
+              finished = true;
+              cleanup();
+              if (loggedIn) {
+                try { await exportYoutubeCookiesToDisk(); } catch (_) {}
+              }
+              resolve({ success: loggedIn, loggedIn });
+            };
+            proc.on('exit', () => { if (!finished) finish(false); });
+
+            const timer = setInterval(async () => {
+              if (finished) return;
+              try {
+                const targetsRes = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1500) });
+                const targets = await targetsRes.json();
+                const page = Array.isArray(targets) && targets.find(t => t.url && /^https:\/\/(?:music|www)\.youtube\.com\//.test(t.url));
+                if (!page || !page.webSocketDebuggerUrl) return;
+
+                const ws = new WebSocket(page.webSocketDebuggerUrl);
+                await new Promise((resWs, rejWs) => {
+                  ws.addEventListener('open', () => {
+                    ws.send(JSON.stringify({ id: 1, method: 'Network.getAllCookies' }));
+                  });
+                  ws.addEventListener('message', async (msg) => {
+                    try {
+                      const data = JSON.parse(String(msg.data));
+                      if (data.id === 1 && data.result && Array.isArray(data.result.cookies)) {
+                        const cookies = data.result.cookies;
+                        const hasSap = cookies.some(c => c.name === 'SAPISID' && c.value && c.domain && c.domain.includes('youtube.com'));
+                        if (hasSap) {
+                          for (const c of cookies) {
+                            if (!c.domain || (!c.domain.includes('youtube.com') && !c.domain.includes('google.com'))) continue;
+                            const cleanDomain = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain;
+                            const url = `https://${cleanDomain}${c.path || '/'}`;
+                            try {
+                              await s.cookies.set({
+                                url,
+                                name: c.name,
+                                value: c.value,
+                                domain: c.domain,
+                                path: c.path || '/',
+                                secure: !!c.secure,
+                                httpOnly: !!c.httpOnly,
+                                expirationDate: c.expires > 0 ? c.expires : undefined
+                              });
+                            } catch (_) {}
+                          }
+                          ws.close();
+                          resWs(true);
+                          await finish(true);
+                          return;
+                        }
+                      }
+                    } catch (_) {}
+                    ws.close();
+                    resWs(false);
+                  });
+                  ws.addEventListener('error', () => rejWs(new Error('ws error')));
+                }).catch(() => {});
+              } catch (_) {}
+            }, 1000);
+          });
+        }
+
         const cleanSessionUa = (app.userAgentFallback || s.getUserAgent() || '')
           .replace(/\s*Electron\/[^\s]+/gi, '')
           .replace(/\s*(?:riff|eclipse)\/[^\s]+/gi, '');
