@@ -1947,7 +1947,10 @@ ipcMain.on('window-minimize', () => {
 
       ipcMain.handle('google-login', async (event) => {
         const s = session.fromPartition('persist:eclipse-google');
-        const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+        const cleanSessionUa = (app.userAgentFallback || s.getUserAgent() || '')
+          .replace(/\s*Electron\/[^\s]+/gi, '')
+          .replace(/\s*(?:riff|eclipse)\/[^\s]+/gi, '');
+        if (cleanSessionUa) s.setUserAgent(cleanSessionUa);
         return new Promise((resolve) => {
           const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
           const win = new BrowserWindow({
@@ -1961,7 +1964,8 @@ ipcMain.on('window-minimize', () => {
             webPreferences: {
               partition: 'persist:eclipse-google',
               contextIsolation: true,
-              nodeIntegration: false
+              nodeIntegration: false,
+              sandbox: true
             }
           });
           let finished = false;
@@ -1998,8 +2002,7 @@ ipcMain.on('window-minimize', () => {
             }
           });
           win.loadURL(
-            'https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F',
-            { userAgent: CHROME_UA }
+            'https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F'
           ).catch(() => finish(false));
         });
       });
