@@ -2079,6 +2079,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                           lyricsContainer: document.getElementById('lyrics-container'),
                           lyricsHint: document.getElementById('lyrics-hint'),
                           btnTranslateLyrics: document.getElementById('btn-translate-lyrics'),
+                          btnRomanizeLyrics: document.getElementById('btn-romanize-lyrics'),
                           btnTrEnabled: document.getElementById('btn-tr-enabled'),
                           selectTrLang: document.getElementById('select-tr-lang'),
                           btnTrAuto: document.getElementById('btn-tr-auto'),
@@ -5537,6 +5538,13 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           });
         }
 
+        if (state.romActive && state.currentRomanized && state.currentRomanized[index] && state.currentRomanized[index] !== line.text) {
+          const romDiv = document.createElement("div");
+          romDiv.className = "lyric-translation lyric-romaji";
+          romDiv.dir = "auto";
+          romDiv.textContent = state.currentRomanized[index];
+          div.appendChild(romDiv);
+        }
         const trVal = (state.trActive && state.currentTranslations && state.currentTranslations[index]) || '';
         const origText = (line.text || '').trim().toLowerCase();
         const trClean = trVal.trim().toLowerCase();
@@ -6079,6 +6087,48 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   }
   new MutationObserver(scheduleI18nApply).observe(document.body, { childList: true, subtree: true });
 
+  const lyricsRomanizeCache = new Map();
+  async function fetchAndApplyRomanize() {
+    if (!state.currentTrack || !state.syncedLyrics || state.syncedLyrics.length === 0) return;
+    const track = state.currentTrack;
+    const cacheKey = `${track.title || ""}|${track.artist || ""}`.toLowerCase();
+    if (lyricsRomanizeCache.has(cacheKey)) {
+      state.currentRomanized = lyricsRomanizeCache.get(cacheKey);
+      renderLyricsView();
+      if (el.nativeAudio) updateSyncedLyricsHighlight(el.nativeAudio.currentTime || 0);
+      return;
+    }
+    const texts = state.syncedLyrics.map(l => l.text);
+    try {
+      const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/romanize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ texts })
+      });
+      const data = await res.json();
+      if (data && data.success && Array.isArray(data.romanized)) {
+        lyricsRomanizeCache.set(cacheKey, data.romanized);
+        const curKey = `${(state.currentTrack && state.currentTrack.title) || ""}|${(state.currentTrack && state.currentTrack.artist) || ""}`.toLowerCase();
+        if (curKey === cacheKey && state.romActive) {
+          state.currentRomanized = data.romanized;
+          renderLyricsView();
+          if (el.nativeAudio) updateSyncedLyricsHighlight(el.nativeAudio.currentTime || 0);
+        }
+        return;
+      }
+    } catch (e) {
+      console.error("Romanization error:", e);
+    }
+    if (typeof window !== "undefined" && window.EclipseRomanizer && typeof window.EclipseRomanizer.romanize === "function") {
+      const offline = texts.map(t => window.EclipseRomanizer.romanize(t));
+      const curKey = `${(state.currentTrack && state.currentTrack.title) || ""}|${(state.currentTrack && state.currentTrack.artist) || ""}`.toLowerCase();
+      if (curKey === cacheKey && state.romActive) {
+        state.currentRomanized = offline;
+        renderLyricsView();
+        if (el.nativeAudio) updateSyncedLyricsHighlight(el.nativeAudio.currentTime || 0);
+      }
+    }
+  }
   const lyricsTranslationCache = new Map();
 
   async function fetchAndApplyTranslation() {
@@ -6135,6 +6185,11 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       if (found) trLangLabel.textContent = `${found.flag} ${found.name} (${found.code})`;
     }
     if (el.btnTrAuto) el.btnTrAuto.classList.toggle('active', !!state.trAuto);
+    if (el.btnRomanizeLyrics) {
+      const hasCjk = (state.syncedLyrics || []).some(l => /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/.test(l.text || ""));
+      el.btnRomanizeLyrics.classList.toggle("hidden", !hasCjk);
+      el.btnRomanizeLyrics.classList.toggle("active", !!state.romActive);
+    }
     if (el.btnTranslateLyrics) {
       el.btnTranslateLyrics.classList.toggle('hidden', !state.trEnabled);
       el.btnTranslateLyrics.classList.toggle('active', !!state.trActive);
@@ -6614,6 +6669,20 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     });
   }
 
+  if (el.btnRomanizeLyrics) {
+    el.btnRomanizeLyrics.addEventListener("click", () => {
+      if (!state.syncedLyrics || state.syncedLyrics.length === 0) return;
+      state.romActive = !state.romActive;
+      updateLyricsTranslationUI();
+      if (state.romActive) {
+        fetchAndApplyRomanize();
+      } else {
+        state.currentRomanized = null;
+        renderLyricsView();
+        if (el.nativeAudio) updateSyncedLyricsHighlight(el.nativeAudio.currentTime || 0);
+      }
+    });
+  }
   if (el.btnTranslateLyrics) {
     el.btnTranslateLyrics.addEventListener('click', () => {
       state.trActive = !state.trActive;

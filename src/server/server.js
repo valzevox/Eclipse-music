@@ -10120,6 +10120,22 @@ if (parsedUrl.pathname === '/api/ytm/login-url') {
     return res.end(JSON.stringify({ success: true, segments: segs }));
   }
 
+    if (parsedUrl.pathname === '/api/romanize' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { if (res.writableEnded) return; body += chunk; if (body.length > 5 * 1024 * 1024) { body = ''; req.removeAllListeners('data'); req.removeAllListeners('end'); res.writeHead(413, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ success: false, error: 'payload too large' })); req.resume(); } });
+    req.on('end', () => {
+      let payload = {};
+      try { payload = JSON.parse(body); } catch (_) {}
+      const raw = payload.texts || payload.lines || [];
+      const texts = Array.isArray(raw) ? raw.map((t) => (typeof t === 'string' ? t : t == null ? '' : String(t))) : [];
+      handleRomanize(req, res, texts).catch((e) => {
+        if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: e.message }));
+      });
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/api/lyrics') {
     const title = parsedUrl.query.title || '';
     const artist = parsedUrl.query.artist || '';
