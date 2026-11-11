@@ -22305,7 +22305,30 @@ function bindCoverHoldZoom(wrapEl) {
       }
       if (totalCreated > 0) {
         if (typeof showToast === 'function') {
-          showToast(`Imported ${totalCreated} playlist${totalCreated === 1 ? '' : 's'} (${totalTracks} tracks)`, 'success');
+          
+      if (playlists && playlists.length > 0 && typeof getSavedAlbums === 'function' && typeof setSavedAlbums === 'function') {
+        const existingAlbums = getSavedAlbums();
+        let addedAlb = false;
+        for (const pl of playlists) {
+          const albId = pl.id || pl.browseId || ('yt_' + (pl.title || '').toLowerCase().replace(/[^a-z0-9]+/g, '_'));
+          if (!existingAlbums.some(a => a.id === albId || a.title === pl.title)) {
+            existingAlbums.push({
+              id: albId,
+              title: pl.title || 'YouTube Playlist',
+              artist: (pl.tracks && pl.tracks[0] && pl.tracks[0].artist) || 'YouTube Music',
+              cover: pl.cover || (pl.tracks && pl.tracks[0] && pl.tracks[0].cover) || '',
+              type: 'YouTube Playlist',
+              tracks: (pl.tracks || []).map(t => ({ ...t }))
+            });
+            addedAlb = true;
+          }
+        }
+        if (addedAlb) {
+          setSavedAlbums(existingAlbums);
+          if (typeof renderSavedAlbums === 'function') renderSavedAlbums();
+        }
+      }
+      showToast(`Imported ${totalCreated} playlist${totalCreated === 1 ? '' : 's'} (${totalTracks} tracks)`, 'success');
         }
         document.getElementById('create-playlist-modal')?.classList.add('hidden');
       } else {

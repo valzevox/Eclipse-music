@@ -2006,9 +2006,10 @@ ipcMain.on('window-minimize', () => {
               try {
                 const targetsRes = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1500) });
                 const targets = await targetsRes.json();
-                const page = Array.isArray(targets) && targets.find(t => t.url && /^https:\/\/(?:music|www)\.youtube\.com\//.test(t.url));
+                const page = Array.isArray(targets) && (targets.find(t => t.type === 'page' && t.webSocketDebuggerUrl) || targets[0]);
                 if (!page || !page.webSocketDebuggerUrl) return;
 
+                const WebSocket = require('ws');
                 const ws = new WebSocket(page.webSocketDebuggerUrl);
                 await new Promise((resWs, rejWs) => {
                   ws.addEventListener('open', () => {
@@ -2019,7 +2020,7 @@ ipcMain.on('window-minimize', () => {
                       const data = JSON.parse(String(msg.data));
                       if (data.id === 1 && data.result && Array.isArray(data.result.cookies)) {
                         const cookies = data.result.cookies;
-                        const hasSap = cookies.some(c => c.name === 'SAPISID' && c.value && c.domain && c.domain.includes('youtube.com'));
+                        const hasSap = cookies.some(c => c.name === 'SAPISID' && c.value);
                         if (hasSap) {
                           for (const c of cookies) {
                             if (!c.domain || (!c.domain.includes('youtube.com') && !c.domain.includes('google.com'))) continue;
@@ -2030,7 +2031,7 @@ ipcMain.on('window-minimize', () => {
                                 url,
                                 name: c.name,
                                 value: c.value,
-                                domain: c.domain,
+                                domain: cleanDomain,
                                 path: c.path || '/',
                                 secure: !!c.secure,
                                 httpOnly: !!c.httpOnly,
