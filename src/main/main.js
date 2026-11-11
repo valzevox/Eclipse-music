@@ -1974,6 +1974,7 @@ ipcMain.on('window-minimize', () => {
           const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-yt-login-'));
           const proc = spawn(browserExe, [
             `--remote-debugging-port=${port}`,
+            '--remote-allow-origins=*',
             `--user-data-dir=${userDataDir}`,
             '--no-first-run',
             '--no-default-browser-check',
