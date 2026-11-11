@@ -27200,6 +27200,9 @@ function bindCoverHoldZoom(wrapEl) {
     });
   }
 
+  if (typeof checkGoogleAuthStatus === 'function') {
+    checkGoogleAuthStatus().catch(() => {});
+  }
   emitPluginEvent('ready');
 });
 
