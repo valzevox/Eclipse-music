@@ -1946,19 +1946,62 @@ ipcMain.on('window-minimize', () => {
       });
 
       ipcMain.handle('google-login', async (event) => {
-        // Mở thẳng trình duyệt mặc định bên ngoài hệ thống (Chrome/Edge/Brave/Firefox) qua Google OAuth PKCE
-        // Tuyệt đối không bị Google chặn "This browser or app may not be secure"
-        try {
-          await startGoogleOAuthLogin();
-          return { success: true, loggedIn: true };
-        } catch (err) {
-          console.warn('[google-login] OAuth flow failed or cancelled:', err && err.message);
-          return {
-            success: false,
-            loggedIn: false,
-            error: err && err.message ? err.message : 'Google sign-in was cancelled or failed'
+        const s = session.fromPartition('persist:eclipse-google');
+        const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+        return new Promise((resolve) => {
+          const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+          const win = new BrowserWindow({
+            width: 480,
+            height: 680,
+            parent: parent && !parent.isDestroyed() ? parent : undefined,
+            modal: true,
+            show: true,
+            autoHideMenuBar: true,
+            title: 'YouTube / YouTube Music Sign In',
+            webPreferences: {
+              partition: 'persist:eclipse-google',
+              contextIsolation: true,
+              nodeIntegration: false
+            }
+          });
+          let finished = false;
+          const hasSapisid = async () => {
+            try {
+              const cookies = await s.cookies.get({ name: 'SAPISID' });
+              return Array.isArray(cookies) && cookies.some(c => c && c.value);
+            } catch (_) { return false; }
           };
-        }
+          const finish = async (loggedIn) => {
+            if (finished) return;
+            finished = true;
+            clearInterval(timer);
+            if (loggedIn) {
+              try { await exportYoutubeCookiesToDisk(); } catch (_) {}
+            }
+            if (!win.isDestroyed()) win.close();
+            resolve({ success: loggedIn, loggedIn });
+          };
+          const check = async () => {
+            if (finished || win.isDestroyed()) return;
+            const url = win.webContents.getURL() || '';
+            if (/^https:\/\/(?:music|www)\.youtube\.com\//.test(url) && (await hasSapisid())) {
+              await finish(true);
+            }
+          };
+          const timer = setInterval(check, 1000);
+          win.webContents.on('did-navigate', check);
+          win.webContents.on('did-navigate-in-page', check);
+          win.webContents.on('did-finish-load', check);
+          win.on('closed', () => {
+            if (!finished) {
+              hasSapisid().then(v => finish(!!v), () => finish(false));
+            }
+          });
+          win.loadURL(
+            'https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F',
+            { userAgent: CHROME_UA }
+          ).catch(() => finish(false));
+        });
       });
 
       ipcMain.handle('google-import-library', async (event, opts) => {
