@@ -1,3 +1,4 @@
+try { Object.keys(localStorage).forEach(function(k) { if (k.indexOf('riff_') === 0) { var nk = 'eclipse_' + k.slice(5); if (localStorage.getItem(nk) === null) { localStorage.setItem(nk, localStorage.getItem(k)); } localStorage.removeItem(k); } }); } catch (_) {}
 (function initEclipseDiskStorageDaemon() {
 if (!window.electronAPI || typeof window.electronAPI.storageInitSync !== 'function') return;
 const origGet = Storage.prototype.getItem;
@@ -218,7 +219,7 @@ function stripYoutubeTopic(artist) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-  try { localStorage.removeItem('riff_stats'); } catch (e) {}
+  try { localStorage.removeItem('eclipse_stats'); } catch (e) {}
   var lyricsScrollRaf = 0;
   var gradientRaf = 0;
   var cacheRafId = 0;
@@ -331,7 +332,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     let dictObj = null;
     try {
-      const raw = localStorage.getItem('eclipse_i18n_cache_' + lang) || localStorage.getItem('riff_i18n_cache_' + lang);
+      const raw = localStorage.getItem('eclipse_i18n_cache_' + lang) || localStorage.getItem('eclipse_i18n_cache_' + lang);
       if (raw) dictObj = JSON.parse(raw);
     } catch (_) {}
 
@@ -365,14 +366,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (_) {}
   }
 
-  const initialSavedLang = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
+  const initialSavedLang = localStorage.getItem('eclipse_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
   if (initialSavedLang !== 'en') {
     loadCachedI18nDict(initialSavedLang);
   }
 
   function t(str) {
     if (!str || typeof str !== 'string') return str;
-    const lang = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
+    const lang = localStorage.getItem('eclipse_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
     if (lang === 'en') return str;
     let dict = i18nSessionMap.get(lang);
     if (!dict || dict.size === 0) {
@@ -403,7 +404,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   function tSet(el, str) {
     if (!el) return;
     el.textContent = t(str);
-    const lang = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
+    const lang = localStorage.getItem('eclipse_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
     if (lang === 'en') return;
     const dict = i18nSessionMap.get(lang);
     if (dict && dict.has(str)) return;
@@ -509,13 +510,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     startTimer(remaining);
   }
 
-  if (localStorage.getItem('riff_scale_rebased_v2') !== '1') {
-    localStorage.setItem('riff_scale_rebased_v2', '1');
+  if (localStorage.getItem('eclipse_scale_rebased_v2') !== '1') {
+    localStorage.setItem('eclipse_scale_rebased_v2', '1');
     if (localStorage.getItem('devsize_ui_scale') === '90') {
       localStorage.removeItem('devsize_ui_scale');
     }
-    if (localStorage.getItem('riff_font_scale') === '95') {
-      localStorage.removeItem('riff_font_scale');
+    if (localStorage.getItem('eclipse_font_scale') === '95') {
+      localStorage.removeItem('eclipse_font_scale');
     }
   }
 
@@ -635,12 +636,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const rawCustomPresets = safeArray('devsize_custom_presets');
   const normalizedCustomPresets = rawCustomPresets.map(normalizePreset).filter(Boolean);
 
-  const savedVolumeRaw = parseFloat(localStorage.getItem('riff_volume'));
+  const savedVolumeRaw = parseFloat(localStorage.getItem('eclipse_volume'));
   const savedVolume = Number.isFinite(savedVolumeRaw) ? Math.max(0, Math.min(1, savedVolumeRaw)) : 0.85;
 
   const DEFAULT_AUDIO_SETTINGS = { speed: 1.0, speedPitch: 1.0, pitch: 0, reverb: 0, distortion: 0, volume: 1.0, echo: 0, eq: { low: 0, mid: 0, high: 0 }, eqBands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] };
   const DEFAULT_HQ_SETTINGS = { engine: 'hqmusic-3', preset: 'studio', vocal: 0, air: 0, bass: 0 };
-  let soundPersistenceEnabled = localStorage.getItem('riff_persist_sound_settings') === '1';
+  let soundPersistenceEnabled = localStorage.getItem('eclipse_persist_sound_settings') === '1';
 
   function loadSoundSettings() {
     if (!soundPersistenceEnabled) {
@@ -650,8 +651,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         hqSettings: { ...DEFAULT_HQ_SETTINGS }
       };
     }
-    const savedAudio = safeJson('riff_audio_settings', null);
-    const savedHq = safeJson('riff_hq_settings', null);
+    const savedAudio = safeJson('eclipse_audio_settings', null);
+    const savedHq = safeJson('eclipse_hq_settings', null);
     const audioObj = savedAudio && typeof savedAudio === 'object' ? savedAudio : {};
     const hqObj = savedHq && typeof savedHq === 'object' ? savedHq : {};
     return {
@@ -661,7 +662,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         eq: { ...DEFAULT_AUDIO_SETTINGS.eq, ...(audioObj.eq && typeof audioObj.eq === 'object' ? audioObj.eq : {}) },
         eqBands: Array.isArray(audioObj.eqBands) && audioObj.eqBands.length === 10 ? audioObj.eqBands.map(v => typeof v === 'number' ? v : 0) : [...DEFAULT_AUDIO_SETTINGS.eqBands]
       },
-      hqEnabled: localStorage.getItem('riff_hq_enabled') === '1',
+      hqEnabled: localStorage.getItem('eclipse_hq_enabled') === '1',
       hqSettings: { ...DEFAULT_HQ_SETTINGS, ...hqObj }
     };
   }
@@ -681,7 +682,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function applyFont(font) {
-    const f = (typeof font === 'string' && font) ? font : (localStorage.getItem('riff_font') || 'google');
+    const f = (typeof font === 'string' && font) ? font : (localStorage.getItem('eclipse_font') || 'google');
     if (typeof state !== 'undefined' && state) {
       state.riffFont = f;
     }
@@ -704,7 +705,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const state = {
     selectedTracks: new Map(),
     lastClickedTrackRow: null,
-    platform: localStorage.getItem('riff_platform') || 'ytmusic',
+    platform: localStorage.getItem('eclipse_platform') || 'ytmusic',
     currentView: 'discover',
     previousView: 'discover',
     currentPlaylistId: null,
@@ -719,12 +720,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     currentTrackIndexInContext: -1,
     isPlaying: false,
     toolsReady: false,
-    isMuted: localStorage.getItem('riff_muted') === '1',
+    isMuted: localStorage.getItem('eclipse_muted') === '1',
     volume: savedVolume,
-    repeatMode: localStorage.getItem('riff_repeat_mode') || (localStorage.getItem('riff_repeat') === '1' ? 'one' : 'off'),
+    repeatMode: localStorage.getItem('eclipse_repeat_mode') || (localStorage.getItem('eclipse_repeat') === '1' ? 'one' : 'off'),
     get isRepeat() { return this.repeatMode === 'one'; },
     set isRepeat(v) { this.repeatMode = v ? 'one' : 'off'; },
-    isShuffle: localStorage.getItem('riff_shuffle') === '1',
+    isShuffle: localStorage.getItem('eclipse_shuffle') === '1',
     isAutoRemix: localStorage.getItem('eclipse_automix') === '1',
     autoMixPlayedIds: new Set(),
     findAutoMixNextTrack() {
@@ -769,18 +770,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     isRightPanelOpen: true,
     lyricsMode: 'word',
     uiScale: savedScale,
-    activePresetId: soundPersistenceEnabled ? (localStorage.getItem('riff_active_preset') || 'p_default') : 'p_default',
-    themeMode: localStorage.getItem('riff_theme_mode') || 'dark',
-    paletteStyle: localStorage.getItem('riff_palette_style') || 'classic',
-    meshBrightness: parseInt(localStorage.getItem('riff_mesh_brightness') || '100', 10),
-    themeAccent: localStorage.getItem('riff_theme_accent') || '#6750A4',
-    themeIntensity: parseInt(localStorage.getItem('riff_theme_intensity') || '0'),
-    themeBrightness: parseInt(localStorage.getItem('riff_theme_brightness') || '0'),
-    trEnabled: localStorage.getItem('riff_tr_enabled') === 'true',
-    trLang: localStorage.getItem('riff_tr_lang') || 'en',
-    lyricsTranslationLang: localStorage.getItem('riff_tr_lang') || 'en',
-    trAuto: localStorage.getItem('riff_tr_auto') === 'true',
-    trActive: (localStorage.getItem('riff_tr_enabled') === 'true' && (localStorage.getItem('riff_tr_active') === 'true' || localStorage.getItem('riff_tr_auto') === 'true')),
+    activePresetId: soundPersistenceEnabled ? (localStorage.getItem('eclipse_active_preset') || 'p_default') : 'p_default',
+    themeMode: localStorage.getItem('eclipse_theme_mode') || 'dark',
+    paletteStyle: localStorage.getItem('eclipse_palette_style') || 'classic',
+    meshBrightness: parseInt(localStorage.getItem('eclipse_mesh_brightness') || '100', 10),
+    themeAccent: localStorage.getItem('eclipse_theme_accent') || '#6750A4',
+    themeIntensity: parseInt(localStorage.getItem('eclipse_theme_intensity') || '0'),
+    themeBrightness: parseInt(localStorage.getItem('eclipse_theme_brightness') || '0'),
+    trEnabled: localStorage.getItem('eclipse_tr_enabled') === 'true',
+    trLang: localStorage.getItem('eclipse_tr_lang') || 'en',
+    lyricsTranslationLang: localStorage.getItem('eclipse_tr_lang') || 'en',
+    trAuto: localStorage.getItem('eclipse_tr_auto') === 'true',
+    trActive: (localStorage.getItem('eclipse_tr_enabled') === 'true' && (localStorage.getItem('eclipse_tr_active') === 'true' || localStorage.getItem('eclipse_tr_auto') === 'true')),
     currentTranslations: null,
     isTvKaraokeOpen: false,
     isFloatingLyricsOpen: false,
@@ -792,14 +793,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                           history: safeArray('devsize_history'),
                           playlists: safeArray('devsize_playlists'),
                           customPresets: normalizedCustomPresets,
-                          localTracks: (safeArray('riff_local_tracks').length > 0 ? safeArray('riff_local_tracks') : safeArray('devsize_local_tracks')).filter(t => {
-                            const b = safeJson('riff_removed_local_paths', []);
+                          localTracks: (safeArray('eclipse_local_tracks').length > 0 ? safeArray('eclipse_local_tracks') : safeArray('devsize_local_tracks')).filter(t => {
+                            const b = safeJson('eclipse_removed_local_paths', []);
                             const p = String(t?.path || t?.filePath || t?.url || '');
                             const id = String(t?.id || '');
                             return (!p || !b.includes(p)) && (!id || !b.includes(id));
                           }),
-                          localFiles: (safeArray('riff_local_files').length > 0 ? safeArray('riff_local_files') : safeArray('devsize_local_files')).filter(t => {
-                            const b = safeJson('riff_removed_local_paths', []);
+                          localFiles: (safeArray('eclipse_local_files').length > 0 ? safeArray('eclipse_local_files') : safeArray('devsize_local_files')).filter(t => {
+                            const b = safeJson('eclipse_removed_local_paths', []);
                             const p = String(t?.path || t?.filePath || t?.url || '');
                             const id = String(t?.id || '');
                             return (!p || !b.includes(p)) && (!id || !b.includes(id));
@@ -818,7 +819,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                           lastBroadcastStateKey: null,
                           syncTimeout: null,
                           scrubberDragTargetTime: undefined,
-                          riffFont: localStorage.getItem('riff_font') || 'google'
+                          riffFont: localStorage.getItem('eclipse_font') || 'google'
   };
 
   function migrateAddedAt() {
@@ -1010,7 +1011,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (window.electronAPI && window.electronAPI.getServerPort) {
     try {
       state.serverPort = await window.electronAPI.getServerPort();
-      const currentLang = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
+      const currentLang = localStorage.getItem('eclipse_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
       if (currentLang !== 'en') {
         if (typeof applyI18n === 'function') applyI18n(currentLang).catch(() => {});
       }
@@ -1030,7 +1031,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       window.electronAPI.updateThumbar(!!isPlaying);
     }
     if (!window.electronAPI || !window.electronAPI.discordRpcUpdate) return;
-    const showPaused = localStorage.getItem('riff_discord_show_paused') !== '0';
+    const showPaused = localStorage.getItem('eclipse_discord_show_paused') !== '0';
     if (!track || (!isPlaying && !showPaused)) {
       if (window.electronAPI.discordRpcClear) window.electronAPI.discordRpcClear();
       return;
@@ -1050,11 +1051,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.electronAPI.discordRpcUpdate({
       title: track.title || 'Unknown Track',
       artist: track.artist || 'Unknown Artist',
-      artistInStatus: localStorage.getItem('riff_discord_artist_status') !== '0',
+      artistInStatus: localStorage.getItem('eclipse_discord_artist_status') !== '0',
       isPaused: !isPlaying,
       showPaused: showPaused,
-      showTime: localStorage.getItem('riff_discord_show_time') !== '0',
-      showButton: localStorage.getItem('riff_discord_show_button') !== '0',
+      showTime: localStorage.getItem('eclipse_discord_show_time') !== '0',
+      showButton: localStorage.getItem('eclipse_discord_show_button') !== '0',
       position: curPos,
       duration: track.duration || 0,
       thumbnail: rpcThumb,
@@ -1217,13 +1218,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function getAdv(name, defaultVal = true) {
-    const val = localStorage.getItem(`riff_adv_${name}`);
+    const val = localStorage.getItem(`eclipse_adv_${name}`);
     if (val === null) return defaultVal;
     return val === 'true';
   }
 
   function setAdv(name, boolVal) {
-    localStorage.setItem(`riff_adv_${name}`, boolVal ? 'true' : 'false');
+    localStorage.setItem(`eclipse_adv_${name}`, boolVal ? 'true' : 'false');
   }
 
   function applyReducedMotionSetting() {
@@ -1855,15 +1856,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (mode === 'light') {
         const now = currentUiAlpha();
         if (now < 100) {
-          localStorage.setItem('riff_ui_alpha_light_prev', String(now));
-          localStorage.setItem('riff_ui_alpha_light_auto', '100');
+          localStorage.setItem('eclipse_ui_alpha_light_prev', String(now));
+          localStorage.setItem('eclipse_ui_alpha_light_auto', '100');
           setUiAlphaViaSlider(100);
         }
       } else if (lastEffectiveMode === 'light') {
-        const auto = localStorage.getItem('riff_ui_alpha_light_auto'), prev = localStorage.getItem('riff_ui_alpha_light_prev');
+        const auto = localStorage.getItem('eclipse_ui_alpha_light_auto'), prev = localStorage.getItem('eclipse_ui_alpha_light_prev');
         if (auto !== null && prev !== null && currentUiAlpha() === Number(auto)) setUiAlphaViaSlider(Number(prev));
-        localStorage.removeItem('riff_ui_alpha_light_auto');
-        localStorage.removeItem('riff_ui_alpha_light_prev');
+        localStorage.removeItem('eclipse_ui_alpha_light_auto');
+        localStorage.removeItem('eclipse_ui_alpha_light_prev');
       }
       lastEffectiveMode = mode;
     }
@@ -2458,13 +2459,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (el.sliderScale) el.sliderScale.value = state.uiScale;
   if (el.valScale) el.valScale.textContent = `${state.uiScale}%`;
 
-  const savedFontScale = localStorage.getItem('riff_font_scale') || '100';
+  const savedFontScale = localStorage.getItem('eclipse_font_scale') || '100';
   const fontVal = parseInt(savedFontScale, 10) || 100;
   if (el.sliderFontScale) el.sliderFontScale.value = fontVal.toString();
   if (el.valFontScale) el.valFontScale.textContent = `${fontVal}%`;
   document.documentElement.style.setProperty('--font-scale', ((fontVal / 100) * 0.95 * 1.25).toString());
 
-  const savedRadius = localStorage.getItem('riff_corner_radius') || '16';
+  const savedRadius = localStorage.getItem('eclipse_corner_radius') || '16';
   if (el.sliderCornerRadius) el.sliderCornerRadius.value = savedRadius;
   if (el.valCornerRadius) el.valCornerRadius.textContent = savedRadius === '16' ? 'Default' : `${savedRadius}px`;
   document.documentElement.style.setProperty('--md-shape-corner-l', `${savedRadius}px`);
@@ -2513,10 +2514,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (titlebarRevealHideTimer) { clearTimeout(titlebarRevealHideTimer); titlebarRevealHideTimer = null; }
   });
 
-  const savedBannerBlur = parseInt(localStorage.getItem('riff_banner_blur') || '3', 10);
-  const savedBannerOpacity = parseInt(localStorage.getItem('riff_banner_opacity') || '100', 10);
-  const savedBannerFade = parseInt(localStorage.getItem('riff_banner_fade') || '100', 10);
-  const savedBannerFit = localStorage.getItem('riff_banner_fit') || 'zoom';
+  const savedBannerBlur = parseInt(localStorage.getItem('eclipse_banner_blur') || '3', 10);
+  const savedBannerOpacity = parseInt(localStorage.getItem('eclipse_banner_opacity') || '100', 10);
+  const savedBannerFade = parseInt(localStorage.getItem('eclipse_banner_fade') || '100', 10);
+  const savedBannerFit = localStorage.getItem('eclipse_banner_fit') || 'zoom';
 
   document.documentElement.style.setProperty('--banner-blur', `${savedBannerBlur}px`);
   document.documentElement.style.setProperty('--banner-opacity', `${savedBannerOpacity / 100}`);
@@ -2525,8 +2526,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   applyBannerFit(savedBannerFit);
 
   function applyUiOpacity() {
-    const rawUi = parseInt(localStorage.getItem('riff_ui_alpha') || '20', 10);
-    const rawText = parseInt(localStorage.getItem('riff_text_alpha') || '100', 10);
+    const rawUi = parseInt(localStorage.getItem('eclipse_ui_alpha') || '20', 10);
+    const rawText = parseInt(localStorage.getItem('eclipse_text_alpha') || '100', 10);
     const uiAlpha = Math.max(20, Math.min(100, isNaN(rawUi) ? 100 : rawUi));
     const textAlpha = Math.max(1, Math.min(100, isNaN(rawText) ? 100 : rawText));
 
@@ -2803,7 +2804,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   animationFrameId = null;
 
   let levelAvgDb = -120;
-  function normalizeEnabled() { return localStorage.getItem('riff_audio_normalize') === '1'; }
+  function normalizeEnabled() { return localStorage.getItem('eclipse_audio_normalize') === '1'; }
   function resetLevelWatcher() { levelAvgDb = -120; if (audioEngine && audioEngine.setNormalizeGainDb) audioEngine.setNormalizeGainDb(0); }
   setInterval(() => {
     const audio = el.nativeAudio;
@@ -2853,10 +2854,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     soundSettingsSaveTimer = setTimeout(() => {
       soundSettingsSaveTimer = null;
       try {
-        localStorage.setItem('riff_hq_enabled', state.hqEnabled ? '1' : '0');
-        localStorage.setItem('riff_hq_settings', JSON.stringify(state.hqSettings));
-        localStorage.setItem('riff_audio_settings', JSON.stringify(state.audioSettings));
-        localStorage.setItem('riff_active_preset', state.activePresetId || '');
+        localStorage.setItem('eclipse_hq_enabled', state.hqEnabled ? '1' : '0');
+        localStorage.setItem('eclipse_hq_settings', JSON.stringify(state.hqSettings));
+        localStorage.setItem('eclipse_audio_settings', JSON.stringify(state.audioSettings));
+        localStorage.setItem('eclipse_active_preset', state.activePresetId || '');
       } catch (e) {
         console.warn('Failed to save sound settings', e);
       }
@@ -2893,8 +2894,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   let barBgSmoothedHeights = null;
   let vizPrev = null;
   function vizSettings() {
-    const smooth = Math.min(0.95, Math.max(0, (parseInt(localStorage.getItem('riff_viz_smooth') || '55', 10)) / 100));
-    const sens = Math.min(3, Math.max(0, (parseInt(localStorage.getItem('riff_viz_sens') || '100', 10)) / 100));
+    const smooth = Math.min(0.95, Math.max(0, (parseInt(localStorage.getItem('eclipse_viz_smooth') || '55', 10)) / 100));
+    const sens = Math.min(3, Math.max(0, (parseInt(localStorage.getItem('eclipse_viz_sens') || '100', 10)) / 100));
     return { smooth, sens };
   }
 
@@ -3015,7 +3016,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function isVizConnectedMode() {
-    return localStorage.getItem('riff_viz_connected') === '1';
+    return localStorage.getItem('eclipse_viz_connected') === '1';
   }
   let liquidWavePhase = 0;
   const liquidSpringNodes = new Float32Array(36);
@@ -3167,7 +3168,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       const isVisualizerVisible = miniCanvas && miniCanvas.offsetParent !== null && !document.hidden;
       const isTvkVisualizerVisible = state.isTvKaraokeOpen && tvkCanvas && tvkCanvas.offsetParent !== null && !document.hidden;
-      const isBehindVizVisible = (document.body.classList.contains('bar-viz-behind') || isVizConnectedMode()) && localStorage.getItem('riff_bar_wave') !== '0' && !document.body.classList.contains('mini') && !document.hidden;
+      const isBehindVizVisible = (document.body.classList.contains('bar-viz-behind') || isVizConnectedMode()) && localStorage.getItem('eclipse_bar_wave') !== '0' && !document.body.classList.contains('mini') && !document.hidden;
       const needBassPulse = !!(state.vfx && state.vfx.bassPulse);
       const activeGap = document.querySelector('.lyric-line.lyric-gap.active');
 
@@ -3557,7 +3558,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
           const centerY = sh / 2;
 
-          const showProgressBg = localStorage.getItem('riff_progress_bg') === 'true';
+          const showProgressBg = localStorage.getItem('eclipse_progress_bg') === 'true';
           if (showProgressBg && bgStartX < bgEndX - 1) {
             sCtx.save();
             sCtx.globalAlpha = 0.3;
@@ -3990,7 +3991,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const bannerImg = banner.querySelector('.banner-image') || banner;
     const trackArt = state.currentTrack ? getTrackArt(state.currentTrack) : {};
     const trackBanner = trackArt.banner || null;
-    const globalMedia = localStorage.getItem('riff_banner_media');
+    const globalMedia = localStorage.getItem('eclipse_banner_media');
     const mediaToUse = trackBanner || globalMedia || thumbUrl;
 
     const hasCustomFx = !!(trackArt.bannerCustomFx || (trackArt.bannerFx && trackArt.bannerFx.enabled));
@@ -4090,7 +4091,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     banner.style.display = '';
     const bannerImg = banner.querySelector('.banner-image') || banner;
-    const globalMedia = localStorage.getItem('riff_banner_media');
+    const globalMedia = localStorage.getItem('eclipse_banner_media');
     const mediaToUse = globalMedia || thumbUrl;
 
     if (!mediaToUse) {
@@ -4152,7 +4153,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     return getTrackCanonicalId(a) === getTrackCanonicalId(b);
   }
 
-  function getTrackTrims() { return safeJson('riff_track_trims', {}); }
+  function getTrackTrims() { return safeJson('eclipse_track_trims', {}); }
   function getTrackTrim(track) {
     if (!track) return null;
     const cid = getTrackCanonicalId(track);
@@ -4168,12 +4169,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else {
       all[cid] = { start: Math.round(startSec * 10) / 10, end: Math.round(endSec * 10) / 10, updatedAt: Date.now() };
     }
-    try { localStorage.setItem('riff_track_trims', JSON.stringify(all)); } catch (_) {}
+    try { localStorage.setItem('eclipse_track_trims', JSON.stringify(all)); } catch (_) {}
   }
 
   function getTrackArt(t) {
     try {
-      return JSON.parse(localStorage.getItem('riff_track_art') || '{}')[getTrackCanonicalId(t)] || {};
+      return JSON.parse(localStorage.getItem('eclipse_track_art') || '{}')[getTrackCanonicalId(t)] || {};
     } catch (e) {
       return {};
     }
@@ -4182,22 +4183,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   function setTrackArt(t, patch) {
     let all = {};
     try {
-      all = JSON.parse(localStorage.getItem('riff_track_art') || '{}');
+      all = JSON.parse(localStorage.getItem('eclipse_track_art') || '{}');
     } catch (e) {}
     const id = getTrackCanonicalId(t);
     if (!id) return;
     const cur = { ...(all[id] || {}), ...patch };
     for (const k in cur) if (cur[k] === undefined || cur[k] === null || cur[k] === '') delete cur[k];
     if (Object.keys(cur).length) all[id] = cur; else delete all[id];
-    localStorage.setItem('riff_track_art', JSON.stringify(all));
+    localStorage.setItem('eclipse_track_art', JSON.stringify(all));
   }
 
-  function getTrackRenames() { return safeJson('riff_track_renames', {}); }
+  function getTrackRenames() { return safeJson('eclipse_track_renames', {}); }
   function saveTrackRename(canonicalId, title, artist) {
     if (!canonicalId) return;
     const all = getTrackRenames();
     all[canonicalId] = { title, artist, updatedAt: Date.now() };
-    try { localStorage.setItem('riff_track_renames', JSON.stringify(all)); } catch (_) {}
+    try { localStorage.setItem('eclipse_track_renames', JSON.stringify(all)); } catch (_) {}
   }
   function applyTrackRenames(t) {
     if (!t) return t;
@@ -4259,11 +4260,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   let navigatingBack = false;
 
   const lastfmState = {
-    enabled: localStorage.getItem('riff_lastfm_enabled') !== 'false',
-    sessionKey: localStorage.getItem('riff_lastfm_sk') || '',
-    username: localStorage.getItem('riff_lastfm_user') || '',
-    apiKey: localStorage.getItem('riff_lastfm_apikey') || '',
-    apiSecret: localStorage.getItem('riff_lastfm_apisecret') || '',
+    enabled: localStorage.getItem('eclipse_lastfm_enabled') !== 'false',
+    sessionKey: localStorage.getItem('eclipse_lastfm_sk') || '',
+    username: localStorage.getItem('eclipse_lastfm_user') || '',
+    apiKey: localStorage.getItem('eclipse_lastfm_apikey') || '',
+    apiSecret: localStorage.getItem('eclipse_lastfm_apisecret') || '',
     currentTrackKey: '',
     startedAtUnix: 0,
     playedSeconds: 0,
@@ -4436,7 +4437,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!state.queue || state.queueIndex < 0) return;
     const nextTrack = state.queue[state.queueIndex + 1];
     if (!nextTrack || nextTrack.isCached || nextTrack.platform === 'local') return;
-    const curQuality = localStorage.getItem('riff_audio_quality') || 'medium';
+    const curQuality = localStorage.getItem('eclipse_audio_quality') || 'medium';
     if (nextTrack._preloadedStreamUrl && nextTrack._preloadedStreamQuality === curQuality) {
       warmUpNextAudioBuffer(nextTrack._preloadedStreamUrl);
       return;
@@ -4479,7 +4480,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function loadCanvasForTrack(track) {
     const vidEl = document.getElementById('canvas-video-bg');
     if (!vidEl) return;
-    if (localStorage.getItem('riff_canvas_enabled') === '0' || !track) {
+    if (localStorage.getItem('eclipse_canvas_enabled') === '0' || !track) {
       vidEl.classList.remove('active');
       vidEl.classList.add('hidden');
       try { vidEl.pause(); vidEl.removeAttribute('src'); vidEl.load(); } catch (_) {}
@@ -4525,7 +4526,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function loadSponsorBlockSegments(track) {
     currentTrackSponsorSegments = [];
     lastSkippedSegmentEnd = -1;
-    if (localStorage.getItem('riff_sponsorblock_enabled') === '0') return;
+    if (localStorage.getItem('eclipse_sponsorblock_enabled') === '0') return;
     if (!track) return;
     const vid = track.id || track.videoId || '';
     if (typeof vid !== 'string' || vid.length !== 11) return;
@@ -4838,7 +4839,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         resolvedUrl = 'https://www.youtube.com/watch?v=' + track._matchedYtId;
       }
 
-      const qQuality = encodeURIComponent(localStorage.getItem('riff_audio_quality') || 'medium');
+      const qQuality = encodeURIComponent(localStorage.getItem('eclipse_audio_quality') || 'medium');
       const qSearch = encodeURIComponent(track.searchQuery || ((track.artist ? track.artist + ' - ' : '') + track.title));
       const streamInfoPlatform = (state.platform === 'soundcloud' && (!track.url || !track.url.includes('youtube.com'))) ? 'soundcloud' : (track.platform || state.platform || 'ytmusic');
       const streamInfoUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?url=${encodeURIComponent(resolvedUrl || '')}&id=${encodeURIComponent(resolvedId || '')}&platform=${encodeURIComponent(streamInfoPlatform)}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&thumbnail=${encodeURIComponent(track.thumbnail || '')}&quality=${qQuality}&q=${qSearch}&token=${encodeURIComponent((window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '')}`;
@@ -5096,7 +5097,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   }
 
   async function fetchAndUpgradeWords(title, artist, trackId, token) {
-    const wordSource = localStorage.getItem('riff_word_source') || 'auto';
+    const wordSource = localStorage.getItem('eclipse_word_source') || 'auto';
     if (wordSource === 'estimate') return;
 
     const cachedWords = wordsSessionCache.get(trackId);
@@ -5284,7 +5285,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     if (typeof renderMiniLyrics === 'function') renderMiniLyrics();
 
     try {
-      const source = localStorage.getItem('riff_lyrics_source') || 'auto';
+      const source = localStorage.getItem('eclipse_lyrics_source') || 'auto';
       const trackId = (state.currentTrack && state.currentTrack.id) || `${artist}:${title}`;
       const lyricsCacheKey = `${trackId}:${source}`;
 
@@ -5486,7 +5487,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     }
   }
 
-  function getLyricsWordStyle() { return localStorage.getItem('riff_lyrics_word_style') === 'words' ? 'words' : 'gradient'; }
+  function getLyricsWordStyle() { return localStorage.getItem('eclipse_lyrics_word_style') === 'words' ? 'words' : 'gradient'; }
   function isGradientMode() { return state.lyricsMode === 'word' && getAdv('karaoke_words', true) && getLyricsWordStyle() === 'gradient'; }
 
   function renderLyricsView() {
@@ -5897,12 +5898,12 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     '.dialog-card span:not([class])'
   ].join(', ');
 
-  const savedUiLang = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
+  const savedUiLang = localStorage.getItem('eclipse_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
   syncDocumentDirection(savedUiLang);
   if (savedUiLang !== 'en') {
     applyI18n(savedUiLang);
     setTimeout(() => {
-      const current = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
+      const current = localStorage.getItem('eclipse_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
       if (current !== 'en') applyI18n(current).catch(() => {});
     }, 1200);
   }
@@ -5945,11 +5946,11 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   }
 
   async function applyI18n(lang) {
-    lang = lang || localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
-    localStorage.setItem('riff_ui_lang', lang);
+    lang = lang || localStorage.getItem('eclipse_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
+    localStorage.setItem('eclipse_ui_lang', lang);
     localStorage.setItem('eclipse_ui_lang', lang);
     if (window.electronAPI && window.electronAPI.storageSaveSync && window.__RIFF_STORAGE_MAP__) {
-      window.__RIFF_STORAGE_MAP__['riff_ui_lang'] = lang;
+      window.__RIFF_STORAGE_MAP__['eclipse_ui_lang'] = lang;
       window.__RIFF_STORAGE_MAP__['eclipse_ui_lang'] = lang;
       try { window.electronAPI.storageSaveSync(window.__RIFF_STORAGE_MAP__); } catch (_) {}
     }
@@ -6105,13 +6106,13 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   window.applyI18n = applyI18n;
 
   setTimeout(() => {
-    const cur = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
+    const cur = localStorage.getItem('eclipse_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
     if (cur !== 'en') applyI18n(cur).catch(() => {});
   }, 4000);
 
   let i18nApplyTimer = null;
   function scheduleI18nApply() {
-    const lang = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
+    const lang = localStorage.getItem('eclipse_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
     if (lang === 'en') return;
     if (i18nApplyTimer) clearTimeout(i18nApplyTimer);
     i18nApplyTimer = setTimeout(() => {
@@ -6280,11 +6281,11 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     linear: { css: 'linear', fn: (t) => t }
   };
   function getLyricsEase() {
-    const v = localStorage.getItem('riff_lyrics_ease');
+    const v = localStorage.getItem('eclipse_lyrics_ease');
     return LYRIC_EASINGS[v] ? v : 'inout';
   }
   function getLyricsSpeed() {
-    const v = parseFloat(localStorage.getItem('riff_lyrics_speed'));
+    const v = parseFloat(localStorage.getItem('eclipse_lyrics_speed'));
     return (v >= 0.5 && v <= 2.5) ? v : 1.0;
   }
   function applyLyricsEase() {
@@ -6295,7 +6296,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     document.documentElement.style.setProperty('--lyric-duration', `${(baseDuration / speed).toFixed(2)}s`);
   }
   function getLyricsGradientTightness() {
-    const v = parseInt(localStorage.getItem('riff_lyrics_gradient_tightness') || localStorage.getItem('riff_gradient_tight'), 10);
+    const v = parseInt(localStorage.getItem('eclipse_lyrics_gradient_tightness') || localStorage.getItem('eclipse_gradient_tight'), 10);
     return (v >= 0 && v <= 40) ? v : 2;
   }
   function applyLyricsGradientTightness() {
@@ -6720,7 +6721,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   if (el.btnTranslateLyrics) {
     el.btnTranslateLyrics.addEventListener('click', () => {
       state.trActive = !state.trActive;
-      localStorage.setItem('riff_tr_active', String(state.trActive));
+      localStorage.setItem('eclipse_tr_active', String(state.trActive));
       updateLyricsTranslationUI();
       if (state.trActive) {
         fetchAndApplyTranslation();
@@ -7430,7 +7431,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
   function getTvk() {
     try {
-      const raw = localStorage.getItem('riff_tvk');
+      const raw = localStorage.getItem('eclipse_tvk');
       if (raw) {
         const parsed = JSON.parse(raw);
         return {
@@ -7449,13 +7450,13 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
   function saveTvk(settings) {
     try {
-      localStorage.setItem('riff_tvk', JSON.stringify(settings));
+      localStorage.setItem('eclipse_tvk', JSON.stringify(settings));
     } catch (_) {}
   }
 
   function updateTvkVisualizerSetting(enabled) {
     const on = enabled !== false && enabled !== 'false';
-    localStorage.setItem('riff_tvk_visualizer', on ? 'true' : 'false');
+    localStorage.setItem('eclipse_tvk_visualizer', on ? 'true' : 'false');
     const tv = document.getElementById('tv-karaoke');
     if (tv) {
       tv.classList.toggle('no-tvk-visualizer', !on);
@@ -7472,7 +7473,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
   function updateTvkVisualizerLyricsSetting(enabled) {
     const on = enabled !== false && enabled !== 'false';
-    localStorage.setItem('riff_tvk_visualizer_lyrics', on ? 'true' : 'false');
+    localStorage.setItem('eclipse_tvk_visualizer_lyrics', on ? 'true' : 'false');
     const tv = document.getElementById('tv-karaoke');
     if (tv) {
       tv.classList.toggle('tvk-show-lyrics-visualizer', on);
@@ -7491,7 +7492,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     let val = parseInt(opacityVal, 10);
     if (isNaN(val)) val = 85;
     val = Math.max(10, Math.min(100, val));
-    localStorage.setItem('riff_tvk_visualizer_opacity', val.toString());
+    localStorage.setItem('eclipse_tvk_visualizer_opacity', val.toString());
 
     const norm = (val / 100).toFixed(2);
     const tv = document.getElementById('tv-karaoke');
@@ -7533,11 +7534,11 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     tv.setAttribute('data-tvk-anim', anim);
     tv.setAttribute('data-tvk-align', align);
 
-    const tvkVisOn = localStorage.getItem('riff_tvk_visualizer') !== 'false';
+    const tvkVisOn = localStorage.getItem('eclipse_tvk_visualizer') !== 'false';
     tv.classList.toggle('no-tvk-visualizer', !tvkVisOn);
-    const tvkVisLyricsOn = localStorage.getItem('riff_tvk_visualizer_lyrics') !== 'false';
+    const tvkVisLyricsOn = localStorage.getItem('eclipse_tvk_visualizer_lyrics') !== 'false';
     tv.classList.toggle('tvk-show-lyrics-visualizer', tvkVisLyricsOn);
-    const visOpacity = parseInt(localStorage.getItem('riff_tvk_visualizer_opacity') || '85', 10);
+    const visOpacity = parseInt(localStorage.getItem('eclipse_tvk_visualizer_opacity') || '85', 10);
     tv.style.setProperty('--tvk-vis-opacity', (Math.max(10, Math.min(100, visOpacity)) / 100).toFixed(2));
   }
 
@@ -7601,22 +7602,22 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     if (valGap) valGap.textContent = `${s.gap}px`;
     if (valSpeed) valSpeed.textContent = `${s.speed}ms`;
 
-    const tvkVisOn = localStorage.getItem('riff_tvk_visualizer') !== 'false';
+    const tvkVisOn = localStorage.getItem('eclipse_tvk_visualizer') !== 'false';
     const btnTvkVis = document.getElementById('btn-tvk-visualizer');
     if (btnTvkVis) btnTvkVis.classList.toggle('active', tvkVisOn);
     const btnTvkVisSetting = document.getElementById('btn-tvk-visualizer-setting');
     if (btnTvkVisSetting) btnTvkVisSetting.classList.toggle('active', tvkVisOn);
 
-    const tvkVisLyricsOn = localStorage.getItem('riff_tvk_visualizer_lyrics') !== 'false';
+    const tvkVisLyricsOn = localStorage.getItem('eclipse_tvk_visualizer_lyrics') !== 'false';
     const btnTvkVisLyrics = document.getElementById('btn-tvk-visualizer-lyrics');
     if (btnTvkVisLyrics) btnTvkVisLyrics.classList.toggle('active', tvkVisLyricsOn);
     const btnTvkVisLyricsSetting = document.getElementById('btn-tvk-visualizer-lyrics-setting');
     if (btnTvkVisLyricsSetting) btnTvkVisLyricsSetting.classList.toggle('active', tvkVisLyricsOn);
 
     const btnTvkVizConnectedEl = document.getElementById('btn-tvk-viz-connected');
-    if (btnTvkVizConnectedEl) btnTvkVizConnectedEl.classList.toggle('active', localStorage.getItem('riff_viz_connected') === '1');
+    if (btnTvkVizConnectedEl) btnTvkVizConnectedEl.classList.toggle('active', localStorage.getItem('eclipse_viz_connected') === '1');
 
-    const visOpacity = parseInt(localStorage.getItem('riff_tvk_visualizer_opacity') || '85', 10);
+    const visOpacity = parseInt(localStorage.getItem('eclipse_tvk_visualizer_opacity') || '85', 10);
     const sliderTvkVisOpacity = document.getElementById('tvk-vis-opacity');
     if (sliderTvkVisOpacity) sliderTvkVisOpacity.value = visOpacity;
     const valTvkVisOpacity = document.getElementById('val-tvk-vis-opacity');
@@ -7789,14 +7790,14 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     const btnTvkVis = document.getElementById('btn-tvk-visualizer');
     if (btnTvkVis) {
       btnTvkVis.addEventListener('click', () => {
-        const cur = localStorage.getItem('riff_tvk_visualizer') !== 'false';
+        const cur = localStorage.getItem('eclipse_tvk_visualizer') !== 'false';
         updateTvkVisualizerSetting(!cur);
       });
     }
     const btnTvkVisSetting = document.getElementById('btn-tvk-visualizer-setting');
     if (btnTvkVisSetting) {
       btnTvkVisSetting.addEventListener('click', () => {
-        const cur = localStorage.getItem('riff_tvk_visualizer') !== 'false';
+        const cur = localStorage.getItem('eclipse_tvk_visualizer') !== 'false';
         updateTvkVisualizerSetting(!cur);
       });
     }
@@ -7804,14 +7805,14 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     const btnTvkVisLyrics = document.getElementById('btn-tvk-visualizer-lyrics');
     if (btnTvkVisLyrics) {
       btnTvkVisLyrics.addEventListener('click', () => {
-        const cur = localStorage.getItem('riff_tvk_visualizer_lyrics') !== 'false';
+        const cur = localStorage.getItem('eclipse_tvk_visualizer_lyrics') !== 'false';
         updateTvkVisualizerLyricsSetting(!cur);
       });
     }
     const btnTvkVisLyricsSetting = document.getElementById('btn-tvk-visualizer-lyrics-setting');
     if (btnTvkVisLyricsSetting) {
       btnTvkVisLyricsSetting.addEventListener('click', () => {
-        const cur = localStorage.getItem('riff_tvk_visualizer_lyrics') !== 'false';
+        const cur = localStorage.getItem('eclipse_tvk_visualizer_lyrics') !== 'false';
         updateTvkVisualizerLyricsSetting(!cur);
       });
     }
@@ -7837,7 +7838,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     const valVizSmooth = document.getElementById('val-viz-smooth');
     const sliderBarVizSmooth = document.getElementById('slider-bar-viz-smooth');
     const valBarVizSmooth = document.getElementById('val-bar-viz-smooth');
-    const initialVizSmooth = localStorage.getItem('riff_viz_smooth') || '55';
+    const initialVizSmooth = localStorage.getItem('eclipse_viz_smooth') || '55';
     function syncSmooth(v) {
       if (sliderVizSmooth) sliderVizSmooth.value = v;
       if (valVizSmooth) valVizSmooth.textContent = `${v}%`;
@@ -7847,7 +7848,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     syncSmooth(initialVizSmooth);
     const onSmoothInput = (e) => {
       const v = e.target.value;
-      localStorage.setItem('riff_viz_smooth', v);
+      localStorage.setItem('eclipse_viz_smooth', v);
       syncSmooth(v);
     };
     if (sliderVizSmooth) {
@@ -7863,7 +7864,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     const valVizSens = document.getElementById('val-viz-sens');
     const sliderBarVizSens = document.getElementById('slider-bar-viz-sens');
     const valBarVizSens = document.getElementById('val-bar-viz-sens');
-    const initialVizSens = localStorage.getItem('riff_viz_sens') || '100';
+    const initialVizSens = localStorage.getItem('eclipse_viz_sens') || '100';
     function syncSens(v) {
       if (sliderVizSens) sliderVizSens.value = v;
       if (valVizSens) valVizSens.textContent = `${v}%`;
@@ -7873,7 +7874,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     syncSens(initialVizSens);
     const onSensInput = (e) => {
       const v = e.target.value;
-      localStorage.setItem('riff_viz_sens', v);
+      localStorage.setItem('eclipse_viz_sens', v);
       syncSens(v);
     };
     if (sliderVizSens) {
@@ -8741,7 +8742,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       if (retryStage <= 1) {
         cur._errorRetryStage = 2;
         try {
-          const qQuality = encodeURIComponent(localStorage.getItem('riff_audio_quality') || 'medium');
+          const qQuality = encodeURIComponent(localStorage.getItem('eclipse_audio_quality') || 'medium');
           const qSearch = encodeURIComponent(cur.searchQuery || ((cur.artist ? cur.artist + ' - ' : '') + (cur.title || '')));
           const retryYtId = cur._matchedYtId || cur.id || '';
           const retryTrackUrl = cur.url || (cur._matchedYtId ? ('https://www.youtube.com/watch?v=' + cur._matchedYtId) : '');
@@ -8889,7 +8890,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       }
       if (crossfadeFadeInPending) {
         crossfadeFadeInPending = false;
-        const X = parseInt(localStorage.getItem('riff_crossfade') || '0', 10);
+        const X = parseInt(localStorage.getItem('eclipse_crossfade') || '0', 10);
         if (X > 0 && audioEngine) audioEngine.fadeIn(X / 2);
       }
       if (typeof m3cStart === 'function') m3cStart();
@@ -9010,7 +9011,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       }
       try { onLastFmTimeUpdate(); } catch (_) {}
       try {
-        if (localStorage.getItem('riff_skip_silence_enabled') === '1' && audioEngine && el.nativeAudio && !el.nativeAudio.paused && !isDraggingScrubber) {
+        if (localStorage.getItem('eclipse_skip_silence_enabled') === '1' && audioEngine && el.nativeAudio && !el.nativeAudio.paused && !isDraggingScrubber) {
           const cur = el.nativeAudio.currentTime;
           if (cur >= 0.5 && cur < 12.0 && audioEngine.isSilent(-52)) {
             el.nativeAudio.currentTime += 0.5;
@@ -9018,7 +9019,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         }
       } catch (_) {}
       try {
-        if (localStorage.getItem('riff_sponsorblock_enabled') !== '0' && currentTrackSponsorSegments.length > 0 && el.nativeAudio && !isDraggingScrubber) {
+        if (localStorage.getItem('eclipse_sponsorblock_enabled') !== '0' && currentTrackSponsorSegments.length > 0 && el.nativeAudio && !isDraggingScrubber) {
           const curTime = el.nativeAudio.currentTime;
           for (const seg of currentTrackSponsorSegments) {
             if (curTime >= seg.start - 0.25 && curTime < seg.end - 0.5 && lastSkippedSegmentEnd !== seg.end) {
@@ -9053,7 +9054,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       const cur = (el.nativeAudio && Number.isFinite(el.nativeAudio.currentTime)) ? el.nativeAudio.currentTime : 0;
       const dur = getReliableTrackDuration();
 
-      const X = parseInt(localStorage.getItem('riff_crossfade') || '0', 10);
+      const X = parseInt(localStorage.getItem('eclipse_crossfade') || '0', 10);
       if (X > 0 && !crossfadeTriggered && !state.isRepeat && dur > Math.max(X * 3, 30) && (!hlsInstance || dur >= (state.currentTrack?.duration || 0) * 0.9) && cur >= dur - X && (!audioEngine || !audioEngine.isLiveStream(el.nativeAudio))) {
         crossfadeTriggered = true;
         crossfadeFadeInPending = true;
@@ -9321,7 +9322,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     initAudioContext();
     renderPresets();
     if (activeTweenRaf) { cancelAnimationFrame(activeTweenRaf); activeTweenRaf = null; }
-    if (localStorage.getItem('riff_smooth_presets') === 'false') {
+    if (localStorage.getItem('eclipse_smooth_presets') === 'false') {
       state.audioSettings = { ...normalized.settings };
       syncSettingsSlidersToState();
       applyAudioSettings();
@@ -9562,7 +9563,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
   function getMixFeedback() {
     const defaultVal = { likedArtists: [], dislikedArtists: [], likedTracks: [], dislikedTracks: [], ratingsByMix: {} };
-    const val = safeJson('riff_mix_feedback', defaultVal);
+    const val = safeJson('eclipse_mix_feedback', defaultVal);
     if (!val || typeof val !== 'object') return defaultVal;
     if (!Array.isArray(val.likedArtists)) val.likedArtists = [];
     if (!Array.isArray(val.dislikedArtists)) val.dislikedArtists = [];
@@ -9573,7 +9574,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   }
 
   function saveMixFeedback(data) {
-    localStorage.setItem('riff_mix_feedback', JSON.stringify(data));
+    localStorage.setItem('eclipse_mix_feedback', JSON.stringify(data));
   }
 
   function handleDailyMixRating(isLike) {
@@ -9641,8 +9642,8 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     saveMixFeedback(feedback);
 
     if (!isLike) {
-      localStorage.removeItem('riff_my_wave_cache');
-      localStorage.removeItem('riff_daily_mixes');
+      localStorage.removeItem('eclipse_my_wave_cache');
+      localStorage.removeItem('eclipse_daily_mixes');
       setTimeout(() => {
         if (typeof generateDailyMixes === 'function') generateDailyMixes(true);
         if (typeof fetchPersonalVibe === 'function') fetchPersonalVibe(true);
@@ -9673,7 +9674,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
   function getSavedAlbums() {
     try {
-      const raw = (localStorage.getItem('eclipse_saved_albums') || localStorage.getItem('riff_saved_albums'));
+      const raw = (localStorage.getItem('eclipse_saved_albums') || localStorage.getItem('eclipse_saved_albums'));
       const parsed = raw ? JSON.parse(raw) : [];
       return Array.isArray(parsed) ? parsed : [];
     } catch (_) {
@@ -9683,7 +9684,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
   function setSavedAlbums(list) {
     try {
-      localStorage.setItem('eclipse_saved_albums', JSON.stringify(list)); localStorage.setItem('riff_saved_albums', JSON.stringify(list));
+      localStorage.setItem('eclipse_saved_albums', JSON.stringify(list)); localStorage.setItem('eclipse_saved_albums', JSON.stringify(list));
     } catch (_) {}
     updateAlbumsCount();
   }
@@ -9862,7 +9863,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
               year: album.year || '',
               trackCount: album.trackCount || (album._tracks ? album._tracks.length : 0)
             });
-            if (localStorage.getItem('riff_like_album_tracks') === 'true' && album._tracks && Array.isArray(album._tracks)) {
+            if (localStorage.getItem('eclipse_like_album_tracks') === 'true' && album._tracks && Array.isArray(album._tracks)) {
               let favAdded = false;
               album._tracks.forEach(tr => {
                 if (tr && !state.favorites.some(f => isSameTrack(f, tr))) {
@@ -10323,7 +10324,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   }
 
 
-  const SEARCH_HISTORY_KEY = 'riff_search_history_v2';
+  const SEARCH_HISTORY_KEY = 'eclipse_search_history_v2';
   const VERIFIED_CHECK_SVG = '<svg class="verified-check" width="14" height="14" viewBox="0 0 24 24" aria-label="Verified artist"><circle cx="12" cy="12" r="11" fill="currentColor"></circle><path d="M7 12.5l3.2 3.2L17 9" fill="none" stroke="var(--md-sys-color-on-primary, #000)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
 
   function stripFeaturing(title) {
@@ -10645,7 +10646,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     const setOpen = (open) => {
       panel.classList.toggle('open', open);
       btn.classList.toggle('active', open);
-      localStorage.setItem('riff_queue_panel_open', open ? '1' : '0');
+      localStorage.setItem('eclipse_queue_panel_open', open ? '1' : '0');
       signature = '';
       refresh();
     };
@@ -10661,7 +10662,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       });
     });
     setInterval(refresh, 700);
-    if (localStorage.getItem('riff_queue_panel_open') === '1') setOpen(true);
+    if (localStorage.getItem('eclipse_queue_panel_open') === '1') setOpen(true);
   }
 
   async function performSearch(query) {
@@ -10734,7 +10735,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         }
       });
 
-      const showArtists = localStorage.getItem('riff_search_artists') !== '0';
+      const showArtists = localStorage.getItem('eclipse_search_artists') !== '0';
       if (showArtists && trimmedQuery.length >= 3) {
         fetchArtistCardForSearch(trimmedQuery, searchToken, data.tracks);
       }
@@ -10936,12 +10937,12 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   let lastCountedTrackKey = '';
 
   function getCtxTipCount() {
-    const raw = parseInt(localStorage.getItem('riff_ctx_tip_v2') || '0', 10);
+    const raw = parseInt(localStorage.getItem('eclipse_ctx_tip_v2') || '0', 10);
     return Number.isFinite(raw) ? raw : 0;
   }
 
   function setCtxTipCount(val) {
-    try { localStorage.setItem('riff_ctx_tip_v2', String(val)); } catch (_) {}
+    try { localStorage.setItem('eclipse_ctx_tip_v2', String(val)); } catch (_) {}
   }
 
   function ensureTrackHoverTipEl() {
@@ -11264,9 +11265,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       const updated = state.localTracks || state.localFiles || [];
       const serialized = JSON.stringify(updated);
       localStorage.setItem('devsize_local_tracks', serialized);
-      localStorage.setItem('riff_local_tracks', serialized);
+      localStorage.setItem('eclipse_local_tracks', serialized);
       localStorage.setItem('devsize_local_files', serialized);
-      localStorage.setItem('riff_local_files', serialized);
+      localStorage.setItem('eclipse_local_files', serialized);
     } catch (_) {}
   }
   window.saveLocalTracks = saveLocalTracks;
@@ -11297,14 +11298,14 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     fetch('http://127.0.0.1:' + state.serverPort + '/api/library-remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: tracksToRemove.map(t => t?.id).filter(Boolean), clearAll: (state.localFiles || []).length === 0 }) }).catch(() => {});
 
     try {
-      const removedBlacklist = safeJson('riff_removed_local_paths', []);
+      const removedBlacklist = safeJson('eclipse_removed_local_paths', []);
       const mergedBlacklist = Array.from(new Set([...removedBlacklist, ...pathsToRemove, ...idsToRemove]));
-      localStorage.setItem('riff_removed_local_paths', JSON.stringify(mergedBlacklist));
+      localStorage.setItem('eclipse_removed_local_paths', JSON.stringify(mergedBlacklist));
       const serialized = JSON.stringify(updated);
       localStorage.setItem('devsize_local_tracks', serialized);
-      localStorage.setItem('riff_local_tracks', serialized);
+      localStorage.setItem('eclipse_local_tracks', serialized);
       localStorage.setItem('devsize_local_files', serialized);
-      localStorage.setItem('riff_local_files', serialized);
+      localStorage.setItem('eclipse_local_files', serialized);
       if (typeof saveLocalTracks === 'function') saveLocalTracks();
     } catch (_) {}
 
@@ -11997,17 +11998,17 @@ function renderClickableArtists(container, rawArtist) {
   function isArtistFollowed(artistName) {
     if (!artistName) return false;
     const lower = artistName.trim().toLowerCase();
-    const favs = safeArray('riff_favorite_artists');
+    const favs = safeArray('eclipse_favorite_artists');
     return favs.some(x => (typeof x === 'string' ? x : x.name || '').toLowerCase().trim() === lower);
   }
 
   function getFavoriteArtistsList() {
-    const favsRaw = safeArray('riff_favorite_artists');
+    const favsRaw = safeArray('eclipse_favorite_artists');
     if (!favsRaw || favsRaw.length === 0) return [];
 
-    const unfollowedList = safeArray('riff_unfollowed_artists');
+    const unfollowedList = safeArray('eclipse_unfollowed_artists');
     const unfollowed = new Set(unfollowedList.map(a => (typeof a === 'string' ? a : a.name || '').toLowerCase().trim()));
-    const metaCache = safeJson('riff_artist_meta_cache', {});
+    const metaCache = safeJson('eclipse_artist_meta_cache', {});
 
     const result = [];
     const seen = new Set();
@@ -12037,9 +12038,9 @@ function renderClickableArtists(container, rawArtist) {
     const cleanName = artistName.trim();
     const lower = cleanName.toLowerCase();
 
-    let favs = safeArray('riff_favorite_artists');
-    let unfollowed = safeArray('riff_unfollowed_artists');
-    const metaCache = safeJson('riff_artist_meta_cache', {});
+    let favs = safeArray('eclipse_favorite_artists');
+    let unfollowed = safeArray('eclipse_unfollowed_artists');
+    const metaCache = safeJson('eclipse_artist_meta_cache', {});
 
     const isFav = favs.some(x => (typeof x === 'string' ? x : x.name || '').toLowerCase().trim() === lower);
 
@@ -12063,11 +12064,11 @@ function renderClickableArtists(container, rawArtist) {
 
     if (meta && (meta.avatar || meta.fans)) {
       metaCache[lower] = { ...(metaCache[lower] || {}), ...meta };
-      localStorage.setItem('riff_artist_meta_cache', JSON.stringify(metaCache));
+      localStorage.setItem('eclipse_artist_meta_cache', JSON.stringify(metaCache));
     }
 
-    localStorage.setItem('riff_favorite_artists', JSON.stringify(favs));
-    localStorage.setItem('riff_unfollowed_artists', JSON.stringify(unfollowed));
+    localStorage.setItem('eclipse_favorite_artists', JSON.stringify(favs));
+    localStorage.setItem('eclipse_unfollowed_artists', JSON.stringify(unfollowed));
 
     const followed = !isFav;
     const btnFollow = document.getElementById('btn-artist-follow');
@@ -12108,13 +12109,13 @@ function renderClickableArtists(container, rawArtist) {
               }
             }
           }
-          const cache = safeJson('riff_artist_meta_cache', {});
+          const cache = safeJson('eclipse_artist_meta_cache', {});
           cache[lower] = {
             avatar: artistObj.avatar || '',
             fans: artistObj.fans || 0,
             plays: artistObj.plays || 0
           };
-          localStorage.setItem('riff_artist_meta_cache', JSON.stringify(cache));
+          localStorage.setItem('eclipse_artist_meta_cache', JSON.stringify(cache));
         }
       })
       .catch(() => {});
@@ -12129,7 +12130,7 @@ function renderClickableArtists(container, rawArtist) {
       card.className = 'fav-artist-card';
     }
 
-    const metaCache = safeJson('riff_artist_meta_cache', {});
+    const metaCache = safeJson('eclipse_artist_meta_cache', {});
     const lower = (artistObj.name || '').toLowerCase();
     const cached = metaCache[lower];
 
@@ -12408,13 +12409,13 @@ function renderClickableArtists(container, rawArtist) {
       }
       if (data.artist) {
         const lower = cleanName.toLowerCase();
-        const cache = safeJson('riff_artist_meta_cache', {});
+        const cache = safeJson('eclipse_artist_meta_cache', {});
         cache[lower] = {
           avatar: data.artist.avatar || data.artist.banner || (cache[lower] && cache[lower].avatar) || '',
           fans: data.artist.fans || data.artist.nb_fan || (cache[lower] && cache[lower].fans) || 0,
           plays: (cache[lower] && cache[lower].plays) || 0
         };
-        localStorage.setItem('riff_artist_meta_cache', JSON.stringify(cache));
+        localStorage.setItem('eclipse_artist_meta_cache', JSON.stringify(cache));
       }
 
       if (!bioFromCache) {
@@ -12680,7 +12681,7 @@ function renderClickableArtists(container, rawArtist) {
     setNavCount(el.favoritesCount, state.favorites.length);
   }
 
-  const TRACK_SORT_KEYS = { favorites: 'riff_favorites_sort', playlist: 'riff_playlist_sort' };
+  const TRACK_SORT_KEYS = { favorites: 'eclipse_favorites_sort', playlist: 'eclipse_playlist_sort' };
 
   function getTrackSortMode(kind) {
     const stored = localStorage.getItem(TRACK_SORT_KEYS[kind]);
@@ -12898,7 +12899,7 @@ function renderClickableArtists(container, rawArtist) {
 
     // Remove explicitly added tracks from riff_removed_local_paths blacklist
     try {
-      const removedBlacklist = safeJson('riff_removed_local_paths', []);
+      const removedBlacklist = safeJson('eclipse_removed_local_paths', []);
       if (Array.isArray(removedBlacklist) && removedBlacklist.length > 0) {
         const addedSet = new Set();
         for (const t of newTracks) {
@@ -12909,7 +12910,7 @@ function renderClickableArtists(container, rawArtist) {
           if (t.id) addedSet.add(String(t.id));
         }
         const updatedBlacklist = removedBlacklist.filter(p => !addedSet.has(String(p)));
-        localStorage.setItem('riff_removed_local_paths', JSON.stringify(updatedBlacklist));
+        localStorage.setItem('eclipse_removed_local_paths', JSON.stringify(updatedBlacklist));
       }
     } catch (_) {}
 
@@ -12930,9 +12931,9 @@ function renderClickableArtists(container, rawArtist) {
     state.localTracks = state.localFiles;
     const serialized = JSON.stringify(state.localFiles);
     try {
-      localStorage.setItem('riff_local_files', serialized);
+      localStorage.setItem('eclipse_local_files', serialized);
       localStorage.setItem('devsize_local_files', serialized);
-      localStorage.setItem('riff_local_tracks', serialized);
+      localStorage.setItem('eclipse_local_tracks', serialized);
       localStorage.setItem('devsize_local_tracks', serialized);
       if (typeof saveLocalTracks === 'function') saveLocalTracks();
     } catch (_) {}
@@ -12971,10 +12972,10 @@ function renderClickableArtists(container, rawArtist) {
 
   async function renderLocalFiles(forceFetch = false) {
     if (!Array.isArray(state.localFiles)) {
-      state.localFiles = safeArray('riff_local_files');
+      state.localFiles = safeArray('eclipse_local_files');
     }
 
-    const removedBlacklist = new Set(safeJson('riff_removed_local_paths', []).map(String));
+    const removedBlacklist = new Set(safeJson('eclipse_removed_local_paths', []).map(String));
     const shouldKeepLocal = (t) => {
       if (!t) return false;
       const p = String(t.path || t.filePath || t.url || '');
@@ -13011,9 +13012,9 @@ function renderClickableArtists(container, rawArtist) {
             });
             if (updated) {
               const serialized = JSON.stringify(state.localFiles);
-              localStorage.setItem('riff_local_files', serialized);
+              localStorage.setItem('eclipse_local_files', serialized);
               localStorage.setItem('devsize_local_files', serialized);
-              localStorage.setItem('riff_local_tracks', serialized);
+              localStorage.setItem('eclipse_local_tracks', serialized);
               localStorage.setItem('devsize_local_tracks', serialized);
               state.localTracks = state.localFiles;
               if (state.currentView === 'local') {
@@ -14074,7 +14075,7 @@ function renderClickableArtists(container, rawArtist) {
       el.discoverHome.style.display = 'contents';
     }
 
-    const isSpotify = (localStorage.getItem('riff_home_layout') || 'spotify') === 'spotify';
+    const isSpotify = (localStorage.getItem('eclipse_home_layout') || 'spotify') === 'spotify';
     document.body.classList.toggle('home-spotify', isSpotify);
     const spHome = document.getElementById('sp-home');
     const homeHero = document.getElementById('home-hero');
@@ -14121,7 +14122,7 @@ function renderClickableArtists(container, rawArtist) {
             if (el.viewDiscover) el.viewDiscover.classList.add('active');
             restoreDiscoverHomeState(false);
             if (el.navDiscover) el.navDiscover.classList.add('active');
-            const sp = (localStorage.getItem('riff_home_layout') || 'spotify') === 'spotify';
+            const sp = (localStorage.getItem('eclipse_home_layout') || 'spotify') === 'spotify';
             if (sp) renderSpotifyHome();
           } else if (viewName === 'favorites') {
             if (el.viewFavorites) el.viewFavorites.classList.add('active');
@@ -14152,7 +14153,7 @@ function renderClickableArtists(container, rawArtist) {
           } else if (viewName === 'settings') {
             if (el.viewSettings) el.viewSettings.classList.add('active');
             if (el.navSettings) el.navSettings.classList.add('active');
-            const savedCat = localStorage.getItem('riff_settings_cat');
+            const savedCat = localStorage.getItem('eclipse_settings_cat');
             showSettingsCategory((savedCat === 'overview' || !savedCat) ? 'home' : savedCat);
             updateOfflineStorageUI();
             updateMusicFolderUI();
@@ -14542,7 +14543,7 @@ function updateNavIndicator(animate) {
       if (state.isAutoRemix) {
         // Tắt Shuffle khi bật AutoMix (Mutual Exclusion)
         state.isShuffle = false;
-        localStorage.setItem('riff_shuffle', '0');
+        localStorage.setItem('eclipse_shuffle', '0');
         if (el.btnShuffle) el.btnShuffle.classList.remove('active');
         if (state.autoMixPlayedIds) state.autoMixPlayedIds.clear();
         if (state.currentTrack) {
@@ -14764,7 +14765,7 @@ function bindCoverHoldZoom(wrapEl) {
     const panel = el.rightPanel || document.getElementById('right-panel');
     if (!edge || !panel) return;
 
-    const savedWidth = localStorage.getItem('riff_right_panel_width');
+    const savedWidth = localStorage.getItem('eclipse_right_panel_width');
     if (savedWidth) {
       const w = parseInt(savedWidth, 10);
       if (w >= 260 && w <= 720) {
@@ -14814,7 +14815,7 @@ function bindCoverHoldZoom(wrapEl) {
         raf = 0;
       }
       if (pendingW >= 260 && pendingW <= 720) {
-        localStorage.setItem('riff_right_panel_width', pendingW.toString());
+        localStorage.setItem('eclipse_right_panel_width', pendingW.toString());
       }
       if (typeof resizeCanvases === 'function') resizeCanvases();
     };
@@ -14825,7 +14826,7 @@ function bindCoverHoldZoom(wrapEl) {
     edge.addEventListener('dblclick', () => {
       panel.style.width = '340px';
       panel.style.setProperty('--right-panel-width', '340px');
-      localStorage.setItem('riff_right_panel_width', '340px');
+      localStorage.setItem('eclipse_right_panel_width', '340px');
       if (typeof resizeCanvases === 'function') resizeCanvases();
     });
   })();
@@ -14870,7 +14871,7 @@ function bindCoverHoldZoom(wrapEl) {
   function setPlatform(platform, triggerSearch = true) {
     if (!['youtube', 'ytmusic', 'soundcloud'].includes(platform)) platform = 'ytmusic';
     state.platform = platform;
-    localStorage.setItem('riff_platform', platform);
+    localStorage.setItem('eclipse_platform', platform);
 
     if (el.platformYt) el.platformYt.classList.toggle('active', platform === 'youtube');
     if (el.platformYtm) el.platformYtm.classList.toggle('active', platform === 'ytmusic');
@@ -14893,7 +14894,7 @@ function bindCoverHoldZoom(wrapEl) {
     }
   }
 
-  const savedPlatform = localStorage.getItem('riff_platform') || 'ytmusic';
+  const savedPlatform = localStorage.getItem('eclipse_platform') || 'ytmusic';
   setPlatform(savedPlatform, false);
 
   if (el.platformYt) el.platformYt.addEventListener('click', () => setPlatform('youtube'));
@@ -14941,7 +14942,7 @@ function bindCoverHoldZoom(wrapEl) {
   }
 
   const btnCompactEngineBtns = document.getElementById('btn-compact-engine-btns');
-  const isCompactEngine = localStorage.getItem('riff_compact_engine_btns') === '1';
+  const isCompactEngine = localStorage.getItem('eclipse_compact_engine_btns') === '1';
   document.body.classList.toggle('compact-engine-btns', isCompactEngine);
   if (btnCompactEngineBtns) {
     btnCompactEngineBtns.classList.toggle('active', isCompactEngine);
@@ -14949,14 +14950,14 @@ function bindCoverHoldZoom(wrapEl) {
       const next = !btnCompactEngineBtns.classList.contains('active');
       btnCompactEngineBtns.classList.toggle('active', next);
       document.body.classList.toggle('compact-engine-btns', next);
-      localStorage.setItem('riff_compact_engine_btns', next ? '1' : '0');
+      localStorage.setItem('eclipse_compact_engine_btns', next ? '1' : '0');
       updateEngineWidthVar();
       setTimeout(updateEngineWidthVar, 350);
     });
   }
 
   const btnHideEngineBtns = document.getElementById('btn-hide-engine-btns');
-  const isHideEngine = localStorage.getItem('riff_hide_engine_btns') === '1';
+  const isHideEngine = localStorage.getItem('eclipse_hide_engine_btns') === '1';
   document.body.classList.toggle('hide-engine-btns', isHideEngine);
   if (btnHideEngineBtns) {
     btnHideEngineBtns.classList.toggle('active', isHideEngine);
@@ -14964,7 +14965,7 @@ function bindCoverHoldZoom(wrapEl) {
       const next = !btnHideEngineBtns.classList.contains('active');
       btnHideEngineBtns.classList.toggle('active', next);
       document.body.classList.toggle('hide-engine-btns', next);
-      localStorage.setItem('riff_hide_engine_btns', next ? '1' : '0');
+      localStorage.setItem('eclipse_hide_engine_btns', next ? '1' : '0');
       updateEngineWidthVar();
       setTimeout(updateEngineWidthVar, 350);
     });
@@ -14977,7 +14978,7 @@ function bindCoverHoldZoom(wrapEl) {
       const next = !btnPersistSound.classList.contains('active');
       btnPersistSound.classList.toggle('active', next);
       soundPersistenceEnabled = next;
-      localStorage.setItem('riff_persist_sound_settings', next ? '1' : '0');
+      localStorage.setItem('eclipse_persist_sound_settings', next ? '1' : '0');
       if (next) persistSoundSettings();
     });
   }
@@ -14998,7 +14999,7 @@ function bindCoverHoldZoom(wrapEl) {
         if (btnAutoMixEl) btnAutoMixEl.classList.remove('active');
         if (typeof showToast === 'function') showToast('Shuffle bật — Đã tắt AutoMix', 'info');
       }
-      localStorage.setItem('riff_shuffle', state.isShuffle ? '1' : '0');
+      localStorage.setItem('eclipse_shuffle', state.isShuffle ? '1' : '0');
       el.btnShuffle.classList.toggle('active', state.isShuffle);
     });
   }
@@ -15040,8 +15041,8 @@ function bindCoverHoldZoom(wrapEl) {
       } else {
         state.repeatMode = 'off';
       }
-      localStorage.setItem('riff_repeat_mode', state.repeatMode);
-      localStorage.setItem('riff_repeat', state.repeatMode === 'one' ? '1' : '0');
+      localStorage.setItem('eclipse_repeat_mode', state.repeatMode);
+      localStorage.setItem('eclipse_repeat', state.repeatMode === 'one' ? '1' : '0');
       updateRepeatUI(true);
     });
   }
@@ -15051,8 +15052,8 @@ function bindCoverHoldZoom(wrapEl) {
 
   function persistVolumeState() {
     try {
-      localStorage.setItem('riff_volume', String(state.volume));
-      localStorage.setItem('riff_muted', state.isMuted ? '1' : '0');
+      localStorage.setItem('eclipse_volume', String(state.volume));
+      localStorage.setItem('eclipse_muted', state.isMuted ? '1' : '0');
     } catch (e) {}
   }
 
@@ -15890,7 +15891,7 @@ function bindCoverHoldZoom(wrapEl) {
     el.themeModeBtns.forEach(btn => {
       btn.addEventListener('click', () => {
         state.themeMode = btn.dataset.themeMode;
-        localStorage.setItem('riff_theme_mode', state.themeMode);
+        localStorage.setItem('eclipse_theme_mode', state.themeMode);
         updateThemeFromState();
       });
     });
@@ -15900,11 +15901,11 @@ function bindCoverHoldZoom(wrapEl) {
     el.themeSwatches.forEach(sw => {
       sw.addEventListener('click', () => {
         state.themeAccent = sw.dataset.color;
-        localStorage.setItem('riff_theme_accent', state.themeAccent);
+        localStorage.setItem('eclipse_theme_accent', state.themeAccent);
         if (state.themeMode === 'auto') {
           const targetMode = currentEffectiveMode || 'dark';
           state.themeMode = targetMode;
-          localStorage.setItem('riff_theme_mode', targetMode);
+          localStorage.setItem('eclipse_theme_mode', targetMode);
         }
         updateThemeFromState();
       });
@@ -15914,11 +15915,11 @@ function bindCoverHoldZoom(wrapEl) {
   if (el.customColorInput) {
     el.customColorInput.addEventListener('input', (e) => {
       state.themeAccent = e.target.value;
-      localStorage.setItem('riff_theme_accent', state.themeAccent);
+      localStorage.setItem('eclipse_theme_accent', state.themeAccent);
       if (state.themeMode === 'auto') {
         const targetMode = currentEffectiveMode || 'dark';
         state.themeMode = targetMode;
-        localStorage.setItem('riff_theme_mode', targetMode);
+        localStorage.setItem('eclipse_theme_mode', targetMode);
       }
       updateThemeFromState();
       if (el.themeSwatches) el.themeSwatches.forEach(sw => sw.classList.remove('active'));
@@ -15935,11 +15936,11 @@ function bindCoverHoldZoom(wrapEl) {
       const h = parseInt(e.target.value, 10);
       if (el.valHue) el.valHue.textContent = h + '°';
       state.themeAccent = hslToHex(h, 55, 50);
-      localStorage.setItem('riff_theme_accent', state.themeAccent);
+      localStorage.setItem('eclipse_theme_accent', state.themeAccent);
       if (state.themeMode === 'auto') {
         const targetMode = currentEffectiveMode || 'dark';
         state.themeMode = targetMode;
-        localStorage.setItem('riff_theme_mode', targetMode);
+        localStorage.setItem('eclipse_theme_mode', targetMode);
       }
       updateThemeFromState();
       if (el.themeSwatches) el.themeSwatches.forEach(sw => sw.classList.remove('active'));
@@ -15957,7 +15958,7 @@ function bindCoverHoldZoom(wrapEl) {
       state.themeIntensity = val;
       document.body.classList.toggle('intensity-zero', state.themeIntensity < 8);
       if (el.valIntensity) el.valIntensity.textContent = val + '%';
-      localStorage.setItem('riff_theme_intensity', val.toString());
+      localStorage.setItem('eclipse_theme_intensity', val.toString());
       updateThemeFromState();
     });
   }
@@ -15971,7 +15972,7 @@ function bindCoverHoldZoom(wrapEl) {
       const val = parseInt(e.target.value, 10);
       state.themeBrightness = val;
       if (el.valBrightness) el.valBrightness.textContent = val + '%';
-      localStorage.setItem('riff_theme_brightness', val.toString());
+      localStorage.setItem('eclipse_theme_brightness', val.toString());
       updateThemeFromState();
     });
   }
@@ -15999,7 +16000,7 @@ function bindCoverHoldZoom(wrapEl) {
       const val = parseInt(e.target.value, 10);
       if (el.valFontScale) el.valFontScale.textContent = `${val}%`;
       document.documentElement.style.setProperty('--font-scale', ((val / 100) * 0.95 * 1.25).toString());
-      localStorage.setItem('riff_font_scale', val.toString());
+      localStorage.setItem('eclipse_font_scale', val.toString());
       requestAnimationFrame(updateEngineWidthVar);
     });
   }
@@ -16015,7 +16016,7 @@ function bindCoverHoldZoom(wrapEl) {
   ].forEach(({ btn, key }) => {
     if (btn) {
       btn.addEventListener('click', () => {
-        localStorage.setItem('riff_font', key);
+        localStorage.setItem('eclipse_font', key);
         applyFont(key);
       });
     }
@@ -16116,7 +16117,7 @@ function bindCoverHoldZoom(wrapEl) {
     }
   }
 
-  const savedIconPack = localStorage.getItem('riff_icon_pack') || 'material';
+  const savedIconPack = localStorage.getItem('eclipse_icon_pack') || 'material';
   applyIconPack(savedIconPack);
 
   const iconPackDropdown = document.getElementById('icon-pack-dropdown');
@@ -16132,7 +16133,7 @@ function bindCoverHoldZoom(wrapEl) {
       opt.addEventListener('click', (e) => {
         e.stopPropagation();
         const val = opt.dataset.value;
-        localStorage.setItem('riff_icon_pack', val);
+        localStorage.setItem('eclipse_icon_pack', val);
         applyIconPack(val);
         iconPackDropdown.classList.remove('open');
       });
@@ -16162,7 +16163,7 @@ function bindCoverHoldZoom(wrapEl) {
     }
   }
 
-  const savedSearchPos = localStorage.getItem('riff_search_pos') || 'middle';
+  const savedSearchPos = localStorage.getItem('eclipse_search_pos') || 'middle';
   applySearchPos(savedSearchPos);
 
   const searchPosDropdown = document.getElementById('search-pos-dropdown');
@@ -16178,7 +16179,7 @@ function bindCoverHoldZoom(wrapEl) {
       opt.addEventListener('click', (e) => {
         e.stopPropagation();
         const val = opt.dataset.value;
-        localStorage.setItem('riff_search_pos', val);
+        localStorage.setItem('eclipse_search_pos', val);
         applySearchPos(val);
         searchPosDropdown.classList.remove('open');
       });
@@ -16210,7 +16211,7 @@ function bindCoverHoldZoom(wrapEl) {
       if (el.valCornerRadius) el.valCornerRadius.textContent = val === 16 ? 'Default' : `${val}px`;
       document.documentElement.style.setProperty('--md-shape-corner-l', `${val}px`);
       document.documentElement.style.setProperty('--md-shape-corner-m', `${Math.max(0, val - 4)}px`);
-      localStorage.setItem('riff_corner_radius', val.toString());
+      localStorage.setItem('eclipse_corner_radius', val.toString());
     });
   }
 
@@ -16219,7 +16220,7 @@ function bindCoverHoldZoom(wrapEl) {
       const val = Math.max(20, Math.min(100, parseInt(e.target.value, 10) || 100));
       if (el.valUiAlpha) el.valUiAlpha.textContent = `${val}%`;
       document.documentElement.style.setProperty('--ui-alpha', `${val}%`);
-      localStorage.setItem('riff_ui_alpha', val.toString());
+      localStorage.setItem('eclipse_ui_alpha', val.toString());
       refreshCachedThemeColors();
     });
   }
@@ -16230,7 +16231,7 @@ function bindCoverHoldZoom(wrapEl) {
       if (el.sliderUiAlpha) el.sliderUiAlpha.value = val;
       if (el.valUiAlpha) el.valUiAlpha.textContent = `${val}%`;
       document.documentElement.style.setProperty('--ui-alpha', `${val}%`);
-      localStorage.setItem('riff_ui_alpha', val.toString());
+      localStorage.setItem('eclipse_ui_alpha', val.toString());
       refreshCachedThemeColors();
     });
   }
@@ -16240,7 +16241,7 @@ function bindCoverHoldZoom(wrapEl) {
       const val = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 100));
       if (el.valTextAlpha) el.valTextAlpha.textContent = `${val}%`;
       document.documentElement.style.setProperty('--text-alpha', `${val}%`);
-      localStorage.setItem('riff_text_alpha', val.toString());
+      localStorage.setItem('eclipse_text_alpha', val.toString());
       refreshCachedThemeColors();
     });
   }
@@ -16251,7 +16252,7 @@ function bindCoverHoldZoom(wrapEl) {
       if (el.sliderTextAlpha) el.sliderTextAlpha.value = val;
       if (el.valTextAlpha) el.valTextAlpha.textContent = `${val}%`;
       document.documentElement.style.setProperty('--text-alpha', `${val}%`);
-      localStorage.setItem('riff_text_alpha', val.toString());
+      localStorage.setItem('eclipse_text_alpha', val.toString());
       refreshCachedThemeColors();
     });
   }
@@ -16264,7 +16265,7 @@ function bindCoverHoldZoom(wrapEl) {
       if (window.electronAPI && window.electronAPI.pickMedia) {
         const url = await window.electronAPI.pickMedia();
         if (url) {
-          localStorage.setItem('riff_banner_media', url);
+          localStorage.setItem('eclipse_banner_media', url);
           const thumb = getTrackThumbUrl(state.currentTrack);
           updateRightPanelBanner(thumb);
           updatePlaylistDetailBanner(thumb);
@@ -16275,7 +16276,7 @@ function bindCoverHoldZoom(wrapEl) {
 
   if (btnResetBannerMedia) {
     btnResetBannerMedia.addEventListener('click', () => {
-      localStorage.removeItem('riff_banner_media');
+      localStorage.removeItem('eclipse_banner_media');
       const thumb = getTrackThumbUrl(state.currentTrack);
       updateRightPanelBanner(thumb);
       updatePlaylistDetailBanner(thumb);
@@ -16291,7 +16292,7 @@ function bindCoverHoldZoom(wrapEl) {
       const v = parseInt(e.target.value, 10);
       document.documentElement.style.setProperty('--banner-blur', `${v}px`);
       if (valBannerBlur) valBannerBlur.textContent = `${v}px`;
-      localStorage.setItem('riff_banner_blur', v.toString());
+      localStorage.setItem('eclipse_banner_blur', v.toString());
     });
   }
 
@@ -16304,7 +16305,7 @@ function bindCoverHoldZoom(wrapEl) {
       const v = parseInt(e.target.value, 10);
       document.documentElement.style.setProperty('--banner-opacity', `${v / 100}`);
       if (valBannerOpacity) valBannerOpacity.textContent = `${v}%`;
-      localStorage.setItem('riff_banner_opacity', v.toString());
+      localStorage.setItem('eclipse_banner_opacity', v.toString());
     });
   }
 
@@ -16323,7 +16324,7 @@ function bindCoverHoldZoom(wrapEl) {
         rightBanner.style.setProperty('--banner-fade-end', `${v}%`);
       }
       if (valBannerFade) valBannerFade.textContent = `${v}%`;
-      localStorage.setItem('riff_banner_fade', v.toString());
+      localStorage.setItem('eclipse_banner_fade', v.toString());
     });
   }
 
@@ -16373,7 +16374,7 @@ function bindCoverHoldZoom(wrapEl) {
       opt.addEventListener('click', (e) => {
         e.stopPropagation();
         const val = opt.dataset.value;
-        localStorage.setItem('riff_banner_fit', val);
+        localStorage.setItem('eclipse_banner_fit', val);
         applyBannerFit(val);
         if (bannerFitLabel) bannerFitLabel.textContent = opt.textContent;
         bannerFitMenu.querySelectorAll('.m3-dropdown-option').forEach(o => o.classList.remove('selected'));
@@ -16405,9 +16406,9 @@ function bindCoverHoldZoom(wrapEl) {
   if (window.electronAPI && window.electronAPI.onWindowVisibility) window.electronAPI.onWindowVisibility(() => syncBgVideoPlayback());
 
   function updateCustomBg() {
-    const bgUrl = localStorage.getItem('riff_bg_url') || '';
-    const opacityVal = parseInt(localStorage.getItem('riff_bg_opacity') ?? '100', 10);
-    const blurVal = parseInt(localStorage.getItem('riff_bg_blur') ?? '0', 10);
+    const bgUrl = localStorage.getItem('eclipse_bg_url') || '';
+    const opacityVal = parseInt(localStorage.getItem('eclipse_bg_opacity') ?? '100', 10);
+    const blurVal = parseInt(localStorage.getItem('eclipse_bg_blur') ?? '0', 10);
     const isVideo = /\.(mp4|webm)($|\?)/i.test(bgUrl);
     document.body.classList.toggle('has-video-bg', isVideo && !!bgUrl);
 
@@ -16475,17 +16476,17 @@ function bindCoverHoldZoom(wrapEl) {
 
   function currentUiAlpha() { return Number(document.getElementById('slider-ui-alpha').value); }
   function setUiAlphaViaSlider(v) { const s = document.getElementById('slider-ui-alpha'); if (!s) return; s.value = v; s.dispatchEvent(new Event('input', { bubbles: true })); }
-  function backgroundActive() { return !!localStorage.getItem('riff_bg_url') || getAdv('cover_bg', true); }
+  function backgroundActive() { return !!localStorage.getItem('eclipse_bg_url') || getAdv('cover_bg', true); }
   function onBackgroundChanged(kind, enabled) {
     if (document.body.classList.contains('light') || document.body.getAttribute('data-theme') === 'light') return;
     if (!getAdv('ui_alpha_auto', true)) return;
     if (enabled) {
       const now = currentUiAlpha();
-      if (now > 50) { localStorage.setItem('riff_ui_alpha_prev', String(now)); setUiAlphaViaSlider(50); localStorage.setItem('riff_ui_alpha_auto', '50'); }
+      if (now > 50) { localStorage.setItem('eclipse_ui_alpha_prev', String(now)); setUiAlphaViaSlider(50); localStorage.setItem('eclipse_ui_alpha_auto', '50'); }
     } else if (!backgroundActive()) {
-      const auto = localStorage.getItem('riff_ui_alpha_auto'), prev = localStorage.getItem('riff_ui_alpha_prev');
+      const auto = localStorage.getItem('eclipse_ui_alpha_auto'), prev = localStorage.getItem('eclipse_ui_alpha_prev');
       if (auto !== null && prev !== null && currentUiAlpha() === Number(auto)) setUiAlphaViaSlider(Number(prev));
-      localStorage.removeItem('riff_ui_alpha_auto'); localStorage.removeItem('riff_ui_alpha_prev');
+      localStorage.removeItem('eclipse_ui_alpha_auto'); localStorage.removeItem('eclipse_ui_alpha_prev');
     }
   }
 
@@ -16494,7 +16495,7 @@ function bindCoverHoldZoom(wrapEl) {
       if (window.electronAPI && window.electronAPI.pickMedia) {
         const url = await window.electronAPI.pickMedia();
         if (url) {
-          localStorage.setItem('riff_bg_url', url);
+          localStorage.setItem('eclipse_bg_url', url);
           updateCustomBg();
           onBackgroundChanged('custom', true);
         }
@@ -16504,7 +16505,7 @@ function bindCoverHoldZoom(wrapEl) {
 
   if (btnRemoveCustomBg) {
     btnRemoveCustomBg.addEventListener('click', () => {
-      localStorage.removeItem('riff_bg_url');
+      localStorage.removeItem('eclipse_bg_url');
       updateCustomBg();
       onBackgroundChanged('custom', false);
     });
@@ -16514,7 +16515,7 @@ function bindCoverHoldZoom(wrapEl) {
     sliderBgOpacity.addEventListener('input', (e) => {
       const v = parseInt(e.target.value, 10);
       if (valBgOpacity) valBgOpacity.textContent = `${v}%`;
-      localStorage.setItem('riff_bg_opacity', String(v));
+      localStorage.setItem('eclipse_bg_opacity', String(v));
       const customBg = document.getElementById('custom-bg');
       if (customBg) customBg.style.opacity = (v / 100).toString();
     });
@@ -16524,7 +16525,7 @@ function bindCoverHoldZoom(wrapEl) {
     sliderBgBlur.addEventListener('input', (e) => {
       const v = parseInt(e.target.value, 10);
       if (valBgBlur) valBgBlur.textContent = `${v}px`;
-      localStorage.setItem('riff_bg_blur', String(v));
+      localStorage.setItem('eclipse_bg_blur', String(v));
       const customBg = document.getElementById('custom-bg');
       if (customBg) {
         customBg.style.filter = 'none';
@@ -16546,7 +16547,7 @@ function bindCoverHoldZoom(wrapEl) {
   const sliderCoverBgBrightness = document.getElementById('slider-cover-bg-brightness');
   const valCoverBgBrightness = document.getElementById('val-cover-bg-brightness');
   if (sliderCoverBgBrightness) {
-    const savedBrightness = parseInt(localStorage.getItem('riff_cover_bg_brightness') ?? '45', 10);
+    const savedBrightness = parseInt(localStorage.getItem('eclipse_cover_bg_brightness') ?? '45', 10);
     sliderCoverBgBrightness.value = savedBrightness;
     if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${savedBrightness}%`;
     document.documentElement.style.setProperty('--cover-bg-brightness', (savedBrightness / 100).toString());
@@ -16554,7 +16555,7 @@ function bindCoverHoldZoom(wrapEl) {
     sliderCoverBgBrightness.addEventListener('input', (e) => {
       const v = parseInt(e.target.value, 10);
       if (valCoverBgBrightness) valCoverBgBrightness.textContent = `${v}%`;
-      localStorage.setItem('riff_cover_bg_brightness', String(v));
+      localStorage.setItem('eclipse_cover_bg_brightness', String(v));
       document.documentElement.style.setProperty('--cover-bg-brightness', (v / 100).toString());
     });
   }
@@ -16581,7 +16582,7 @@ function bindCoverHoldZoom(wrapEl) {
       const v = parseInt(e.target.value, 10);
       state.meshBrightness = v;
       if (valMeshBrightness) valMeshBrightness.textContent = `${v}%`;
-      localStorage.setItem('riff_mesh_brightness', v.toString());
+      localStorage.setItem('eclipse_mesh_brightness', v.toString());
       updateThemeFromState();
     });
   }
@@ -16595,7 +16596,7 @@ function bindCoverHoldZoom(wrapEl) {
 
   let meshCfg = { ...DEFAULT_MESH_CFG };
   try {
-    const raw = localStorage.getItem('riff_mesh_cfg');
+    const raw = localStorage.getItem('eclipse_mesh_cfg');
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && parsed.p1 && parsed.p2) {
@@ -16642,7 +16643,7 @@ function bindCoverHoldZoom(wrapEl) {
     if (vlBlur) vlBlur.textContent = `${cfg.blur}px`;
 
     if (save) {
-      localStorage.setItem('riff_mesh_cfg', JSON.stringify(cfg));
+      localStorage.setItem('eclipse_mesh_cfg', JSON.stringify(cfg));
     }
   }
 
@@ -16789,7 +16790,7 @@ function bindCoverHoldZoom(wrapEl) {
         e.stopPropagation();
         const val = opt.dataset.value;
         state.paletteStyle = val;
-        localStorage.setItem('riff_palette_style', state.paletteStyle);
+        localStorage.setItem('eclipse_palette_style', state.paletteStyle);
         if (paletteLabel) paletteLabel.textContent = opt.textContent;
         paletteMenu.querySelectorAll('.m3-dropdown-option').forEach(o => o.classList.remove('selected'));
         opt.classList.add('selected');
@@ -16806,7 +16807,7 @@ function bindCoverHoldZoom(wrapEl) {
   const btnToggleAdv = document.getElementById('btn-toggle-adv-section');
   const advWrapper = document.getElementById('adv-collapsible-wrapper');
   if (btnToggleAdv && advWrapper) {
-    const isAdvOpen = localStorage.getItem('riff_adv_open') === 'true';
+    const isAdvOpen = localStorage.getItem('eclipse_adv_open') === 'true';
     if (isAdvOpen) {
       btnToggleAdv.classList.add('is-open');
       advWrapper.classList.add('is-open');
@@ -16814,7 +16815,7 @@ function bindCoverHoldZoom(wrapEl) {
     btnToggleAdv.addEventListener('click', () => {
       const nowOpen = advWrapper.classList.toggle('is-open');
       btnToggleAdv.classList.toggle('is-open', nowOpen);
-      localStorage.setItem('riff_adv_open', nowOpen ? 'true' : 'false');
+      localStorage.setItem('eclipse_adv_open', nowOpen ? 'true' : 'false');
     });
   }
 
@@ -16909,21 +16910,21 @@ function bindCoverHoldZoom(wrapEl) {
 
   const btnSearchArtists = document.getElementById('btn-search-artists');
   if (btnSearchArtists) {
-    btnSearchArtists.classList.toggle('active', localStorage.getItem('riff_search_artists') !== '0');
+    btnSearchArtists.classList.toggle('active', localStorage.getItem('eclipse_search_artists') !== '0');
     btnSearchArtists.addEventListener('click', () => {
       const v = !btnSearchArtists.classList.contains('active');
       btnSearchArtists.classList.toggle('active', v);
-      localStorage.setItem('riff_search_artists', v ? '1' : '0');
+      localStorage.setItem('eclipse_search_artists', v ? '1' : '0');
     });
   }
 
   const btnSmooth = document.getElementById('btn-smooth-presets');
   if (btnSmooth) {
-    btnSmooth.classList.toggle('active', localStorage.getItem('riff_smooth_presets') !== 'false');
+    btnSmooth.classList.toggle('active', localStorage.getItem('eclipse_smooth_presets') !== 'false');
     btnSmooth.addEventListener('click', () => {
       const v = !btnSmooth.classList.contains('active');
       btnSmooth.classList.toggle('active', v);
-      localStorage.setItem('riff_smooth_presets', String(v));
+      localStorage.setItem('eclipse_smooth_presets', String(v));
     });
   }
   if (sidebarEl) {
@@ -16937,7 +16938,7 @@ function bindCoverHoldZoom(wrapEl) {
 
   const btnShowLocal = document.getElementById('btn-show-local');
   function updateShowLocalUI(animate = false) {
-    const show = localStorage.getItem('riff_show_local') !== 'false';
+    const show = localStorage.getItem('eclipse_show_local') !== 'false';
     if (el.navLocal) el.navLocal.classList.toggle('nav-collapsed', !show);
     if (btnShowLocal) btnShowLocal.classList.toggle('active', show);
     if (!show && state.currentView === 'local') {
@@ -16957,15 +16958,15 @@ function bindCoverHoldZoom(wrapEl) {
   }
   if (btnShowLocal) {
     btnShowLocal.addEventListener('click', () => {
-      const show = localStorage.getItem('riff_show_local') !== 'false';
-      localStorage.setItem('riff_show_local', (!show) ? 'true' : 'false');
+      const show = localStorage.getItem('eclipse_show_local') !== 'false';
+      localStorage.setItem('eclipse_show_local', (!show) ? 'true' : 'false');
       updateShowLocalUI(true);
       refreshStacks();
     });
   }
   updateShowLocalUI(false);
 
-  const showAlbumsSaved = localStorage.getItem('riff_show_albums') === '1';
+  const showAlbumsSaved = localStorage.getItem('eclipse_show_albums') === '1';
   document.body.classList.toggle('hide-albums-tab', !showAlbumsSaved);
   const btnShowAlbums = document.getElementById('btn-show-albums');
   if (btnShowAlbums) {
@@ -16973,7 +16974,7 @@ function bindCoverHoldZoom(wrapEl) {
     btnShowAlbums.addEventListener('click', () => {
       const next = !btnShowAlbums.classList.contains('active');
       btnShowAlbums.classList.toggle('active', next);
-      localStorage.setItem('riff_show_albums', next ? '1' : '0');
+      localStorage.setItem('eclipse_show_albums', next ? '1' : '0');
       document.body.classList.toggle('hide-albums-tab', !next);
       if (!next && state.currentView === 'albums') {
         switchView('discover');
@@ -16987,14 +16988,14 @@ function bindCoverHoldZoom(wrapEl) {
     document.body.classList.toggle('no-hand-cursor', !!on);
   }
   const btnNoHandCursor = document.getElementById('btn-no-hand-cursor');
-  const noHand = localStorage.getItem('riff_no_hand_cursor') !== '0';
+  const noHand = localStorage.getItem('eclipse_no_hand_cursor') !== '0';
   applyNoHandCursor(noHand);
   if (btnNoHandCursor) {
     btnNoHandCursor.classList.toggle('active', noHand);
     btnNoHandCursor.addEventListener('click', () => {
       const next = !btnNoHandCursor.classList.contains('active');
       btnNoHandCursor.classList.toggle('active', next);
-      localStorage.setItem('riff_no_hand_cursor', next ? '1' : '0');
+      localStorage.setItem('eclipse_no_hand_cursor', next ? '1' : '0');
       applyNoHandCursor(next);
     });
   }
@@ -17003,14 +17004,14 @@ function bindCoverHoldZoom(wrapEl) {
     document.body.classList.toggle('highlight-buttons', !!on);
   }
   const btnHighlightButtons = document.getElementById('btn-highlight-buttons');
-  const initialHighlightButtons = localStorage.getItem('riff_highlight_buttons') !== '0';
+  const initialHighlightButtons = localStorage.getItem('eclipse_highlight_buttons') !== '0';
   applyHighlightButtons(initialHighlightButtons);
   if (btnHighlightButtons) {
     btnHighlightButtons.classList.toggle('active', initialHighlightButtons);
     btnHighlightButtons.addEventListener('click', () => {
       const next = !btnHighlightButtons.classList.contains('active');
       btnHighlightButtons.classList.toggle('active', next);
-      localStorage.setItem('riff_highlight_buttons', next ? '1' : '0');
+      localStorage.setItem('eclipse_highlight_buttons', next ? '1' : '0');
       applyHighlightButtons(next);
     });
   }
@@ -17041,8 +17042,8 @@ function bindCoverHoldZoom(wrapEl) {
     return '../../assets/' + val.replace(/^.*assets\//, '');
   }
   function applyHomeAppIcon(val) {
-    const chosen = val || localStorage.getItem('riff_app_icon') || '02-editor.svg';
-    localStorage.setItem('riff_app_icon', chosen);
+    const chosen = val || localStorage.getItem('eclipse_app_icon') || '02-editor.svg';
+    localStorage.setItem('eclipse_app_icon', chosen);
     const homeImg = document.getElementById('nav-home-app-icon');
     if (homeImg) homeImg.src = resolveAppIconSrc(chosen);
     const grid = document.getElementById('app-icon-picker-grid');
@@ -17054,7 +17055,7 @@ function bindCoverHoldZoom(wrapEl) {
   }
   function initAppIconPicker() {
     const grid = document.getElementById('app-icon-picker-grid');
-    const saved = localStorage.getItem('riff_app_icon') || '02-editor.svg';
+    const saved = localStorage.getItem('eclipse_app_icon') || '02-editor.svg';
     if (grid) {
       grid.innerHTML = '';
       RIFF_APP_ICONS.forEach(item => {
@@ -17132,8 +17133,8 @@ function bindCoverHoldZoom(wrapEl) {
 
   const btnWavyProgress = document.getElementById('btn-wavy-progress');
   function updateWavyProgressUI() {
-    const isWavy = localStorage.getItem('riff_wavy_progress') !== 'false';
-    const isPerf = localStorage.getItem('riff_perf_mode') === '1' || localStorage.getItem('riff_perf_mode') === 'true';
+    const isWavy = localStorage.getItem('eclipse_wavy_progress') !== 'false';
+    const isPerf = localStorage.getItem('eclipse_perf_mode') === '1' || localStorage.getItem('eclipse_perf_mode') === 'true';
     document.body.classList.toggle('no-wavy', isPerf ? true : !isWavy);
     if (btnWavyProgress) {
       btnWavyProgress.classList.toggle('active', isWavy);
@@ -17142,7 +17143,7 @@ function bindCoverHoldZoom(wrapEl) {
 
   const btnProgressKnob = document.getElementById('btn-progress-knob');
   function updateProgressKnobUI() {
-    const isEnabled = localStorage.getItem('riff_progress_knob') === 'true';
+    const isEnabled = localStorage.getItem('eclipse_progress_knob') === 'true';
     document.body.classList.toggle('no-knob', !isEnabled);
     if (btnProgressKnob) {
       btnProgressKnob.classList.toggle('active', isEnabled);
@@ -17151,7 +17152,7 @@ function bindCoverHoldZoom(wrapEl) {
 
   const btnProgressBg = document.getElementById('btn-progress-bg');
   function updateProgressBgUI() {
-    const isEnabled = localStorage.getItem('riff_progress_bg') === 'true';
+    const isEnabled = localStorage.getItem('eclipse_progress_bg') === 'true';
     document.body.classList.toggle('no-progress-bg', !isEnabled);
     if (btnProgressBg) {
       btnProgressBg.classList.toggle('active', isEnabled);
@@ -17200,8 +17201,8 @@ function bindCoverHoldZoom(wrapEl) {
   }
 
   function m3cEnabled() {
-    const barOn = localStorage.getItem('riff_m3_cover') !== '0';
-    const heroOn = localStorage.getItem('riff_m3_hero_covers') === '1';
+    const barOn = localStorage.getItem('eclipse_m3_cover') !== '0';
+    const heroOn = localStorage.getItem('eclipse_m3_hero_covers') === '1';
     return (barOn || heroOn) && !document.body.classList.contains('perf');
   }
   function m3cInit() {
@@ -17398,13 +17399,13 @@ function bindCoverHoldZoom(wrapEl) {
 
   function applyPerfMode(on) {
     document.body.classList.toggle('perf', !!on);
-    const isWavy = localStorage.getItem('riff_wavy_progress') !== 'false';
+    const isWavy = localStorage.getItem('eclipse_wavy_progress') !== 'false';
     document.body.classList.toggle('no-wavy', on ? true : !isWavy);
     syncBgVideoPlayback();
     applyM3Cover();
   }
   const btnBarWave = document.getElementById('btn-bar-wave');
-  const barWaveOn = localStorage.getItem('riff_bar_wave') !== '0';
+  const barWaveOn = localStorage.getItem('eclipse_bar_wave') !== '0';
   function applyBarWave(on) {
     const vc = document.getElementById('visualizer-container');
     if (vc) {
@@ -17439,13 +17440,13 @@ function bindCoverHoldZoom(wrapEl) {
     btnBarWave.addEventListener('click', () => {
       const next = !btnBarWave.classList.contains('active');
       btnBarWave.classList.toggle('active', next);
-      localStorage.setItem('riff_bar_wave', next ? '1' : '0');
+      localStorage.setItem('eclipse_bar_wave', next ? '1' : '0');
       applyBarWave(next);
     });
   }
 
   const barVizPosGroup = document.getElementById('bar-viz-pos-group');
-  const initialBarVizPos = localStorage.getItem('riff_bar_viz_pos') || 'behind';
+  const initialBarVizPos = localStorage.getItem('eclipse_bar_viz_pos') || 'behind';
   function applyBarVizPos(pos) {
     document.body.classList.toggle('bar-viz-behind', pos === 'behind');
     if (barVizPosGroup) {
@@ -17460,7 +17461,7 @@ function bindCoverHoldZoom(wrapEl) {
     barVizPosGroup.querySelectorAll('.theme-mode-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const pos = btn.getAttribute('data-bar-viz-pos') || 'behind';
-        localStorage.setItem('riff_bar_viz_pos', pos);
+        localStorage.setItem('eclipse_bar_viz_pos', pos);
         applyBarVizPos(pos);
       });
     });
@@ -17468,7 +17469,7 @@ function bindCoverHoldZoom(wrapEl) {
 
   const sliderBarVizOpacity = document.getElementById('slider-bar-viz-opacity');
   const valBarVizOpacity = document.getElementById('val-bar-viz-opacity');
-  const initialBarVizOpacity = localStorage.getItem('riff_bar_viz_opacity') || '22';
+  const initialBarVizOpacity = localStorage.getItem('eclipse_bar_viz_opacity') || '22';
   function applyBarVizOpacity(v) {
     const num = parseInt(v, 10);
     document.documentElement.style.setProperty('--bar-viz-opacity', (num / 100).toString());
@@ -17479,7 +17480,7 @@ function bindCoverHoldZoom(wrapEl) {
   if (sliderBarVizOpacity) {
     const onOpInput = (e) => {
       const v = e.target.value;
-      localStorage.setItem('riff_bar_viz_opacity', v);
+      localStorage.setItem('eclipse_bar_viz_opacity', v);
       applyBarVizOpacity(v);
     };
     sliderBarVizOpacity.addEventListener('input', onOpInput);
@@ -17489,7 +17490,7 @@ function bindCoverHoldZoom(wrapEl) {
   const btnVizConnected = document.getElementById('btn-viz-connected');
   const btnTvkVizConnected = document.getElementById('btn-tvk-viz-connected');
   function syncVizConnectedUI() {
-    const isConn = localStorage.getItem('riff_viz_connected') === '1';
+    const isConn = localStorage.getItem('eclipse_viz_connected') === '1';
     if (btnVizConnected) btnVizConnected.classList.toggle('active', isConn);
     if (btnTvkVizConnected) btnTvkVizConnected.classList.toggle('active', isConn);
     document.body.classList.toggle('viz-connected', isConn);
@@ -17499,9 +17500,9 @@ function bindCoverHoldZoom(wrapEl) {
     }
   }
   function toggleVizConnected() {
-    const isConn = localStorage.getItem('riff_viz_connected') === '1';
+    const isConn = localStorage.getItem('eclipse_viz_connected') === '1';
     const next = !isConn;
-    localStorage.setItem('riff_viz_connected', next ? '1' : '0');
+    localStorage.setItem('eclipse_viz_connected', next ? '1' : '0');
     syncVizConnectedUI();
     const bottomViz = document.getElementById('bottom-visualizer') || document.getElementById('playbar-bg-visualizer');
     if (bottomViz) {
@@ -17518,20 +17519,20 @@ function bindCoverHoldZoom(wrapEl) {
 
   const toggleM3Cover = document.getElementById('toggle-m3-cover');
   if (toggleM3Cover) {
-    const saved = localStorage.getItem('riff_m3_cover');
+    const saved = localStorage.getItem('eclipse_m3_cover');
     const isM3On = saved !== '0';
     toggleM3Cover.classList.toggle('active', isM3On);
     toggleM3Cover.addEventListener('click', () => {
       const next = !toggleM3Cover.classList.contains('active');
       toggleM3Cover.classList.toggle('active', next);
-      localStorage.setItem('riff_m3_cover', next ? '1' : '0');
+      localStorage.setItem('eclipse_m3_cover', next ? '1' : '0');
       applyM3Cover();
     });
   }
 
   const toggleM3Hero = document.getElementById('toggle-m3-hero-covers');
   if (toggleM3Hero) {
-    const isHeroOn = localStorage.getItem('riff_m3_hero_covers') === '1';
+    const isHeroOn = localStorage.getItem('eclipse_m3_hero_covers') === '1';
     toggleM3Hero.classList.toggle('active', isHeroOn);
     document.body.classList.toggle('m3-hero-covers-on', isHeroOn);
     toggleM3Hero.onclick = (e) => {
@@ -17540,34 +17541,34 @@ function bindCoverHoldZoom(wrapEl) {
       const next = !toggleM3Hero.classList.contains('active');
       toggleM3Hero.classList.toggle('active', next);
       document.body.classList.toggle('m3-hero-covers-on', next);
-      localStorage.setItem('riff_m3_hero_covers', next ? '1' : '0');
+      localStorage.setItem('eclipse_m3_hero_covers', next ? '1' : '0');
       if (typeof m3cStart === 'function') m3cStart();
     };
   }
 
   const toggleExplicitTag = document.getElementById('toggle-explicit-tag');
-  const isExplicitOn = localStorage.getItem('riff_show_explicit') !== '0';
+  const isExplicitOn = localStorage.getItem('eclipse_show_explicit') !== '0';
   document.body.classList.toggle('hide-explicit-badges', !isExplicitOn);
   if (toggleExplicitTag) {
     toggleExplicitTag.classList.toggle('active', isExplicitOn);
     toggleExplicitTag.addEventListener('click', () => {
       const next = !toggleExplicitTag.classList.contains('active');
       toggleExplicitTag.classList.toggle('active', next);
-      localStorage.setItem('riff_show_explicit', next ? '1' : '0');
+      localStorage.setItem('eclipse_show_explicit', next ? '1' : '0');
       document.body.classList.toggle('hide-explicit-badges', !next);
     });
   }
 
-  updateTvkVisualizerSetting(localStorage.getItem('riff_tvk_visualizer') !== 'false');
-  updateTvkVisualizerLyricsSetting(localStorage.getItem('riff_tvk_visualizer_lyrics') !== 'false');
-  updateTvkVisualizerOpacity(parseInt(localStorage.getItem('riff_tvk_visualizer_opacity') || '85', 10));
+  updateTvkVisualizerSetting(localStorage.getItem('eclipse_tvk_visualizer') !== 'false');
+  updateTvkVisualizerLyricsSetting(localStorage.getItem('eclipse_tvk_visualizer_lyrics') !== 'false');
+  updateTvkVisualizerOpacity(parseInt(localStorage.getItem('eclipse_tvk_visualizer_opacity') || '85', 10));
 
   const btnPerfMode = document.getElementById('btn-perf-mode');
-  const initialPerfMode = localStorage.getItem('riff_perf_mode') === '1';
+  const initialPerfMode = localStorage.getItem('eclipse_perf_mode') === '1';
   applyPerfMode(initialPerfMode);
   document.body.classList.toggle('perf', initialPerfMode);
   if (typeof applyReducedMotionSetting === 'function') applyReducedMotionSetting();
-  localStorage.setItem('riff_perf_mode', initialPerfMode ? '1' : '0');
+  localStorage.setItem('eclipse_perf_mode', initialPerfMode ? '1' : '0');
   if (btnPerfMode) btnPerfMode.classList.toggle('active', initialPerfMode);
   applyLyricsEase();
   updateNavIndicator(true);
@@ -17575,16 +17576,16 @@ function bindCoverHoldZoom(wrapEl) {
     btnPerfMode.addEventListener('click', () => {
       const next = !btnPerfMode.classList.contains('active');
       btnPerfMode.classList.toggle('active', next);
-      localStorage.setItem('riff_perf_mode', next ? '1' : '0');
+      localStorage.setItem('eclipse_perf_mode', next ? '1' : '0');
       applyPerfMode(next);
     });
   }
 
   if (btnWavyProgress) {
     btnWavyProgress.addEventListener('click', () => {
-      const isWavy = localStorage.getItem('riff_wavy_progress') !== 'false';
+      const isWavy = localStorage.getItem('eclipse_wavy_progress') !== 'false';
       const next = !isWavy;
-      localStorage.setItem('riff_wavy_progress', next ? 'true' : 'false');
+      localStorage.setItem('eclipse_wavy_progress', next ? 'true' : 'false');
       updateWavyProgressUI();
       hasDrawnPausedFrame = false;
     });
@@ -17592,9 +17593,9 @@ function bindCoverHoldZoom(wrapEl) {
 
   if (btnProgressKnob) {
     btnProgressKnob.addEventListener('click', () => {
-      const isKnob = localStorage.getItem('riff_progress_knob') === 'true';
+      const isKnob = localStorage.getItem('eclipse_progress_knob') === 'true';
       const next = !isKnob;
-      localStorage.setItem('riff_progress_knob', next ? 'true' : 'false');
+      localStorage.setItem('eclipse_progress_knob', next ? 'true' : 'false');
       updateProgressKnobUI();
       hasDrawnPausedFrame = false;
       if (!animationFrameId && typeof startVisualizers === 'function') startVisualizers();
@@ -17603,9 +17604,9 @@ function bindCoverHoldZoom(wrapEl) {
 
   if (btnProgressBg) {
     btnProgressBg.addEventListener('click', () => {
-      const isBg = localStorage.getItem('riff_progress_bg') === 'true';
+      const isBg = localStorage.getItem('eclipse_progress_bg') === 'true';
       const next = !isBg;
-      localStorage.setItem('riff_progress_bg', next ? 'true' : 'false');
+      localStorage.setItem('eclipse_progress_bg', next ? 'true' : 'false');
       updateProgressBgUI();
       hasDrawnPausedFrame = false;
       if (!animationFrameId && typeof startVisualizers === 'function') startVisualizers();
@@ -17617,7 +17618,7 @@ function bindCoverHoldZoom(wrapEl) {
   updateProgressBgUI();
 
   const btnTrayOnClose = document.getElementById('btn-tray-on-close');
-  const storedTrayOnClose = localStorage.getItem('riff_tray_on_close');
+  const storedTrayOnClose = localStorage.getItem('eclipse_tray_on_close');
   const savedTrayOnClose = storedTrayOnClose !== null
     ? storedTrayOnClose === 'true'
     : /Windows|Mac/.test(navigator.userAgent);
@@ -17626,7 +17627,7 @@ function bindCoverHoldZoom(wrapEl) {
     btnTrayOnClose.addEventListener('click', () => {
       const next = !btnTrayOnClose.classList.contains('active');
       btnTrayOnClose.classList.toggle('active', next);
-      localStorage.setItem('riff_tray_on_close', next ? 'true' : 'false');
+      localStorage.setItem('eclipse_tray_on_close', next ? 'true' : 'false');
       if (window.electronAPI && window.electronAPI.setTrayOnClose) {
         window.electronAPI.setTrayOnClose(next);
       }
@@ -17678,7 +17679,7 @@ function bindCoverHoldZoom(wrapEl) {
 
     function getProxyList() {
       try {
-        const raw = localStorage.getItem('riff_proxy_list');
+        const raw = localStorage.getItem('eclipse_proxy_list');
         const parsed = JSON.parse(raw);
         return Array.isArray(parsed) ? parsed : [];
       } catch (_) {
@@ -17687,17 +17688,17 @@ function bindCoverHoldZoom(wrapEl) {
     }
 
     function saveProxyList(list) {
-      localStorage.setItem('riff_proxy_list', JSON.stringify(list));
+      localStorage.setItem('eclipse_proxy_list', JSON.stringify(list));
     }
 
     function isProxyEnabled() {
-      return localStorage.getItem('riff_proxy_enabled') === 'true';
+      return localStorage.getItem('eclipse_proxy_enabled') === 'true';
     }
 
     function getActiveProxy() {
       const list = getProxyList();
       if (!list.length) return null;
-      const activeId = localStorage.getItem('riff_proxy_active_id');
+      const activeId = localStorage.getItem('eclipse_proxy_active_id');
       return list.find(p => p.id === activeId) || list[0];
     }
 
@@ -17789,12 +17790,12 @@ function bindCoverHoldZoom(wrapEl) {
           let currentList = getProxyList();
           currentList = currentList.filter(p => p.id !== item.id);
           saveProxyList(currentList);
-          if (localStorage.getItem('riff_proxy_active_id') === item.id) {
+          if (localStorage.getItem('eclipse_proxy_active_id') === item.id) {
             const nextActive = currentList[0];
             if (nextActive) {
-              localStorage.setItem('riff_proxy_active_id', nextActive.id);
+              localStorage.setItem('eclipse_proxy_active_id', nextActive.id);
             } else {
-              localStorage.removeItem('riff_proxy_active_id');
+              localStorage.removeItem('eclipse_proxy_active_id');
             }
           }
           renderProxyList();
@@ -17807,7 +17808,7 @@ function bindCoverHoldZoom(wrapEl) {
         row.appendChild(right);
 
         row.addEventListener('click', () => {
-          localStorage.setItem('riff_proxy_active_id', item.id);
+          localStorage.setItem('eclipse_proxy_active_id', item.id);
           renderProxyList();
           syncActiveProxyToBackend();
         });
@@ -17820,7 +17821,7 @@ function bindCoverHoldZoom(wrapEl) {
       btnProxyEnable.classList.toggle('active', isProxyEnabled());
       btnProxyEnable.addEventListener('click', () => {
         const next = !isProxyEnabled();
-        localStorage.setItem('riff_proxy_enabled', next ? 'true' : 'false');
+        localStorage.setItem('eclipse_proxy_enabled', next ? 'true' : 'false');
         btnProxyEnable.classList.toggle('active', next);
         syncActiveProxyToBackend();
       });
@@ -17842,8 +17843,8 @@ function bindCoverHoldZoom(wrapEl) {
       };
       list.push(newProxy);
       saveProxyList(list);
-      localStorage.setItem('riff_proxy_active_id', newProxy.id);
-      localStorage.setItem('riff_proxy_enabled', 'true');
+      localStorage.setItem('eclipse_proxy_active_id', newProxy.id);
+      localStorage.setItem('eclipse_proxy_enabled', 'true');
       if (btnProxyEnable) btnProxyEnable.classList.add('active');
       proxyInputUrl.value = '';
       renderProxyList();
@@ -17913,7 +17914,7 @@ function bindCoverHoldZoom(wrapEl) {
     if (!drop || !trigger || !menu) return;
 
     const qualityNames = { low: 'Low', medium: 'Medium', high: 'High', max: 'Max' };
-    const saved = localStorage.getItem('riff_audio_quality') || 'medium';
+    const saved = localStorage.getItem('eclipse_audio_quality') || 'medium';
     const active = qualityNames[saved] ? saved : 'medium';
 
     const applySelection = (val) => {
@@ -17935,7 +17936,7 @@ function bindCoverHoldZoom(wrapEl) {
         e.stopPropagation();
         const val = opt.dataset.val;
         if (val) {
-          localStorage.setItem('riff_audio_quality', val);
+          localStorage.setItem('eclipse_audio_quality', val);
           applySelection(val);
         }
         drop.classList.remove('open');
@@ -17953,7 +17954,7 @@ function bindCoverHoldZoom(wrapEl) {
     document.querySelectorAll('#view-settings .settings-section').forEach(s => s.classList.toggle('cat-hidden', s.dataset.cat !== cat));
     document.querySelectorAll('#settings-nav .settings-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.cat === cat));
     const pane = document.querySelector('#view-settings .settings-pane'); if (pane) pane.scrollTop = 0;
-    try { localStorage.setItem('riff_settings_cat', cat); } catch (e) {}
+    try { localStorage.setItem('eclipse_settings_cat', cat); } catch (e) {}
     if (cat === 'custom-themes' && typeof renderThemeCards === 'function') renderThemeCards();
     if (cat === 'plugins' && typeof reloadPluginsList === 'function') reloadPluginsList();
     refreshStacks();
@@ -18068,7 +18069,7 @@ function bindCoverHoldZoom(wrapEl) {
       s.textContent = t.css;
       document.head.appendChild(s);
     });
-    const userCss = localStorage.getItem('riff_custom_css') || '';
+    const userCss = localStorage.getItem('eclipse_custom_css') || '';
     if (userCss.trim()) {
       const s = document.createElement('style');
       s.dataset.riffCustom = 'user';
@@ -18079,9 +18080,9 @@ function bindCoverHoldZoom(wrapEl) {
   }
 
   function resetCustomStyling() {
-    const userCss = localStorage.getItem('riff_custom_css') || '';
-    if (userCss.trim()) localStorage.setItem('riff_custom_css_backup', userCss);
-    localStorage.removeItem('riff_custom_css');
+    const userCss = localStorage.getItem('eclipse_custom_css') || '';
+    if (userCss.trim()) localStorage.setItem('eclipse_custom_css_backup', userCss);
+    localStorage.removeItem('eclipse_custom_css');
     customThemes.forEach((t) => { t.enabled = false; });
     if (window.electronAPI && window.electronAPI.disableAllThemes) window.electronAPI.disableAllThemes();
     if (typeof cssEditorInstance !== 'undefined' && cssEditorInstance) cssEditorInstance.setValue('');
@@ -18204,7 +18205,7 @@ function bindCoverHoldZoom(wrapEl) {
     showToast(`Plugin ${file} failed: ${e && e.message ? e.message : e}`, 'error');
   }
   function createPluginApi(p) {
-    const prefix = `riff_plugin_${p.file}_`;
+    const prefix = `eclipse_plugin_${p.file}_`;
     return {
       plugin: { file: p.file, name: p.name, author: p.author, version: p.version },
       on(event, cb) {
@@ -18413,7 +18414,7 @@ function bindCoverHoldZoom(wrapEl) {
     defineRiffMonacoTheme(monaco);
     if (cssEditorInstance) { cssEditorInstance.focus(); return; }
     cssEditorInstance = monaco.editor.create(document.getElementById('css-editor-host'), {
-      value: localStorage.getItem('riff_custom_css') || '/* Your CSS goes here. Example:\n.btn-pill-primary { border-radius: 8px; }\n*/\n',
+      value: localStorage.getItem('eclipse_custom_css') || '/* Your CSS goes here. Example:\n.btn-pill-primary { border-radius: 8px; }\n*/\n',
       language: 'css',
       theme: 'riff',
       automaticLayout: true,
@@ -18435,7 +18436,7 @@ function bindCoverHoldZoom(wrapEl) {
     cssEditorInstance.onDidChangeModelContent(() => {
       clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
-        localStorage.setItem('riff_custom_css', cssEditorInstance.getValue());
+        localStorage.setItem('eclipse_custom_css', cssEditorInstance.getValue());
         applyCustomStyles();
       }, 350);
     });
@@ -18448,17 +18449,17 @@ function bindCoverHoldZoom(wrapEl) {
   if (btnCssClose) btnCssClose.addEventListener('click', () => document.getElementById('css-editor').classList.add('hidden'));
   const btnCssClear = document.getElementById('btn-css-clear');
   if (btnCssClear) btnCssClear.addEventListener('click', () => {
-    const current = localStorage.getItem('riff_custom_css') || '';
-    if (current.trim()) localStorage.setItem('riff_custom_css_backup', current);
+    const current = localStorage.getItem('eclipse_custom_css') || '';
+    if (current.trim()) localStorage.setItem('eclipse_custom_css_backup', current);
     if (cssEditorInstance) cssEditorInstance.setValue('');
-    else { localStorage.removeItem('riff_custom_css'); applyCustomStyles(); }
+    else { localStorage.removeItem('eclipse_custom_css'); applyCustomStyles(); }
   });
   const btnCssRestore = document.getElementById('btn-css-restore');
   if (btnCssRestore) btnCssRestore.addEventListener('click', () => {
-    const backup = localStorage.getItem('riff_custom_css_backup');
+    const backup = localStorage.getItem('eclipse_custom_css_backup');
     if (!backup) { showToast('Nothing to restore', 'info'); return; }
     if (cssEditorInstance) cssEditorInstance.setValue(backup);
-    else { localStorage.setItem('riff_custom_css', backup); applyCustomStyles(); }
+    else { localStorage.setItem('eclipse_custom_css', backup); applyCustomStyles(); }
   });
 
   function addSliderTicks(input) {
@@ -18514,13 +18515,13 @@ function bindCoverHoldZoom(wrapEl) {
     settingWinMediaKeys.style.display = isWindows ? '' : 'none';
   }
 
-  const savedWinMediaKeys = localStorage.getItem('riff_global_media_keys') !== 'false';
+  const savedWinMediaKeys = localStorage.getItem('eclipse_global_media_keys') !== 'false';
   if (btnWinMediaKeys) {
     btnWinMediaKeys.classList.toggle('active', savedWinMediaKeys);
     btnWinMediaKeys.addEventListener('click', () => {
       const next = !btnWinMediaKeys.classList.contains('active');
       btnWinMediaKeys.classList.toggle('active', next);
-      localStorage.setItem('riff_global_media_keys', next ? 'true' : 'false');
+      localStorage.setItem('eclipse_global_media_keys', next ? 'true' : 'false');
       if (window.electronAPI && window.electronAPI.setMediaKeys) {
         window.electronAPI.setMediaKeys(next);
       }
@@ -18560,7 +18561,7 @@ function bindCoverHoldZoom(wrapEl) {
       setSwitch(document.getElementById('btn-no-hand-cursor'), d.toggles.riff_no_hand_cursor);
       setSwitch(document.getElementById('btn-perf-mode'), d.toggles.riff_perf_mode);
       if (d.toggles.riff_custom_bg_enabled && d.background) {
-        localStorage.setItem('riff_bg_url', d.background);
+        localStorage.setItem('eclipse_bg_url', d.background);
         if (typeof updateCustomBg === 'function') updateCustomBg();
         if (typeof onBackgroundChanged === 'function') onBackgroundChanged('custom', true);
       }
@@ -18583,7 +18584,7 @@ function bindCoverHoldZoom(wrapEl) {
   function checkCompactLayout() {
     const isMini = window.innerWidth <= 520;
     document.body.classList.toggle('mini', isMini);
-    const savedLyricsOn = localStorage.getItem('riff_mini_lyrics') === '1';
+    const savedLyricsOn = localStorage.getItem('eclipse_mini_lyrics') === '1';
     document.body.classList.toggle('mini-lyrics-on', isMini && savedLyricsOn);
     const btn = document.getElementById('btn-mini-lyrics');
     if (btn) btn.classList.toggle('active', isMini && savedLyricsOn);
@@ -18599,7 +18600,7 @@ function bindCoverHoldZoom(wrapEl) {
     if (window.electronAPI && window.electronAPI.toggleMiniWindow) {
       const isNowMini = await window.electronAPI.toggleMiniWindow();
       if (isNowMini) {
-        const savedLyricsOn = localStorage.getItem('riff_mini_lyrics') === '1';
+        const savedLyricsOn = localStorage.getItem('eclipse_mini_lyrics') === '1';
         if (savedLyricsOn && window.electronAPI.setMiniLyrics) {
           await window.electronAPI.setMiniLyrics(true);
         }
@@ -18622,7 +18623,7 @@ function bindCoverHoldZoom(wrapEl) {
   if (btnMiniLyrics) {
     btnMiniLyrics.addEventListener('click', async () => {
       const nextOn = !document.body.classList.contains('mini-lyrics-on');
-      localStorage.setItem('riff_mini_lyrics', nextOn ? '1' : '0');
+      localStorage.setItem('eclipse_mini_lyrics', nextOn ? '1' : '0');
       document.body.classList.toggle('mini-lyrics-on', nextOn);
       btnMiniLyrics.classList.toggle('active', nextOn);
       if (window.electronAPI && window.electronAPI.setMiniLyrics) {
@@ -18636,12 +18637,12 @@ function bindCoverHoldZoom(wrapEl) {
   }
 
   let knownAudioOutputIds = new Set();
-  let currentAudioOutputDeviceId = localStorage.getItem('riff_audio_output_device') || 'default';
+  let currentAudioOutputDeviceId = localStorage.getItem('eclipse_audio_output_device') || 'default';
 
   async function applyAudioOutputDevice(deviceId) {
     currentAudioOutputDeviceId = deviceId || 'default';
     try {
-      localStorage.setItem('riff_audio_output_device', currentAudioOutputDeviceId);
+      localStorage.setItem('eclipse_audio_output_device', currentAudioOutputDeviceId);
     } catch (_) {}
 
     const targetId = (deviceId === 'default' || !deviceId) ? '' : deviceId;
@@ -18785,20 +18786,20 @@ function bindCoverHoldZoom(wrapEl) {
   const sliderCrossfade = document.getElementById('slider-crossfade');
   const valCrossfade = document.getElementById('val-crossfade');
   if (sliderCrossfade) {
-    const cf = parseInt(localStorage.getItem('riff_crossfade') || '0', 10);
+    const cf = parseInt(localStorage.getItem('eclipse_crossfade') || '0', 10);
     sliderCrossfade.value = cf;
     if (valCrossfade) valCrossfade.textContent = cf > 0 ? `${cf}s` : 'Off';
     sliderCrossfade.addEventListener('input', (e) => {
       const v = parseInt(e.target.value, 10);
       if (valCrossfade) valCrossfade.textContent = v > 0 ? `${v}s` : 'Off';
-      localStorage.setItem('riff_crossfade', String(v));
+      localStorage.setItem('eclipse_crossfade', String(v));
     });
   }
 
   if (el.btnTrEnabled) {
     el.btnTrEnabled.addEventListener('click', () => {
       state.trEnabled = !state.trEnabled;
-      localStorage.setItem('riff_tr_enabled', String(state.trEnabled));
+      localStorage.setItem('eclipse_tr_enabled', String(state.trEnabled));
       updateLyricsTranslationUI();
       if (!state.trEnabled) {
         state.trActive = false;
@@ -18840,7 +18841,7 @@ function bindCoverHoldZoom(wrapEl) {
           e.stopPropagation();
           state.trLang = item.code;
           state.lyricsTranslationLang = item.code;
-          localStorage.setItem('riff_tr_lang', state.trLang);
+          localStorage.setItem('eclipse_tr_lang', state.trLang);
           if (trLangLabel) trLangLabel.textContent = text;
           trLangMenu.querySelectorAll('.m3-dropdown-option').forEach(o => o.classList.remove('selected'));
           btn.classList.add('selected');
@@ -18914,7 +18915,7 @@ function bindCoverHoldZoom(wrapEl) {
   const uiLangSearch = document.getElementById('ui-lang-search');
 
   if (uiLangDropdown && uiLangTrigger && uiLangMenu) {
-    const curLang = localStorage.getItem('riff_ui_lang') || 'en';
+    const curLang = localStorage.getItem('eclipse_ui_lang') || 'en';
     const foundCur = TRANSLATION_LANGUAGES.find(l => l.code === curLang);
     if (foundCur && uiLangLabel) {
       uiLangLabel.textContent = `${foundCur.flag} ${foundCur.name} (${foundCur.code})`;
@@ -18936,9 +18937,9 @@ function bindCoverHoldZoom(wrapEl) {
         btn.addEventListener('click', async (e) => {
           e.stopPropagation();
           const targetCode = item.code;
-          const prevLang = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
+          const prevLang = localStorage.getItem('eclipse_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
           
-          localStorage.setItem('riff_ui_lang', targetCode);
+          localStorage.setItem('eclipse_ui_lang', targetCode);
           localStorage.setItem('eclipse_ui_lang', targetCode);
           if (uiLangLabel) uiLangLabel.textContent = text;
           uiLangMenu.querySelectorAll('.m3-dropdown-option').forEach(o => {
@@ -18947,7 +18948,7 @@ function bindCoverHoldZoom(wrapEl) {
           uiLangDropdown.classList.remove('open');
           
           if (window.electronAPI && window.electronAPI.storageSaveSync && window.__RIFF_STORAGE_MAP__) {
-            window.__RIFF_STORAGE_MAP__['riff_ui_lang'] = targetCode;
+            window.__RIFF_STORAGE_MAP__['eclipse_ui_lang'] = targetCode;
             window.__RIFF_STORAGE_MAP__['eclipse_ui_lang'] = targetCode;
             try { window.electronAPI.storageSaveSync(window.__RIFF_STORAGE_MAP__); } catch (_) {}
           }
@@ -19005,7 +19006,7 @@ function bindCoverHoldZoom(wrapEl) {
   if (el.btnTrAuto) {
     el.btnTrAuto.addEventListener('click', () => {
       state.trAuto = !state.trAuto;
-      localStorage.setItem('riff_tr_auto', String(state.trAuto));
+      localStorage.setItem('eclipse_tr_auto', String(state.trAuto));
       updateLyricsTranslationUI();
       if (state.trEnabled && state.trAuto && !state.trActive) {
         state.trActive = true;
@@ -19087,9 +19088,9 @@ function bindCoverHoldZoom(wrapEl) {
 
   if (btnConfirmLangRestart) {
     btnConfirmLangRestart.addEventListener('click', () => {
-      const cur = localStorage.getItem('riff_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
+      const cur = localStorage.getItem('eclipse_ui_lang') || localStorage.getItem('eclipse_ui_lang') || 'en';
       if (window.electronAPI && window.electronAPI.storageSaveSync && window.__RIFF_STORAGE_MAP__) {
-        window.__RIFF_STORAGE_MAP__['riff_ui_lang'] = cur;
+        window.__RIFF_STORAGE_MAP__['eclipse_ui_lang'] = cur;
         window.__RIFF_STORAGE_MAP__['eclipse_ui_lang'] = cur;
         try { window.electronAPI.storageSaveSync(window.__RIFF_STORAGE_MAP__); } catch (_) {}
       }
@@ -19123,7 +19124,7 @@ function bindCoverHoldZoom(wrapEl) {
       opt.addEventListener('click', (e) => {
         e.stopPropagation();
         const val = opt.dataset.value;
-        localStorage.setItem('riff_lyrics_ease', val);
+        localStorage.setItem('eclipse_lyrics_ease', val);
         if (lyricsEaseLabel) lyricsEaseLabel.textContent = opt.textContent;
         lyricsEaseMenu.querySelectorAll('.m3-dropdown-option').forEach(o => o.classList.toggle('selected', o === opt));
         applyLyricsEase();
@@ -19146,7 +19147,7 @@ function bindCoverHoldZoom(wrapEl) {
     sliderLyricsSpeed.addEventListener('input', () => {
       const val = parseInt(sliderLyricsSpeed.value, 10) / 10;
       valLyricsSpeed.textContent = `${val.toFixed(1)}x`;
-      localStorage.setItem('riff_lyrics_speed', val.toString());
+      localStorage.setItem('eclipse_lyrics_speed', val.toString());
       applyLyricsEase();
     });
   }
@@ -19163,7 +19164,7 @@ function bindCoverHoldZoom(wrapEl) {
     if (!state.currentTrack) return 0;
     const key = state.currentTrack.id || `${state.currentTrack.artist || ''}:${state.currentTrack.title || ''}`;
     try {
-      const map = JSON.parse(localStorage.getItem('riff_lyrics_offsets') || '{}');
+      const map = JSON.parse(localStorage.getItem('eclipse_lyrics_offsets') || '{}');
       return Number(map[key]) || 0;
     } catch (_) { return 0; }
   }
@@ -19173,12 +19174,12 @@ function bindCoverHoldZoom(wrapEl) {
     const key = state.currentTrack.id || `${state.currentTrack.artist || ''}:${state.currentTrack.title || ''}`;
     const rounded = Math.round(sec * 10) / 10;
     try {
-      const map = JSON.parse(localStorage.getItem('riff_lyrics_offsets') || '{}');
+      const map = JSON.parse(localStorage.getItem('eclipse_lyrics_offsets') || '{}');
       const prev = Number(map[key]) || 0;
       const delta = rounded - prev;
       if (rounded === 0) delete map[key];
       else map[key] = rounded;
-      localStorage.setItem('riff_lyrics_offsets', JSON.stringify(map));
+      localStorage.setItem('eclipse_lyrics_offsets', JSON.stringify(map));
       if (delta !== 0 && Array.isArray(state.syncedLyrics)) {
         state.syncedLyrics.forEach(l => {
           if (l.time != null && l.time >= 0) l.time = Math.max(0, l.time + delta);
@@ -19207,7 +19208,7 @@ function bindCoverHoldZoom(wrapEl) {
     }
     const pill = document.getElementById('lyrics-provider-pill');
     if (pill) {
-      const prov = providerName || localStorage.getItem('riff_lyrics_source') || 'auto';
+      const prov = providerName || localStorage.getItem('eclipse_lyrics_source') || 'auto';
       pill.textContent = LYRICS_SOURCE_NAMES[prov] || prov.toUpperCase();
     }
   }
@@ -19238,10 +19239,10 @@ function bindCoverHoldZoom(wrapEl) {
   if (btnCycleSource) {
     btnCycleSource.addEventListener('click', (e) => {
       e.stopPropagation();
-      const cur = localStorage.getItem('riff_lyrics_source') || 'auto';
+      const cur = localStorage.getItem('eclipse_lyrics_source') || 'auto';
       const idx = VALID_LYRICS_SOURCES.indexOf(cur);
       const next = VALID_LYRICS_SOURCES[(idx + 1) % VALID_LYRICS_SOURCES.length];
-      localStorage.setItem('riff_lyrics_source', next);
+      localStorage.setItem('eclipse_lyrics_source', next);
       if (lyricsSourceLabel) lyricsSourceLabel.textContent = LYRICS_SOURCE_NAMES[next] || next;
       if (lyricsSourceMenu) {
         lyricsSourceMenu.querySelectorAll('.m3-dropdown-option').forEach(o => o.classList.toggle('selected', o.dataset.value === next));
@@ -19255,7 +19256,7 @@ function bindCoverHoldZoom(wrapEl) {
   }
 
   if (lyricsSourceDropdown && lyricsSourceTrigger && lyricsSourceMenu) {
-    const curSource = localStorage.getItem('riff_lyrics_source') || 'auto';
+    const curSource = localStorage.getItem('eclipse_lyrics_source') || 'auto';
     lyricsSourceMenu.querySelectorAll('.m3-dropdown-option').forEach(opt => {
       const isSel = opt.dataset.value === curSource;
       opt.classList.toggle('selected', isSel);
@@ -19271,7 +19272,7 @@ function bindCoverHoldZoom(wrapEl) {
       opt.addEventListener('click', (e) => {
         e.stopPropagation();
         const val = opt.dataset.value;
-        localStorage.setItem('riff_lyrics_source', val);
+        localStorage.setItem('eclipse_lyrics_source', val);
         if (lyricsSourceLabel) lyricsSourceLabel.textContent = opt.textContent;
         lyricsSourceMenu.querySelectorAll('.m3-dropdown-option').forEach(o => o.classList.toggle('selected', o === opt));
         lyricsSourceDropdown.classList.remove('open');
@@ -19294,7 +19295,7 @@ function bindCoverHoldZoom(wrapEl) {
   const wordSourceMenu = document.getElementById('word-source-menu');
 
   if (wordSourceDropdown && wordSourceTrigger && wordSourceMenu) {
-    const curWordSource = localStorage.getItem('riff_word_source') || 'auto';
+    const curWordSource = localStorage.getItem('eclipse_word_source') || 'auto';
     wordSourceMenu.querySelectorAll('.m3-dropdown-option').forEach(opt => {
       const isSel = opt.dataset.value === curWordSource;
       opt.classList.toggle('selected', isSel);
@@ -19310,7 +19311,7 @@ function bindCoverHoldZoom(wrapEl) {
       opt.addEventListener('click', (e) => {
         e.stopPropagation();
         const val = opt.dataset.value;
-        localStorage.setItem('riff_word_source', val);
+        localStorage.setItem('eclipse_word_source', val);
         if (wordSourceLabel) wordSourceLabel.textContent = opt.textContent;
         wordSourceMenu.querySelectorAll('.m3-dropdown-option').forEach(o => o.classList.toggle('selected', o === opt));
         wordSourceDropdown.classList.remove('open');
@@ -19348,7 +19349,7 @@ function bindCoverHoldZoom(wrapEl) {
       opt.addEventListener('click', (e) => {
         e.stopPropagation();
         const val = opt.dataset.value;
-        localStorage.setItem('riff_lyrics_word_style', val);
+        localStorage.setItem('eclipse_lyrics_word_style', val);
         if (lyricsWordStyleLabel) lyricsWordStyleLabel.textContent = opt.textContent;
         lyricsWordStyleMenu.querySelectorAll('.m3-dropdown-option').forEach(o => o.classList.toggle('selected', o === opt));
         lyricsWordStyleDropdown.classList.remove('open');
@@ -19372,8 +19373,8 @@ function bindCoverHoldZoom(wrapEl) {
     sliderLyricsTightness.addEventListener('input', () => {
       const val = parseInt(sliderLyricsTightness.value, 10);
       valLyricsTightness.textContent = `${val}%`;
-      localStorage.setItem('riff_lyrics_gradient_tightness', val.toString());
-      localStorage.setItem('riff_gradient_tight', val.toString());
+      localStorage.setItem('eclipse_lyrics_gradient_tightness', val.toString());
+      localStorage.setItem('eclipse_gradient_tight', val.toString());
       applyLyricsGradientTightness();
       updateActiveGradient();
     });
@@ -19387,9 +19388,9 @@ function bindCoverHoldZoom(wrapEl) {
       state.hqSettings = { engine: 'hqmusic-3', preset: 'studio', vocal: 0, air: 0, bass: 0 };
       state.hqEnabled = false;
 
-      localStorage.setItem('riff_hq_enabled', '0');
+      localStorage.setItem('eclipse_hq_enabled', '0');
       updateHqRouting();
-      localStorage.setItem('riff_audio_normalize', '0');
+      localStorage.setItem('eclipse_audio_normalize', '0');
       const toggleNorm = document.getElementById('toggle-normalize');
       if (toggleNorm) toggleNorm.classList.remove('active');
       if (typeof resetLevelWatcher === 'function') resetLevelWatcher();
@@ -19419,12 +19420,12 @@ function bindCoverHoldZoom(wrapEl) {
 
   const toggleNormalize = document.getElementById('toggle-normalize');
   if (toggleNormalize) {
-    const isNorm = localStorage.getItem('riff_audio_normalize') === '1';
+    const isNorm = localStorage.getItem('eclipse_audio_normalize') === '1';
     toggleNormalize.classList.toggle('active', isNorm);
     toggleNormalize.addEventListener('click', () => {
       const active = !toggleNormalize.classList.contains('active');
       toggleNormalize.classList.toggle('active', active);
-      localStorage.setItem('riff_audio_normalize', active ? '1' : '0');
+      localStorage.setItem('eclipse_audio_normalize', active ? '1' : '0');
       if (!active) resetLevelWatcher();
     });
   }
@@ -19510,7 +19511,7 @@ function bindCoverHoldZoom(wrapEl) {
       if (!modal || !sheet || !notesEl) return;
 
       const rawVer = String(info?.version || '').replace(/^v/i, '');
-      const ignoredVer = localStorage.getItem('riff_ignored_update_ver') || '';
+      const ignoredVer = localStorage.getItem('eclipse_ignored_update_ver') || '';
       if (!manualUpdateCheck && rawVer && ignoredVer === rawVer) return;
 
       const displayVer = rawVer.endsWith('.0.0') ? ('v' + rawVer.slice(0, -4)) : (rawVer.endsWith('.0') ? ('v' + rawVer.slice(0, -2)) : ('v' + rawVer));
@@ -19760,7 +19761,7 @@ function bindCoverHoldZoom(wrapEl) {
     if (btnUpdateLater) {
       btnUpdateLater.addEventListener('click', () => {
         if (latestUpdateInfo?.version) {
-          localStorage.setItem('riff_ignored_update_ver', String(latestUpdateInfo.version).replace(/^v/i, ''));
+          localStorage.setItem('eclipse_ignored_update_ver', String(latestUpdateInfo.version).replace(/^v/i, ''));
         }
         if (api && api.updateAction) {
           api.updateAction('ignore');
@@ -20093,24 +20094,24 @@ function bindCoverHoldZoom(wrapEl) {
 
   const btnSkipSilence = document.getElementById('btn-skip-silence');
   if (btnSkipSilence) {
-    const on = localStorage.getItem('riff_skip_silence_enabled') === '1';
+    const on = localStorage.getItem('eclipse_skip_silence_enabled') === '1';
     btnSkipSilence.classList.toggle('active', on);
     btnSkipSilence.addEventListener('click', () => {
       const next = !btnSkipSilence.classList.contains('active');
       btnSkipSilence.classList.toggle('active', next);
-      localStorage.setItem('riff_skip_silence_enabled', next ? '1' : '0');
+      localStorage.setItem('eclipse_skip_silence_enabled', next ? '1' : '0');
       showToast(next ? 'Skip silences enabled' : 'Skip silences disabled', 'info');
     });
   }
 
   const btnSponsorBlock = document.getElementById('btn-sponsorblock');
   if (btnSponsorBlock) {
-    const on = localStorage.getItem('riff_sponsorblock_enabled') !== '0';
+    const on = localStorage.getItem('eclipse_sponsorblock_enabled') !== '0';
     btnSponsorBlock.classList.toggle('active', on);
     btnSponsorBlock.addEventListener('click', () => {
       const next = !btnSponsorBlock.classList.contains('active');
       btnSponsorBlock.classList.toggle('active', next);
-      localStorage.setItem('riff_sponsorblock_enabled', next ? '1' : '0');
+      localStorage.setItem('eclipse_sponsorblock_enabled', next ? '1' : '0');
       showToast(next ? 'SponsorBlock enabled' : 'SponsorBlock disabled', 'info');
       if (next && state.currentTrack) loadSponsorBlockSegments(state.currentTrack);
     });
@@ -20118,12 +20119,12 @@ function bindCoverHoldZoom(wrapEl) {
 
   const btnDiscordArtistStatus = document.getElementById('btn-discord-artist-status');
   if (btnDiscordArtistStatus) {
-    const on = localStorage.getItem('riff_discord_artist_status') !== '0';
+    const on = localStorage.getItem('eclipse_discord_artist_status') !== '0';
     btnDiscordArtistStatus.classList.toggle('active', on);
     btnDiscordArtistStatus.addEventListener('click', () => {
       const next = !btnDiscordArtistStatus.classList.contains('active');
       btnDiscordArtistStatus.classList.toggle('active', next);
-      localStorage.setItem('riff_discord_artist_status', next ? '1' : '0');
+      localStorage.setItem('eclipse_discord_artist_status', next ? '1' : '0');
       if (state.discordRpcEnabled && state.currentTrack) {
         sendDiscordRpcUpdate(state.currentTrack, state.isPlaying);
       }
@@ -20131,9 +20132,9 @@ function bindCoverHoldZoom(wrapEl) {
   }
 
   [
-    ['btn-discord-show-paused', 'riff_discord_show_paused'],
-    ['btn-discord-show-time', 'riff_discord_show_time'],
-    ['btn-discord-show-button', 'riff_discord_show_button']
+    ['btn-discord-show-paused', 'eclipse_discord_show_paused'],
+    ['btn-discord-show-time', 'eclipse_discord_show_time'],
+    ['btn-discord-show-button', 'eclipse_discord_show_button']
   ].forEach(([btnId, storageKey]) => {
     const btn = document.getElementById(btnId);
     if (!btn) return;
@@ -20217,7 +20218,7 @@ function bindCoverHoldZoom(wrapEl) {
   if (btnLastFmToggle) {
     btnLastFmToggle.addEventListener('click', () => {
       lastfmState.enabled = !lastfmState.enabled;
-      localStorage.setItem('riff_lastfm_enabled', String(lastfmState.enabled));
+      localStorage.setItem('eclipse_lastfm_enabled', String(lastfmState.enabled));
       syncLastFmUI();
     });
   }
@@ -20232,13 +20233,13 @@ function bindCoverHoldZoom(wrapEl) {
       if (customKey && customSecret) {
         lastfmState.apiKey = customKey;
         lastfmState.apiSecret = customSecret;
-        localStorage.setItem('riff_lastfm_apikey', customKey);
-        localStorage.setItem('riff_lastfm_apisecret', customSecret);
+        localStorage.setItem('eclipse_lastfm_apikey', customKey);
+        localStorage.setItem('eclipse_lastfm_apisecret', customSecret);
       } else {
         lastfmState.apiKey = '';
         lastfmState.apiSecret = '';
-        localStorage.removeItem('riff_lastfm_apikey');
-        localStorage.removeItem('riff_lastfm_apisecret');
+        localStorage.removeItem('eclipse_lastfm_apikey');
+        localStorage.removeItem('eclipse_lastfm_apisecret');
       }
       if (statusEl) {
         statusEl.textContent = 'Requesting Last.fm authorization...';
@@ -20286,8 +20287,8 @@ function bindCoverHoldZoom(wrapEl) {
               lastfmState.pollTimer = null;
               lastfmState.sessionKey = sData.sessionKey;
               lastfmState.username = sData.username;
-              localStorage.setItem('riff_lastfm_sk', sData.sessionKey);
-              localStorage.setItem('riff_lastfm_user', sData.username);
+              localStorage.setItem('eclipse_lastfm_sk', sData.sessionKey);
+              localStorage.setItem('eclipse_lastfm_user', sData.username);
               syncLastFmUI();
               if (typeof showToast === 'function') showToast('Connected to Last.fm as @' + sData.username, 'info');
               closeLastFmModal();
@@ -20325,11 +20326,11 @@ function bindCoverHoldZoom(wrapEl) {
 
       if (customKey) {
         lastfmState.apiKey = customKey;
-        localStorage.setItem('riff_lastfm_apikey', customKey);
+        localStorage.setItem('eclipse_lastfm_apikey', customKey);
       }
       if (customSecret) {
         lastfmState.apiSecret = customSecret;
-        localStorage.setItem('riff_lastfm_apisecret', customSecret);
+        localStorage.setItem('eclipse_lastfm_apisecret', customSecret);
       }
 
       if (statusEl) {
@@ -20353,8 +20354,8 @@ function bindCoverHoldZoom(wrapEl) {
         if (data.success && data.sessionKey) {
           lastfmState.sessionKey = data.sessionKey;
           lastfmState.username = data.username || username;
-          localStorage.setItem('riff_lastfm_sk', data.sessionKey);
-          localStorage.setItem('riff_lastfm_user', lastfmState.username);
+          localStorage.setItem('eclipse_lastfm_sk', data.sessionKey);
+          localStorage.setItem('eclipse_lastfm_user', lastfmState.username);
           if (passInp) passInp.value = '';
           if (statusEl) {
             statusEl.textContent = `Connected as @${lastfmState.username}!`;
@@ -20381,8 +20382,8 @@ function bindCoverHoldZoom(wrapEl) {
     btnLastFmDisconnect.addEventListener('click', () => {
       lastfmState.sessionKey = '';
       lastfmState.username = '';
-      localStorage.removeItem('riff_lastfm_sk');
-      localStorage.removeItem('riff_lastfm_user');
+      localStorage.removeItem('eclipse_lastfm_sk');
+      localStorage.removeItem('eclipse_lastfm_user');
       if (lastfmState.pollTimer) {
         clearInterval(lastfmState.pollTimer);
         lastfmState.pollTimer = null;
@@ -20852,14 +20853,14 @@ function bindCoverHoldZoom(wrapEl) {
   }
 
   if (spClientIdInput) {
-    const savedId = localStorage.getItem('riff_spotify_client_id') || '';
+    const savedId = localStorage.getItem('eclipse_spotify_client_id') || '';
     spClientIdInput.value = savedId;
     if (btnSpLogin) {
       btnSpLogin.disabled = !/^[a-f0-9]{32}$/i.test(savedId.trim());
     }
     spClientIdInput.addEventListener('input', () => {
       const val = spClientIdInput.value.trim();
-      localStorage.setItem('riff_spotify_client_id', val);
+      localStorage.setItem('eclipse_spotify_client_id', val);
       if (btnSpLogin) {
         btnSpLogin.disabled = !/^[a-f0-9]{32}$/i.test(val);
       }
@@ -21031,7 +21032,7 @@ function bindCoverHoldZoom(wrapEl) {
     if (spChkLikes2) { spChkLikes2.checked = true; spChkLikes2.disabled = false; }
     if (spChkPlaylists2) { spChkPlaylists2.checked = true; spChkPlaylists2.disabled = false; }
     if (btnSpPickFiles) btnSpPickFiles.disabled = false;
-    const savedId = localStorage.getItem('riff_spotify_client_id') || '';
+    const savedId = localStorage.getItem('eclipse_spotify_client_id') || '';
     if (spClientIdInput) spClientIdInput.value = savedId;
     if (btnSpLogin) btnSpLogin.disabled = !/^[a-f0-9]{32}$/i.test(savedId.trim());
     if (spRedirectUri) spRedirectUri.textContent = `http://127.0.0.1:${state.serverPort || 38472}/api/spotify-callback`;
@@ -22903,7 +22904,7 @@ function bindCoverHoldZoom(wrapEl) {
 
   let trackToDownload = null;
   let downloadBatch = null;
-  let selectedFormat = localStorage.getItem('riff_download_format') || 'mp3';
+  let selectedFormat = localStorage.getItem('eclipse_download_format') || 'mp3';
   let selectedQuality = '0';
 
   function updateDownloadBtnLabel() {
@@ -23348,7 +23349,7 @@ function bindCoverHoldZoom(wrapEl) {
       if (cid) {
         const all = getTrackTrims();
         delete all[cid];
-        try { localStorage.setItem('riff_track_trims', JSON.stringify(all)); } catch (_) {}
+        try { localStorage.setItem('eclipse_track_trims', JSON.stringify(all)); } catch (_) {}
       }
       trimDraft.start = 0;
       trimDraft.end = trimDraft.dur;
@@ -23360,7 +23361,7 @@ function bindCoverHoldZoom(wrapEl) {
 
   function setDownloadFormat(fmt) {
     selectedFormat = fmt || 'mp3';
-    localStorage.setItem('riff_download_format', selectedFormat);
+    localStorage.setItem('eclipse_download_format', selectedFormat);
     document.querySelectorAll('.format-chip').forEach(c => {
       c.classList.toggle('active', c.dataset.format === selectedFormat);
     });
@@ -23545,7 +23546,7 @@ function bindCoverHoldZoom(wrapEl) {
           const t = tracks[i];
           if (el.downloadBtnText) el.downloadBtnText.textContent = `Downloading ${i + 1}/${tracks.length}`;
           try {
-            const customDir = state.downloadDir || localStorage.getItem('riff_download_dir') || '';
+            const customDir = state.downloadDir || localStorage.getItem('eclipse_download_dir') || '';
             const thumbUrl = getTrackThumbUrl(t) || t.thumbnail || t.cover || '';
             const downloadUrl = `http://127.0.0.1:${state.serverPort}/api/download?url=${encodeURIComponent(t.url || '')}&id=${encodeURIComponent(t.id || '')}&title=${encodeURIComponent(t.title || '')}&artist=${encodeURIComponent(t.artist || '')}&format=${selectedFormat}&quality=${selectedQuality}&thumbnail=${encodeURIComponent(thumbUrl)}&customDir=${encodeURIComponent(customDir)}`;
             const res = await fetch(downloadUrl);
@@ -23679,7 +23680,7 @@ function bindCoverHoldZoom(wrapEl) {
 
         if (downloadAbort?.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-        const customDir = state.downloadDir || localStorage.getItem('riff_download_dir') || '';
+        const customDir = state.downloadDir || localStorage.getItem('eclipse_download_dir') || '';
         const thumbUrl = getTrackThumbUrl(t) || t.thumbnail || t.cover || '';
         const encodeUrl = `http://127.0.0.1:${state.serverPort}/api/encode?title=${encodeURIComponent(t.title || 'untitled')}&artist=${encodeURIComponent(t.artist || 'unknown artist')}&format=${selectedFormat}&quality=${selectedQuality}&thumbnail=${encodeURIComponent(thumbUrl)}&customDir=${encodeURIComponent(customDir)}`;
         const resEncode = await fetch(encodeUrl, {
@@ -23733,7 +23734,7 @@ function bindCoverHoldZoom(wrapEl) {
   const analysisCache = new Map();
   let myWaveCurrentTracks = [];
   let jumpBackCurrentTracks = [];
-  let homeMode = localStorage.getItem('riff_home_pane') === 'recent' ? 'recent' : 'wave';
+  let homeMode = localStorage.getItem('eclipse_home_pane') === 'recent' ? 'recent' : 'wave';
   let isExtendingMyWave = false;
 
   function getCachedTrackAnalysis(trackId) {
@@ -23741,7 +23742,7 @@ function bindCoverHoldZoom(wrapEl) {
     const cleanId = String(trackId).replace(/[^a-zA-Z0-9_-]/g, '_');
     if (analysisCache.has(cleanId)) return analysisCache.get(cleanId);
     try {
-      const stored = localStorage.getItem(`riff_audio_analysis_${cleanId}`);
+      const stored = localStorage.getItem(`eclipse_audio_analysis_${cleanId}`);
       if (stored) {
         const parsed = JSON.parse(stored);
         analysisCache.set(cleanId, parsed);
@@ -23756,7 +23757,7 @@ function bindCoverHoldZoom(wrapEl) {
     const cleanId = String(trackId).replace(/[^a-zA-Z0-9_-]/g, '_');
     analysisCache.set(cleanId, analysis);
     try {
-      localStorage.setItem(`riff_audio_analysis_${cleanId}`, JSON.stringify(analysis));
+      localStorage.setItem(`eclipse_audio_analysis_${cleanId}`, JSON.stringify(analysis));
       fetch(`http://127.0.0.1:${state.serverPort}/api/track-analysis`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -23779,7 +23780,7 @@ function bindCoverHoldZoom(wrapEl) {
     return `${a}::${t}`;
   }
 
-  const WAVE_SKIPS_KEY = 'riff_wave_skips';
+  const WAVE_SKIPS_KEY = 'eclipse_wave_skips';
 
   function normalizeArtistName(name) {
     return String(name || '')
@@ -23816,7 +23817,7 @@ function bindCoverHoldZoom(wrapEl) {
 
   function getBlockedArtists() {
     try {
-      const raw = localStorage.getItem('riff_blocked_artists');
+      const raw = localStorage.getItem('eclipse_blocked_artists');
       return Array.isArray(JSON.parse(raw)) ? JSON.parse(raw) : [];
     } catch (_) {
       return [];
@@ -23825,7 +23826,7 @@ function bindCoverHoldZoom(wrapEl) {
 
   function getBlockedTracks() {
     try {
-      const raw = localStorage.getItem('riff_blocked_tracks');
+      const raw = localStorage.getItem('eclipse_blocked_tracks');
       return Array.isArray(JSON.parse(raw)) ? JSON.parse(raw) : [];
     } catch (_) {
       return [];
@@ -23882,7 +23883,7 @@ function bindCoverHoldZoom(wrapEl) {
       list.push(clean);
       blocked = true;
     }
-    localStorage.setItem('riff_blocked_artists', JSON.stringify(list));
+    localStorage.setItem('eclipse_blocked_artists', JSON.stringify(list));
     showToast(blocked ? `Blocked artist "${clean}"` : `Unblocked artist "${clean}"`, 'info');
     renderBlockedItemsSettings();
     syncArtistBlockButtonUI();
@@ -23917,7 +23918,7 @@ function bindCoverHoldZoom(wrapEl) {
       list.push({ key: trackKey, id: trackId, title, artist });
       blocked = true;
     }
-    localStorage.setItem('riff_blocked_tracks', JSON.stringify(list));
+    localStorage.setItem('eclipse_blocked_tracks', JSON.stringify(list));
     showToast(blocked ? `Blocked track "${title || 'Track'}"` : `Unblocked track "${title || 'Track'}"`, 'info');
     renderBlockedItemsSettings();
     return blocked;
@@ -24883,7 +24884,7 @@ function bindCoverHoldZoom(wrapEl) {
     if (newMode === homeMode) return;
 
     homeMode = newMode;
-    localStorage.setItem('riff_home_pane', newMode);
+    localStorage.setItem('eclipse_home_pane', newMode);
     updateHomeDots();
 
     const isPerf = document.body.classList.contains('perf') || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -24938,7 +24939,7 @@ function bindCoverHoldZoom(wrapEl) {
 
     if (!avail.includes(homeMode)) {
       homeMode = avail[0];
-      localStorage.setItem('riff_home_pane', homeMode);
+      localStorage.setItem('eclipse_home_pane', homeMode);
     }
 
     updateHomeDots();
@@ -25037,7 +25038,7 @@ function bindCoverHoldZoom(wrapEl) {
   }
 
   async function fetchPersonalVibe(forceRefresh = false) {
-    const cachedWave = safeJson('riff_my_wave_cache', null);
+    const cachedWave = safeJson('eclipse_my_wave_cache', null);
     if (!forceRefresh && cachedWave && Array.isArray(cachedWave.tracks) && cachedWave.tracks.length > 0) {
       state.vibeTracks = cachedWave.tracks.filter(t => !isTrackBlocked(t) && !isArtistBlocked(t.artist));
       renderVibeCards(state.vibeTracks);
@@ -25126,7 +25127,7 @@ function bindCoverHoldZoom(wrapEl) {
           }
           if (uniqueTracks.length > 0) {
             state.vibeTracks = uniqueTracks;
-            try { localStorage.setItem('riff_my_wave_cache', JSON.stringify({ ts: Date.now(), tracks: state.vibeTracks })); } catch (_) {}
+            try { localStorage.setItem('eclipse_my_wave_cache', JSON.stringify({ ts: Date.now(), tracks: state.vibeTracks })); } catch (_) {}
           }
         }
       } catch (_) {}
@@ -25176,7 +25177,7 @@ function bindCoverHoldZoom(wrapEl) {
 
       myWaveCurrentTracks = uniqueTracks;
       state.vibeTracks = uniqueTracks;
-      try { localStorage.setItem('riff_my_wave_cache', JSON.stringify({ ts: Date.now(), tracks: state.vibeTracks })); } catch (_) {}
+      try { localStorage.setItem('eclipse_my_wave_cache', JSON.stringify({ ts: Date.now(), tracks: state.vibeTracks })); } catch (_) {}
       currentWaveFocusedIndex = 0;
       if (homeMode === 'wave') {
         if (vibeGrid) {
@@ -25655,7 +25656,7 @@ function bindCoverHoldZoom(wrapEl) {
     bindTrendingFilterChips();
 
     const category = targetCategory || currentTrendingCategory || 'trending';
-    const cacheKey = 'riff_trending_cache_' + category;
+    const cacheKey = 'eclipse_trending_cache_' + category;
 
     let hasCachedTracks = false;
     const cached = safeJson(cacheKey, null);
@@ -25688,7 +25689,7 @@ function bindCoverHoldZoom(wrapEl) {
     }
   }
 
-  const MIX_KEY = 'riff_daily_mixes';
+  const MIX_KEY = 'eclipse_daily_mixes';
 
   function getLocalDateString() {
     const d = new Date();
@@ -25767,7 +25768,7 @@ function bindCoverHoldZoom(wrapEl) {
 
   async function generateDailyMixes(force = false) {
     if (!getAdv('my_wave', true)) return null;
-    const sp = (localStorage.getItem('riff_home_layout') || 'spotify') === 'spotify';
+    const sp = (localStorage.getItem('eclipse_home_layout') || 'spotify') === 'spotify';
     if (!sp) return null;
 
     const today = getLocalDateString();
@@ -26046,7 +26047,7 @@ function bindCoverHoldZoom(wrapEl) {
   }
 
   function applyHomeLayout() {
-    const sp = (localStorage.getItem('riff_home_layout') || 'spotify') === 'spotify';
+    const sp = (localStorage.getItem('eclipse_home_layout') || 'spotify') === 'spotify';
     document.body.classList.toggle('home-spotify', sp);
     const btnSp = document.getElementById('home-layout-spotify');
     const btnRiff = document.getElementById('home-layout-eclipse');
@@ -26059,13 +26060,13 @@ function bindCoverHoldZoom(wrapEl) {
   const btnHomeRiff = document.getElementById('home-layout-eclipse');
   if (btnHomeSpotify) {
     btnHomeSpotify.addEventListener('click', () => {
-      localStorage.setItem('riff_home_layout', 'spotify');
+      localStorage.setItem('eclipse_home_layout', 'spotify');
       applyHomeLayout();
     });
   }
   if (btnHomeRiff) {
     btnHomeRiff.addEventListener('click', () => {
-      localStorage.setItem('riff_home_layout', 'riff');
+      localStorage.setItem('eclipse_home_layout', 'riff');
       applyHomeLayout();
     });
   }
@@ -26902,7 +26903,7 @@ function bindCoverHoldZoom(wrapEl) {
     const bannerVid = document.getElementById('track-art-banner-vid');
     const bannerPh = document.getElementById('track-art-banner-placeholder');
     const bannerStatus = document.getElementById('track-art-banner-status');
-    const activeBanner = art.banner || localStorage.getItem('riff_banner_media') || activeCover;
+    const activeBanner = art.banner || localStorage.getItem('eclipse_banner_media') || activeCover;
     const isVideo = activeBanner && /\.(mp4|webm)($|\?)/i.test(activeBanner);
 
     if (activeBanner) {
@@ -26925,7 +26926,7 @@ function bindCoverHoldZoom(wrapEl) {
       if (bannerVid) bannerVid.style.display = 'none';
       if (bannerPh) bannerPh.style.display = 'block';
     }
-    if (bannerStatus) bannerStatus.textContent = art.banner ? 'Custom banner' : (localStorage.getItem('riff_banner_media') ? 'Global banner' : 'Default art');
+    if (bannerStatus) bannerStatus.textContent = art.banner ? 'Custom banner' : (localStorage.getItem('eclipse_banner_media') ? 'Global banner' : 'Default art');
 
     const btnCustomFx = document.getElementById('btn-track-banner-custom-fx');
     const fxControls = document.getElementById('track-banner-fx-controls');
@@ -27151,7 +27152,7 @@ function bindCoverHoldZoom(wrapEl) {
 
   function getSidebarOrder() {
     try {
-      const raw = localStorage.getItem('riff_sidebar_order');
+      const raw = localStorage.getItem('eclipse_sidebar_order');
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
@@ -27193,7 +27194,7 @@ function bindCoverHoldZoom(wrapEl) {
 
   function getHomeSectionsOrder() {
     try {
-      const raw = localStorage.getItem('riff_home_order');
+      const raw = localStorage.getItem('eclipse_home_order');
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
@@ -27323,7 +27324,7 @@ function bindCoverHoldZoom(wrapEl) {
       renderSidebar = makeCustomizerList(
         sidebarContainer,
         getSidebarOrder,
-        'riff_sidebar_order',
+        'eclipse_sidebar_order',
         SIDEBAR_ITEM_DEFS,
         applySidebarOrder
       );
@@ -27332,7 +27333,7 @@ function bindCoverHoldZoom(wrapEl) {
       renderHome = makeCustomizerList(
         homeContainer,
         getHomeSectionsOrder,
-        'riff_home_order',
+        'eclipse_home_order',
         HOME_SECTION_DEFS,
         applyHomeSectionsOrder
       );
@@ -27340,8 +27341,8 @@ function bindCoverHoldZoom(wrapEl) {
 
     if (resetBtn) {
       resetBtn.addEventListener('click', () => {
-        localStorage.removeItem('riff_sidebar_order');
-        localStorage.removeItem('riff_home_order');
+        localStorage.removeItem('eclipse_sidebar_order');
+        localStorage.removeItem('eclipse_home_order');
         applySidebarOrder(DEFAULT_SIDEBAR_ORDER);
         applyHomeSectionsOrder(DEFAULT_HOME_ORDER);
         if (renderSidebar) renderSidebar();
@@ -27436,12 +27437,12 @@ function bindCoverHoldZoom(wrapEl) {
   function initLikeAlbumTracksSetting() {
     const btn = document.getElementById('btn-like-album-tracks');
     if (!btn) return;
-    const isEnabled = localStorage.getItem('riff_like_album_tracks') === '1';
+    const isEnabled = localStorage.getItem('eclipse_like_album_tracks') === '1';
     btn.classList.toggle('active', isEnabled);
     btn.addEventListener('click', () => {
       const nextState = !btn.classList.contains('active');
       btn.classList.toggle('active', nextState);
-      localStorage.setItem('riff_like_album_tracks', nextState ? '1' : '0');
+      localStorage.setItem('eclipse_like_album_tracks', nextState ? '1' : '0');
     });
   }
 
@@ -27470,7 +27471,7 @@ function bindCoverHoldZoom(wrapEl) {
   applyCustomStyles();
   initProxyManager();
   initSongQualitySetting();
-  const initCat = localStorage.getItem('riff_settings_cat');
+  const initCat = localStorage.getItem('eclipse_settings_cat');
   showSettingsCategory((initCat === 'overview' || !initCat) ? 'home' : initCat);
   refreshStacks();
   requestAnimationFrame(() => requestAnimationFrame(refreshStacks));
