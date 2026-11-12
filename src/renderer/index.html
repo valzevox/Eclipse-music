@@ -420,6 +420,10 @@
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
                 <span>Export as JSON</span>
               </button>
+              <button class="btn-outline-pill" id="btn-playlist-select" title="Select tracks" aria-label="Select tracks">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+                <span data-i18n>Select</span>
+              </button>
               <button class="btn-icon-pill delete-btn" id="btn-delete-playlist" title="Delete playlist" aria-label="Delete playlist">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
               </button>
@@ -444,7 +448,13 @@
             <h2 id="album-detail-title">Album title</h2>
             <button class="album-artist-btn" id="album-detail-artist" type="button"></button>
             <div class="album-meta-line" id="album-detail-count">0 tracks</div>
-            <button type="button" class="btn-icon-pill" id="btn-save-album" title="Save album"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg></button>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+              <button type="button" class="btn-icon-pill" id="btn-save-album" title="Save album"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg></button>
+              <button type="button" class="btn-outline-pill" id="btn-album-select" title="Select tracks" aria-label="Select tracks" style="height:36px;padding:0 14px;font-size:13px;">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+                <span data-i18n>Select</span>
+              </button>
+            </div>
             <div class="daily-mix-feedback hidden" id="daily-mix-feedback"><span class="daily-mix-feedback-label" data-i18n>Do you like these tracks?</span><div class="daily-mix-feedback-actions"><button type="button" class="btn-icon-pill daily-mix-rate-btn" id="btn-dm-like" title="I like this mix"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg></button><button type="button" class="btn-icon-pill daily-mix-rate-btn" id="btn-dm-dislike" title="Not my taste"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg></button></div></div>
           </aside>
           <div class="album-tracks-col">

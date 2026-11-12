@@ -11501,6 +11501,29 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     btnBulkClear.addEventListener('click', clearTrackSelection);
   }
 
+  ['btn-playlist-select', 'btn-album-select'].forEach(btnId => {
+    const selBtn = document.getElementById(btnId);
+    if (!selBtn) return;
+    selBtn.addEventListener('click', () => {
+      if (document.body && document.body.classList.contains('track-selection-mode')) {
+        clearTrackSelection();
+      } else {
+        const activeTracks = getActiveViewTracksArray();
+        if (!activeTracks || activeTracks.length === 0) return;
+        if (!state.selectedTracks) state.selectedTracks = new Map();
+        const first = activeTracks[0];
+        const k = getTrackSelectionKey(first);
+        if (k) state.selectedTracks.set(k, first);
+        document.querySelectorAll('.track-row').forEach(row => {
+          if (row._trackData && getTrackSelectionKey(row._trackData) === k) {
+            row.classList.add('track-selected');
+          }
+        });
+        updateBulkSelectBar();
+      }
+    });
+  });
+
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && state.selectedTracks && state.selectedTracks.size > 0) {
       clearTrackSelection();
