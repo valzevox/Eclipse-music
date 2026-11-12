@@ -392,11 +392,17 @@ function runGUI() {
       mainWindow.maximize();
     }
 
-    mainWindow.once('ready-to-show', () => {
-      if (!mainWindow || mainWindow.isDestroyed()) return;
+    let hasShown = false;
+    const forceShow = () => {
+      if (hasShown || !mainWindow || mainWindow.isDestroyed()) return;
+      hasShown = true;
       mainWindow.show();
-      updateThumbarButtons(false);
-    });
+      mainWindow.focus();
+      try { updateThumbarButtons(false); } catch (_) {}
+    };
+
+    mainWindow.once('ready-to-show', forceShow);
+    setTimeout(forceShow, 2000);
 
     mainWindow.loadFile(path.join(__dirname, '../renderer', firstRun ? 'welcome.html' : 'index.html'));
     if (firstRun) {

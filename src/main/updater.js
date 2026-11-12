@@ -187,20 +187,21 @@ function cleanOldVersionArtifacts(currentVer) {
 function launchInstallerAndExit(installerPath) {
   if (process.platform === 'win32') {
     try {
-      const child = spawn(installerPath, ['/S', '--force-run'], {
+      // Launch installer interactively so user sees progress and finishes with running Eclipse
+      const child = spawn(installerPath, [], {
         detached: true,
         stdio: 'ignore'
       });
       child.unref();
       setTimeout(() => {
-        try { app.exit(0); } catch (_) {}
+        try { app.quit(); } catch (_) {}
       }, 500);
       return;
     } catch (_) {
       try { shell.openPath(installerPath); } catch (_) {}
       setTimeout(() => {
-        try { app.exit(0); } catch (_) {}
-      }, 1000);
+        try { app.quit(); } catch (_) {}
+      }, 500);
       return;
     }
   }
