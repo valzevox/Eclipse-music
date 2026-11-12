@@ -8805,6 +8805,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
     el.nativeAudio.addEventListener('canplay', () => {
       updatePlayPauseButton(state.isPlaying, false);
+      if (audioEngine && typeof audioEngine.applySettings === 'function') {
+        audioEngine.applySettings(el.nativeAudio);
+      }
     });
 
     el.nativeAudio.addEventListener('loadstart', () => {
@@ -8813,6 +8816,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
     el.nativeAudio.addEventListener('loadedmetadata', () => {
       state.audioDurationStale = false;
+      if (audioEngine && typeof audioEngine.applySettings === 'function') {
+        audioEngine.applySettings(el.nativeAudio);
+      }
       try {
         const tr = getTrackTrim(state.currentTrack);
         if (tr && Number.isFinite(tr.end) && tr.end > (tr.start || 0) + 1.5 && el.nativeAudio.currentTime < tr.start) {
