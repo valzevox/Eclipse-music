@@ -9686,18 +9686,44 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     setNavCount(document.getElementById('albums-count'), getSavedAlbums().length);
   }
 
+  let __albumSelectMode = false;
+  const __selectedAlbumKeys = new Set();
+
   function renderSavedAlbums() {
     const container = document.getElementById('saved-albums-grid');
     if (!container) return;
     const albums = getSavedAlbums();
     if (albums.length === 0) {
+      __albumSelectMode = false;
+      __selectedAlbumKeys.clear();
       container.innerHTML = '<div class="empty-hint" style="padding: 48px 0; text-align: center; width: 100%;">No saved albums yet. Save albums from the album view.</div>';
       return;
     }
-    container.innerHTML = albums.map(album => {
+
+    const getAlbKey = (a, i) => String(a.id || a.title || i);
+    const toolbarHtml = `
+      <div style="width:100%;display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:4px 0;">
+        <button id="btn-albums-select-toggle" class="btn-text" style="font-size:13px;padding:6px 12px;border-radius:10px;background:rgba(255,255,255,0.06);cursor:pointer;">
+          ${__albumSelectMode ? 'Hủy' : 'Chọn nhiều'}
+        </button>
+        ${__albumSelectMode ? `
+          <button id="btn-albums-select-all" class="btn-text" style="font-size:13px;padding:6px 12px;border-radius:10px;background:rgba(255,255,255,0.06);cursor:pointer;">
+            ${albums.every((a, i) => __selectedAlbumKeys.has(getAlbKey(a, i))) ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}
+          </button>
+          <button id="btn-albums-delete-selected" class="btn-text" style="font-size:13px;padding:6px 14px;border-radius:10px;background:rgba(239,68,68,0.2);color:#f87171;font-weight:600;cursor:pointer;" ${__selectedAlbumKeys.size === 0 ? 'disabled' : ''}>
+            Xóa đã chọn (${__selectedAlbumKeys.size})
+          </button>
+        ` : ''}
+      </div>
+    `;
+
+    container.innerHTML = toolbarHtml + albums.map((album, idx) => {
       const sub = [album.type || 'Album', album.artist || ''].filter(Boolean).join(' · ');
+      const key = getAlbKey(album, idx);
+      const checked = __selectedAlbumKeys.has(key);
       return `
-        <div class="search-album-card" role="button" tabindex="0">
+        <div class="search-album-card" role="button" tabindex="0" style="position:relative;">
+          ${__albumSelectMode ? `<input type="checkbox" class="album-select-cb" data-idx="${idx}" ${checked ? 'checked' : ''} style="position:absolute;top:8px;right:8px;z-index:5;width:18px;height:18px;accent-color:#a855f7;cursor:pointer;" />` : ''}
           ${album.cover ? `<img class="search-album-cover" src="${escapeHtml(album.cover)}" alt="${escapeHtml(album.title || '')}" loading="lazy" onerror="this.style.display='none'" />` : '<div class="search-album-cover" style="display:flex;align-items:center;justify-content:center;background:var(--md-sys-color-surface-container-high);"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--md-sys-color-outline);"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg></div>'}
           <div class="search-album-info">
             <span class="search-album-title" title="${escapeHtml(album.title || '')}">${escapeHtml(album.title || '')}</span>
@@ -9707,15 +9733,62 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       `;
     }).join('');
 
+    const btnToggle = document.getElementById('btn-albums-select-toggle');
+    if (btnToggle) {
+      btnToggle.onclick = () => {
+        __albumSelectMode = !__albumSelectMode;
+        if (!__albumSelectMode) __selectedAlbumKeys.clear();
+        renderSavedAlbums();
+      };
+    }
+    const btnAll = document.getElementById('btn-albums-select-all');
+    if (btnAll) {
+      btnAll.onclick = () => {
+        const allSel = albums.every((a, i) => __selectedAlbumKeys.has(getAlbKey(a, i)));
+        if (allSel) __selectedAlbumKeys.clear();
+        else albums.forEach((a, i) => __selectedAlbumKeys.add(getAlbKey(a, i)));
+        renderSavedAlbums();
+      };
+    }
+    const btnDel = document.getElementById('btn-albums-delete-selected');
+    if (btnDel) {
+      btnDel.onclick = () => {
+        if (__selectedAlbumKeys.size === 0) return;
+        const remaining = albums.filter((a, i) => !__selectedAlbumKeys.has(getAlbKey(a, i)));
+        setSavedAlbums(remaining);
+        __selectedAlbumKeys.clear();
+        __albumSelectMode = false;
+        updateAlbumsCount();
+        renderSavedAlbums();
+        if (typeof showToast === 'function') showToast('Đã xóa các album đã chọn', 'success');
+      };
+    }
+
     const cards = container.querySelectorAll('.search-album-card');
     cards.forEach((card, idx) => {
       const alb = albums[idx];
       if (!alb) return;
-      card.addEventListener('click', () => openAlbum(alb));
+      const key = getAlbKey(alb, idx);
+      card.addEventListener('click', (e) => {
+        if (__albumSelectMode) {
+          e.preventDefault();
+          if (__selectedAlbumKeys.has(key)) __selectedAlbumKeys.delete(key);
+          else __selectedAlbumKeys.add(key);
+          renderSavedAlbums();
+          return;
+        }
+        openAlbum(alb);
+      });
       card.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
           e.preventDefault();
-          openAlbum(alb);
+          if (__albumSelectMode) {
+            if (__selectedAlbumKeys.has(key)) __selectedAlbumKeys.delete(key);
+            else __selectedAlbumKeys.add(key);
+            renderSavedAlbums();
+          } else {
+            openAlbum(alb);
+          }
         }
       });
     });
@@ -9875,6 +9948,15 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       let tracks = (album.tracks && Array.isArray(album.tracks) && album.tracks.length > 0) ? album.tracks : null;
       let albumArtist = album.artist || '';
       let albumYear = album.year || '';
+
+      if (!tracks && window.electronAPI && window.electronAPI.fetchYouTubeAlbumTracks && (album.platform === 'ytmusic' || String(album.id).startsWith('MPREb_') || String(album.id).startsWith('VL') || String(album.id).startsWith('PL'))) {
+        try {
+          const ytRes = await window.electronAPI.fetchYouTubeAlbumTracks(album.id);
+          if (ytRes && ytRes.success && Array.isArray(ytRes.tracks) && ytRes.tracks.length > 0) {
+            tracks = ytRes.tracks;
+          }
+        } catch (_) {}
+      }
 
       if (!tracks) {
         const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/albums/tracks?id=${encodeURIComponent(album.id)}&title=${encodeURIComponent(album.title || '')}&artist=${encodeURIComponent(album.artist || '')}`);
@@ -13168,10 +13250,15 @@ function renderClickableArtists(container, rawArtist) {
     renderFallback();
   }
 
+  let __playlistSelectMode = false;
+  const __selectedPlaylistIds = new Set();
+
   function renderPlaylistsList() {
     if (!el.playlistsList) return;
     el.playlistsList.innerHTML = '';
     if (!state.playlists || state.playlists.length === 0) {
+      __playlistSelectMode = false;
+      __selectedPlaylistIds.clear();
       const emptyMsg = document.createElement('div');
       emptyMsg.className = 'playlists-empty-note';
       emptyMsg.style.cssText = 'padding: 24px 12px; text-align: center; color: var(--md-sys-color-on-surface-variant); font-size: calc(13px * var(--font-scale, 1));';
@@ -13179,12 +13266,74 @@ function renderClickableArtists(container, rawArtist) {
       el.playlistsList.appendChild(emptyMsg);
       return;
     }
+
+    const toolbar = document.createElement('div');
+    toolbar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 8px 8px;';
+    const btnToggleSelect = document.createElement('button');
+    btnToggleSelect.className = 'btn-text';
+    btnToggleSelect.style.cssText = 'font-size:12px;padding:4px 8px;border-radius:8px;cursor:pointer;';
+    btnToggleSelect.textContent = __playlistSelectMode ? 'Hủy' : 'Chọn nhiều';
+    btnToggleSelect.onclick = () => {
+      __playlistSelectMode = !__playlistSelectMode;
+      if (!__playlistSelectMode) __selectedPlaylistIds.clear();
+      renderPlaylistsList();
+    };
+    toolbar.appendChild(btnToggleSelect);
+
+    if (__playlistSelectMode) {
+      const btnSelectAll = document.createElement('button');
+      btnSelectAll.className = 'btn-text';
+      btnSelectAll.style.cssText = 'font-size:12px;padding:4px 8px;border-radius:8px;cursor:pointer;';
+      const allSelected = state.playlists.every(p => __selectedPlaylistIds.has(p.id));
+      btnSelectAll.textContent = allSelected ? 'Bỏ chọn' : 'Tất cả';
+      btnSelectAll.onclick = () => {
+        if (allSelected) __selectedPlaylistIds.clear();
+        else state.playlists.forEach(p => __selectedPlaylistIds.add(p.id));
+        renderPlaylistsList();
+      };
+      toolbar.appendChild(btnSelectAll);
+
+      const btnDeleteSel = document.createElement('button');
+      btnDeleteSel.className = 'btn-text';
+      btnDeleteSel.style.cssText = 'font-size:12px;padding:4px 10px;border-radius:8px;background:rgba(239,68,68,0.18);color:#f87171;cursor:pointer;font-weight:600;';
+      btnDeleteSel.textContent = `Xóa (${__selectedPlaylistIds.size})`;
+      btnDeleteSel.disabled = __selectedPlaylistIds.size === 0;
+      btnDeleteSel.onclick = () => {
+        if (__selectedPlaylistIds.size === 0) return;
+        state.playlists = state.playlists.filter(p => !__selectedPlaylistIds.has(p.id));
+        localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists));
+        if (state.currentView === 'playlist-detail' && __selectedPlaylistIds.has(state.currentPlaylistId)) {
+          switchView('home');
+        }
+        __selectedPlaylistIds.clear();
+        __playlistSelectMode = false;
+        renderPlaylistsList();
+        if (typeof showToast === 'function') showToast('Đã xóa các playlist đã chọn', 'success');
+      };
+      toolbar.appendChild(btnDeleteSel);
+    }
+    el.playlistsList.appendChild(toolbar);
+
     state.playlists.forEach(pl => {
       const item = document.createElement('div');
       item.className = 'playlist-item';
       item.dataset.playlistId = pl.id;
-      if (state.currentView === 'playlist-detail' && state.currentPlaylistId === pl.id) {
+      if (state.currentView === 'playlist-detail' && state.currentPlaylistId === pl.id && !__playlistSelectMode) {
         item.classList.add('active');
+      }
+
+      if (__playlistSelectMode) {
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = __selectedPlaylistIds.has(pl.id);
+        cb.style.cssText = 'margin-right:8px;accent-color:#a855f7;width:16px;height:16px;flex-shrink:0;cursor:pointer;';
+        cb.onclick = (e) => {
+          e.stopPropagation();
+          if (cb.checked) __selectedPlaylistIds.add(pl.id);
+          else __selectedPlaylistIds.delete(pl.id);
+          renderPlaylistsList();
+        };
+        item.appendChild(cb);
       }
 
       const thumbEl = document.createElement('div');
@@ -13203,6 +13352,12 @@ function renderClickableArtists(container, rawArtist) {
       item.appendChild(infoEl);
 
       item.addEventListener('click', () => {
+        if (__playlistSelectMode) {
+          if (__selectedPlaylistIds.has(pl.id)) __selectedPlaylistIds.delete(pl.id);
+          else __selectedPlaylistIds.add(pl.id);
+          renderPlaylistsList();
+          return;
+        }
         openPlaylistDetail(pl.id);
       });
       item.addEventListener('contextmenu', async (e) => {
@@ -22220,9 +22375,37 @@ function bindCoverHoldZoom(wrapEl) {
               hydrateMissingPlaylistCovers(targetPl);
             }
           } else {
-            createPlaylist(pl.name, plTracks, pl.cover || '');
-            importedCount += plTracks.length;
-            updateProgress(importedCount);
+            const normName = (pl.name || '').trim().toLowerCase();
+            const existingPl = state.playlists.find(p =>
+              (pl.id && p.ytId === pl.id) ||
+              (normName && (p.name || '').trim().toLowerCase() === normName)
+            );
+            if (existingPl) {
+              if (pl.id) existingPl.ytId = pl.id;
+              if (pl.cover && !existingPl.cover) existingPl.cover = pl.cover;
+              const existingIds = new Set((existingPl.tracks || []).map(t => t.id || t.url || t.title));
+              let addedToExisting = 0;
+              for (const t of plTracks) {
+                const key = t.id || t.url || t.title;
+                if (!existingIds.has(key)) {
+                  existingPl.tracks.push(stampAddedAt(t));
+                  existingIds.add(key);
+                  addedToExisting++;
+                }
+              }
+              importedCount += addedToExisting;
+              updateProgress(importedCount);
+              localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists));
+              renderPlaylistsList();
+            } else {
+              const created = createPlaylist(pl.name, plTracks, pl.cover || '');
+              if (created && pl.id) {
+                created.ytId = pl.id;
+                localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists));
+              }
+              importedCount += plTracks.length;
+              updateProgress(importedCount);
+            }
           }
         }
       }

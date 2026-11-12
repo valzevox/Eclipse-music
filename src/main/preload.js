@@ -124,6 +124,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   googleLogout: () => ipcRenderer.invoke('google-logout'),
   googleAuthStatus: () => ipcRenderer.invoke('google-auth-status'),
   googleImportLibrary: (opts) => ipcRenderer.invoke('google-import-library', opts),
+  fetchYouTubeAlbumTracks: (albumId) => ipcRenderer.invoke('fetch-youtube-album-tracks', albumId),
   savePlaylistsJson: (payload) => ipcRenderer.invoke('save-playlists-json', payload),
   showPlaylistContextMenu: (playlistId) => ipcRenderer.invoke('show-playlist-context-menu', playlistId),
   accountExport: (payload) => ipcRenderer.invoke('account-export', payload),

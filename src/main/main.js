@@ -2387,6 +2387,12 @@ ipcMain.on('window-minimize', () => {
           return playlists;
         }
 
+        const allYtCookies = await s.cookies.get({}).catch(() => []);
+        const sessionCookieStr = Array.isArray(allYtCookies) && allYtCookies.length > 0
+          ? allYtCookies.filter(c => c && c.name && c.value).map(c => `${c.name}=${c.value}`).join('; ')
+          : '';
+        const effectiveCookieHeader = sessionCookieStr || capturedGoogleCookieHeader || '';
+
         async function fetchInnertube(browseId, continuationToken = null) {
           const ts = Math.floor(Date.now() / 1000);
           const hash = crypto.createHash('sha1').update(`${ts} ${sapisid} ${origin}`).digest('hex');
@@ -2398,8 +2404,8 @@ ipcMain.on('window-minimize', () => {
             'X-Origin': origin,
             'X-Goog-AuthUser': '0'
           };
-          if (capturedGoogleCookieHeader) {
-            headers['Cookie'] = capturedGoogleCookieHeader;
+          if (effectiveCookieHeader) {
+            headers['Cookie'] = effectiveCookieHeader;
           }
           const body = {
             context: {
@@ -2484,31 +2490,38 @@ ipcMain.on('window-minimize', () => {
           let playlists = [];
           if (doPlaylists) {
             const rawPlaylists = await fetchAllPlaylists(playlistsBrowseId);
-            const plResults = await Promise.allSettled(rawPlaylists.map(async (pl) => {
-              try {
-                const plBrowseId = pl.id.startsWith('VL') ? pl.id : `VL${pl.id}`;
-                const timeoutP = new Promise((_, rej) => setTimeout(() => rej(new Error('pl timeout')), 5000));
-                const plTracks = await Promise.race([fetchAllTracks(plBrowseId), timeoutP]);
-                return {
-                  id: pl.id,
-                  name: pl.name,
-                  cover: pl.cover,
-                  tracks: (plTracks || []).map(t => ({
-                    title: t.title,
-                    artist: t.artist,
-                    duration: t.duration,
-                    id: t.videoId,
-                    url: `https://www.youtube.com/watch?v=${t.videoId}`,
-                    platform,
-                    thumbnail: t.cover,
-                    cover: t.cover
-                  }))
-                };
-              } catch (_) {
-                return { id: pl.id, name: pl.name, cover: pl.cover, tracks: [] };
-              }
-            }));
-            playlists = plResults.map(r => r.status === 'fulfilled' ? r.value : null).filter(Boolean);
+            const batchSize = 4;
+            for (let i = 0; i < rawPlaylists.length; i += batchSize) {
+              const chunk = rawPlaylists.slice(i, i + batchSize);
+              const plResults = await Promise.allSettled(chunk.map(async (pl) => {
+                try {
+                  const plBrowseId = pl.id.startsWith('VL') ? pl.id : `VL${pl.id}`;
+                  const timeoutP = new Promise((_, rej) => setTimeout(() => rej(new Error('pl timeout')), 20000));
+                  let plTracks = await Promise.race([fetchAllTracks(plBrowseId), timeoutP]);
+                  if ((!plTracks || plTracks.length === 0) && plBrowseId !== pl.id) {
+                    plTracks = await Promise.race([fetchAllTracks(pl.id), timeoutP]).catch(() => []);
+                  }
+                  return {
+                    id: pl.id,
+                    name: pl.name,
+                    cover: pl.cover,
+                    tracks: (plTracks || []).map(t => ({
+                      title: t.title,
+                      artist: t.artist,
+                      duration: t.duration,
+                      id: t.videoId,
+                      url: `https://www.youtube.com/watch?v=${t.videoId}`,
+                      platform,
+                      thumbnail: t.cover,
+                      cover: t.cover
+                    }))
+                  };
+                } catch (_) {
+                  return { id: pl.id, name: pl.name, cover: pl.cover, tracks: [] };
+                }
+              }));
+              playlists.push(...plResults.map(r => r.status === 'fulfilled' ? r.value : null).filter(Boolean));
+            }
           }
 
           let albums = [];
@@ -2536,6 +2549,113 @@ ipcMain.on('window-minimize', () => {
           return { success: true, likes, playlists, albums };
         } catch (err) {
           return { success: false, error: (err && err.message) ? err.message : 'Failed to fetch library' };
+        }
+      });
+
+      ipcMain.handle('fetch-youtube-album-tracks', async (event, albumId) => {
+        try {
+          if (!albumId || typeof albumId !== 'string') return { success: false, tracks: [] };
+          const s = session.fromPartition('persist:eclipse-google');
+          const cookies = await s.cookies.get({ name: 'SAPISID' }).catch(() => []);
+          const sapisidCookie = Array.isArray(cookies) ? cookies.find(c => c && c.value) : null;
+          const sapisid = (sapisidCookie && sapisidCookie.value) || getSapisidFromCookieStr(capturedGoogleCookieHeader);
+          const allYtCookies = await s.cookies.get({}).catch(() => []);
+          const sessionCookieStr = Array.isArray(allYtCookies) && allYtCookies.length > 0
+            ? allYtCookies.filter(c => c && c.name && c.value).map(c => `${c.name}=${c.value}`).join('; ')
+            : '';
+          const effectiveCookieHeader = sessionCookieStr || capturedGoogleCookieHeader || '';
+
+          const ts = Math.floor(Date.now() / 1000);
+          const origin = 'https://music.youtube.com';
+          const headers = {
+            'Content-Type': 'application/json',
+            'Origin': origin,
+            'Referer': `${origin}/`,
+            'X-Origin': origin,
+            'X-Goog-AuthUser': '0'
+          };
+          if (sapisid) {
+            const hash = crypto.createHash('sha1').update(`${ts} ${sapisid} ${origin}`).digest('hex');
+            headers['Authorization'] = `SAPISIDHASH ${ts}_${hash}`;
+          }
+          if (effectiveCookieHeader) {
+            headers['Cookie'] = effectiveCookieHeader;
+          }
+          const body = {
+            context: {
+              client: { clientName: 'WEB_REMIX', clientVersion: '1.20240401.01.00', hl: 'en' }
+            },
+            browseId: albumId
+          };
+          const res = await s.fetch('https://music.youtube.com/youtubei/v1/browse?prettyPrint=false', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+            credentials: 'include'
+          });
+          if (!res.ok) return { success: false, tracks: [] };
+          const data = await res.json();
+          const tracks = [];
+          const seen = new Set();
+          function walk(node, visited = new Set()) {
+            if (!node || typeof node !== 'object') return;
+            if (visited.has(node)) return;
+            visited.add(node);
+            if (node.musicResponsiveListItemRenderer) {
+              const r = node.musicResponsiveListItemRenderer;
+              let videoId = (r.playlistItemData && r.playlistItemData.videoId) ? r.playlistItemData.videoId : null;
+              if (!videoId) {
+                const findVid = (obj) => {
+                  if (!obj || typeof obj !== 'object') return null;
+                  if (obj.watchEndpoint && typeof obj.watchEndpoint.videoId === 'string') return obj.watchEndpoint.videoId;
+                  for (const k of Object.keys(obj)) {
+                    const v = findVid(obj[k]);
+                    if (v) return v;
+                  }
+                  return null;
+                };
+                videoId = findVid(r);
+              }
+              if (videoId && !seen.has(videoId)) {
+                seen.add(videoId);
+                const titleNode = r.flexColumns && r.flexColumns[0] && r.flexColumns[0].musicResponsiveListItemFlexColumnRenderer && r.flexColumns[0].musicResponsiveListItemFlexColumnRenderer.text;
+                let title = 'untitled';
+                if (titleNode) {
+                  if (typeof titleNode === 'string') title = titleNode;
+                  else if (titleNode.simpleText) title = titleNode.simpleText;
+                  else if (Array.isArray(titleNode.runs)) title = titleNode.runs.map(x => x.text || '').join('');
+                }
+                let artist = '';
+                if (r.flexColumns && r.flexColumns[1]) {
+                  const runs = r.flexColumns[1].musicResponsiveListItemFlexColumnRenderer && r.flexColumns[1].musicResponsiveListItemFlexColumnRenderer.text && r.flexColumns[1].musicResponsiveListItemFlexColumnRenderer.text.runs;
+                  if (Array.isArray(runs) && runs.length > 0) {
+                    artist = runs[0].text || '';
+                  }
+                }
+                const thumbs = (r.thumbnail && r.thumbnail.musicThumbnailRenderer && r.thumbnail.musicThumbnailRenderer.thumbnail && r.thumbnail.musicThumbnailRenderer.thumbnail.thumbnails) || [];
+                const cover = thumbs.length > 0 ? thumbs[thumbs.length - 1].url : '';
+                tracks.push({
+                  id: videoId,
+                  title,
+                  artist,
+                  duration: 0,
+                  url: `https://www.youtube.com/watch?v=${videoId}`,
+                  platform: 'ytmusic',
+                  cover,
+                  thumbnail: cover
+                });
+              }
+            }
+            if (Array.isArray(node)) {
+              for (const item of node) walk(item, visited);
+            } else {
+              for (const k of Object.keys(node)) walk(node[k], visited);
+            }
+          }
+          walk(data);
+          return { success: true, tracks };
+        } catch (e) {
+          return { success: false, error: e.message, tracks: [] };
         }
       });
 
