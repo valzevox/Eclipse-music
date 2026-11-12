@@ -1,4 +1,4 @@
-(function initRiffDiskStorageDaemon() {
+(function initEclipseDiskStorageDaemon() {
 if (!window.electronAPI || typeof window.electronAPI.storageInitSync !== 'function') return;
 const origGet = Storage.prototype.getItem;
 const origSet = Storage.prototype.setItem;
@@ -110,10 +110,10 @@ try { window.electronAPI.storageSaveSync(diskMap); } catch (_) {}
 
 (() => {
   try {
-    if (typeof window === 'undefined' || window.__riffFetchPatched) return;
+    if (typeof window === 'undefined' || window.__eclipseFetchPatched) return;
     const origFetch = window.fetch ? window.fetch.bind(window) : null;
     if (!origFetch) return;
-    window.__riffFetchPatched = true;
+    window.__eclipseFetchPatched = true;
     window.fetch = function (input, init) {
       try {
         const raw = typeof input === 'string' ? input : (input && input.url) || '';
@@ -148,7 +148,7 @@ try { window.electronAPI.storageSaveSync(diskMap); } catch (_) {}
       window.electronAPI.logError(level, message, stack);
     }
   }
-  window.__riffLogError = reportError;
+  window.__eclipseLogError = reportError;
   window.addEventListener('error', (e) => {
     reportError('ERROR', e.message || String(e), e.error ? e.error.stack : null);
   });
@@ -160,7 +160,7 @@ try { window.electronAPI.storageSaveSync(diskMap); } catch (_) {}
   });
 })();
 
-(async function runRiffSplash() {
+(async function runEclipseSplash() {
   const splash = document.getElementById('splash');
   const host = document.getElementById('splash-logo');
   if (!splash || !host) return;
@@ -2797,7 +2797,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  const audioEngine = new window.RiffAudioEngine();
+  const audioEngine = new window.EclipseAudioEngine();
   window.audioEngine = audioEngine;
   let hlsInstance = null;
   animationFrameId = null;
@@ -11589,7 +11589,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       </div>
       <span class="track-row-duration">${formatDuration(track.duration)}</span>
       <div class="track-row-actions">
-      <button class="btn-icon-pill riff-share-action-btn btn-row-share" title="Copy share link" aria-label="Copy share link">
+      <button class="btn-icon-pill eclipse-share-action-btn btn-row-share" title="Copy share link" aria-label="Copy share link">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 14 20 9 15 4"></polyline><path d="M4 20v-7a4 4 0 0 1 4-4h12"></path></svg>
       </button>
       <button class="btn-icon-pill btn-row-fav btn-fav btn-fav-track" title="favorite">
@@ -26056,7 +26056,7 @@ function bindCoverHoldZoom(wrapEl) {
   }
 
   const btnHomeSpotify = document.getElementById('home-layout-spotify');
-  const btnHomeRiff = document.getElementById('home-layout-riff');
+  const btnHomeRiff = document.getElementById('home-layout-eclipse');
   if (btnHomeSpotify) {
     btnHomeSpotify.addEventListener('click', () => {
       localStorage.setItem('riff_home_layout', 'spotify');

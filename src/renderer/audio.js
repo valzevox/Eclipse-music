@@ -2,7 +2,7 @@
 (function (global) {
   'use strict';
 
-  class RiffAudioEngine {
+  class EclipseAudioEngine {
     constructor() {
       this.ctx = null;
       this.mediaSource = null;
