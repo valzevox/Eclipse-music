@@ -2451,9 +2451,26 @@ async function handleTrending(req, res) {
     return res.end(JSON.stringify({ success: true, type, country, tracks: cached.tracks, videos: cached.videos || [], source: 'ytm' }));
   }
 
-  // Try YouTube Music Charts / Trending first
+  // Try YouTube Music Charts / Trending / New Releases based on requested type
   try {
-    const ytmData = await ytmCharts.getTrending(country);
+    let ytmData = null;
+    if (type === 'charts') {
+      const chartsData = await ytmCharts.getCharts(country);
+      if (chartsData && Array.isArray(chartsData.playlists) && chartsData.playlists.length > 0) {
+        const plData = await ytmCharts.getChartPlaylistTracks(chartsData.playlists[0].id, country);
+        if (plData && Array.isArray(plData.tracks) && plData.tracks.length > 0) {
+          ytmData = { country: chartsData.country, tracks: plData.tracks, videos: [] };
+        }
+      }
+    } else if (type === 'new' || type === 'new_releases') {
+      const nrData = await ytmCharts.getNewReleases(country);
+      if (nrData && Array.isArray(nrData.tracks) && nrData.tracks.length > 0) {
+        ytmData = { country: nrData.country, tracks: nrData.tracks, videos: [] };
+      }
+    }
+    if (!ytmData) {
+      ytmData = await ytmCharts.getTrending(country);
+    }
     if (ytmData && ytmData.tracks && ytmData.tracks.length > 0) {
       serverTrendingCacheMap.set(cacheKey, { ts: Date.now(), tracks: ytmData.tracks, videos: ytmData.videos });
       res.writeHead(200, { 'Content-Type': 'application/json' });

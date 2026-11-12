@@ -150,6 +150,7 @@ async function getCharts(country = 'VN') {
 
     let chartPlaylists = [];
     let topArtists = [];
+    let chartTracks = [];
 
     // Locate Charts entry button
     const chartBtn = explore.top_buttons?.find(b => b.endpoint?.payload?.browseId === 'FEmusic_charts');
@@ -160,6 +161,26 @@ async function getCharts(country = 'VN') {
         const sections = tabs[0]?.tabRenderer?.content?.sectionListRenderer?.contents || [];
 
         for (const sec of sections) {
+          if (sec.musicShelfRenderer?.contents) {
+            for (const item of sec.musicShelfRenderer.contents) {
+              const row = item.musicResponsiveListItemRenderer;
+              if (!row) continue;
+              const vid = row.playlistItemData?.videoId || row.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer?.playNavigationEndpoint?.watchEndpoint?.videoId;
+              if (!vid) continue;
+              const title = row.flexColumns?.[0]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.map(r => r.text).join('') || '';
+              const artist = row.flexColumns?.[1]?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.map(r => r.text).join('') || 'Unknown Artist';
+              const thumb = row.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails?.slice(-1)[0]?.url || `https://i.ytimg.com/vi/${vid}/hqdefault.jpg`;
+              chartTracks.push({
+                rank: chartTracks.length + 1,
+                id: vid,
+                title,
+                artist,
+                thumbnail: thumb,
+                duration: 0,
+                source: 'ytm'
+              });
+            }
+          }
           const carousel = sec.musicCarouselShelfRenderer;
           if (!carousel) continue;
 
@@ -222,6 +243,7 @@ async function getCharts(country = 'VN') {
     return {
       country: normCountry,
       timestamp: Date.now(),
+      tracks: chartTracks,
       playlists: chartPlaylists,
       artists: topArtists
     };
@@ -264,9 +286,77 @@ async function getChartPlaylistTracks(playlistId, country = 'VN') {
   });
 }
 
+async function getNewReleases(country = 'VN') {
+  const normCountry = (country || 'VN').toUpperCase();
+  const cacheKey = `new_releases_${normCountry}`;
+
+  return await withCache(cacheKey, async () => {
+    const yt = await getInnertube(normCountry);
+    let tracks = [];
+    try {
+      const explore = await yt.music.getExplore();
+      // 1. Try New music videos section from explore
+      for (const sec of (explore.sections || [])) {
+        const headerTitle = (sec.header?.title?.toString() || '').toLowerCase();
+        if (headerTitle.includes('new') || headerTitle.includes('mới')) {
+          for (const item of (sec.contents || [])) {
+            const vid = item.id || item.videoId;
+            if (!vid || vid.startsWith('MPED') || vid.startsWith('OLAK')) continue;
+            tracks.push({
+              rank: tracks.length + 1,
+              id: vid,
+              title: item.title?.toString() || '',
+              artist: item.author?.name || (item.artists || item.authors || []).map(a => a.name || a.text || '').filter(Boolean).join(', ') || 'Unknown Artist',
+              thumbnail: item.thumbnail?.[0]?.url || item.thumbnails?.[0]?.url || `https://i.ytimg.com/vi/${vid}/hqdefault.jpg`,
+              duration: item.duration?.seconds || 0,
+              source: 'ytm'
+            });
+          }
+        }
+      }
+      // 2. Fallback: FEmusic_new_releases top button
+      if (tracks.length === 0) {
+        const newBtn = explore.top_buttons?.find(b => b.endpoint?.payload?.browseId === 'FEmusic_new_releases');
+        if (newBtn) {
+          const res = await newBtn.endpoint.call(yt.actions, { client: 'YTMUSIC' });
+          const tabs = res.data?.contents?.singleColumnBrowseResultsRenderer?.tabs || [];
+          const sections = tabs[0]?.tabRenderer?.content?.sectionListRenderer?.contents || [];
+          for (const sec of sections) {
+            const items = sec.musicCarouselShelfRenderer?.contents || sec.musicGridShelfRenderer?.contents || [];
+            for (const item of items) {
+              const twoRow = item.musicTwoRowItemRenderer;
+              if (!twoRow) continue;
+              const vid = twoRow.navigationEndpoint?.watchEndpoint?.videoId;
+              if (!vid) continue;
+              const title = twoRow.title?.runs?.map(r => r.text).join('') || '';
+              const artist = twoRow.subtitle?.runs?.map(r => r.text).join('') || '';
+              const thumb = twoRow.thumbnailRenderer?.musicThumbnailRenderer?.thumbnail?.thumbnails?.slice(-1)[0]?.url || `https://i.ytimg.com/vi/${vid}/hqdefault.jpg`;
+              tracks.push({
+                rank: tracks.length + 1,
+                id: vid,
+                title,
+                artist,
+                thumbnail: thumb,
+                duration: 0,
+                source: 'ytm'
+              });
+            }
+          }
+        }
+      }
+    } catch (_) {}
+    return {
+      country: normCountry,
+      timestamp: Date.now(),
+      tracks
+    };
+  });
+}
+
 module.exports = {
   SUPPORTED_COUNTRIES,
   getTrending,
   getCharts,
-  getChartPlaylistTracks
+  getChartPlaylistTracks,
+  getNewReleases
 };

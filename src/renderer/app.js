@@ -5316,7 +5316,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
             lyricsSessionCache.set(lyricsCacheKey, data);
             const provKey = (data.isCustom ? 'custom' : data.provider) || source;
             const provLabel = (typeof LYRICS_SOURCE_NAMES !== 'undefined' && LYRICS_SOURCE_NAMES[provKey]) || provKey.toUpperCase();
-            showToast(`Lyrics found •• ${provLabel}`, 'info');
+            showToast(`Lyrics found · ${provLabel}`, 'info');
           }
         } catch (fetchErr) {
           data = null;
