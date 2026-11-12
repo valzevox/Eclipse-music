@@ -36,6 +36,18 @@ migrated = true;
 try { origClear.call(window.localStorage); } catch (_) {}
 window.__RIFF_STORAGE_MAP__ = diskMap;
 
+try {
+  for (const k of Object.keys(diskMap)) {
+    if (k.indexOf('riff_') === 0) {
+      const nk = 'eclipse_' + k.slice(5);
+      if (!Object.prototype.hasOwnProperty.call(diskMap, nk)) {
+        diskMap[nk] = diskMap[k];
+        migrated = true;
+      }
+    }
+  }
+} catch (_) {}
+
 if (migrated) {
 window.electronAPI.storageSaveSync(diskMap);
 }
@@ -5837,7 +5849,8 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         el.classList.contains('track-title') ||
         el.classList.contains('track-artist') ||
         el.classList.contains('track-row-title') ||
-        el.classList.contains('track-row-artist')) {
+        el.classList.contains('track-row-artist') ||
+        (el.classList.contains('setting-value') && /^[\+\-]?\d/.test((el.textContent || '').trim()))) {
       return true;
     }
     return false;

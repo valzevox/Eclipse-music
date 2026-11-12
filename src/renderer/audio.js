@@ -841,6 +841,7 @@
     }
   }
 
-  global.RiffAudioEngine = RiffAudioEngine;
+  global.EclipseAudioEngine = EclipseAudioEngine;
+  global.RiffAudioEngine = EclipseAudioEngine;
 
 })(typeof window !== 'undefined' ? window : globalThis);

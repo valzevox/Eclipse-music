@@ -206,6 +206,17 @@ async function launchInstallerAndExit(installerPath, hooks) {
     fs.chmodSync(installerPath, 0o755);
     const child = spawn(installerPath, [], { detached: true, stdio: 'ignore' });
     child.unref();
+  } else if (process.platform === 'win32') {
+    try {
+      const cmd = 'timeout /t 2 /nobreak >nul & start "" "' + installerPath + '"';
+      const child = spawn('cmd.exe', ['/c', cmd], { detached: true, stdio: 'ignore', windowsHide: true });
+      child.unref();
+      try { app.exit(0); } catch (_) { process.exit(0); }
+      return;
+    } catch (_) {
+      const err = await shell.openPath(installerPath);
+      if (err) throw new Error('Không mở được trình cài đặt: ' + err);
+    }
   } else {
     const err = await shell.openPath(installerPath);
     if (err) throw new Error('Không mở được trình cài đặt: ' + err);
