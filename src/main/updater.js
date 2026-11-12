@@ -187,21 +187,20 @@ function cleanOldVersionArtifacts(currentVer) {
 function launchInstallerAndExit(installerPath) {
   if (process.platform === 'win32') {
     try {
-      // Launch installer interactively so user sees progress and finishes with running Eclipse
-      const child = spawn(installerPath, [], {
+      // Wait 2s after app.exit(0) before starting installer so Eclipse.exe is 100% closed
+      const child = spawn('cmd.exe', ['/c', `timeout /t 2 /nobreak >nul & start "" "${installerPath}"`], {
         detached: true,
-        stdio: 'ignore'
+        stdio: 'ignore',
+        windowsHide: true
       });
       child.unref();
-      setTimeout(() => {
-        try { app.quit(); } catch (_) {}
-      }, 500);
+      try { app.exit(0); } catch (_) { process.exit(0); }
       return;
     } catch (_) {
       try { shell.openPath(installerPath); } catch (_) {}
       setTimeout(() => {
-        try { app.quit(); } catch (_) {}
-      }, 500);
+        try { app.exit(0); } catch (_) { process.exit(0); }
+      }, 300);
       return;
     }
   }
