@@ -21815,7 +21815,7 @@ function bindCoverHoldZoom(wrapEl) {
       googleConnected = false;
     }
     updateGoogleAuthUI();
-    if (googleConnected && typeof getSavedAlbums === 'function' && getSavedAlbums().length === 0 && !window.__eclipseAutoSyncedAlbums && !window.__eclipseAutoSyncing) {
+    if (googleConnected && typeof getSavedAlbums === 'function' && !window.__eclipseAutoSyncedAlbums && !window.__eclipseAutoSyncing) {
       window.__eclipseAutoSyncing = true;
       setTimeout(async () => {
         try {
