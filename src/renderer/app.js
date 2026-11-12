@@ -1,3 +1,4 @@
+try { Object.keys(localStorage).forEach(function(k) { if (k.indexOf('riff_') === 0) { var nk = 'eclipse_' + k.slice(5); if (localStorage.getItem(nk) === null) { localStorage.setItem(nk, localStorage.getItem(k)); } localStorage.removeItem(k); } }); } catch (_) {}
 (function initEclipseDiskStorageDaemon() {
 if (!window.electronAPI || typeof window.electronAPI.storageInitSync !== 'function') return;
 const origGet = Storage.prototype.getItem;
