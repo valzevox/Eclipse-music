@@ -415,7 +415,9 @@ function runGUI() {
         mainWindow.setBackgroundColor('#000000');
         mainWindow.webContents.once('did-finish-load', () => { if (result) mainWindow.webContents.send('welcome-result', result); });
         mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-        require('./updater').initUpdater(() => mainWindow);
+        require('./updater').initUpdater(() => mainWindow, {
+          beforeExit: () => { isQuitting = true; }
+        });
       });
     }
 
@@ -2803,7 +2805,9 @@ ipcMain.on('window-minimize', () => {
             mainWindow?.webContents.send('media-control', 'prev');
           });
         } catch (e) {}
-        if (tutorialDone()) require('./updater').initUpdater(() => mainWindow);
+        if (tutorialDone()) require('./updater').initUpdater(() => mainWindow, {
+          beforeExit: () => { isQuitting = true; }
+        });
         app.on('activate', () => {
           if (BrowserWindow.getAllWindows().length === 0) createWindow();
         });
