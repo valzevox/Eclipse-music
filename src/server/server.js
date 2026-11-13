@@ -2439,6 +2439,40 @@ function fetchItunesTopSongs(limit = 30) {
   return fetchItunesFeed('topsongs', limit);
 }
 
+
+async function checkNetConnectivity() {
+  const tryReq = (urlStr) => new Promise((resolve) => {
+    try {
+      const parsed = new URL(urlStr);
+      const mod = parsed.protocol === 'http:' ? http : https;
+      const req = mod.request(parsed, {
+        method: 'HEAD',
+        timeout: 3500,
+        family: 4,
+        headers: { 'User-Agent': 'Eclipse' }
+      }, (res) => {
+        res.resume();
+        resolve(res.statusCode >= 200 && res.statusCode < 400);
+      });
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(false);
+      });
+      req.on('error', () => {
+        resolve(false);
+      });
+      req.end();
+    } catch (_) {
+      resolve(false);
+    }
+  });
+
+  const googleOk = await tryReq('https://www.google.com/generate_204');
+  if (googleOk) return true;
+  const cfOk = await tryReq('https://1.1.1.1');
+  return Boolean(cfOk);
+}
+
 async function handleTrending(req, res) {
   const parsedUrl = url.parse(req.url, true);
   const type = String(parsedUrl.query.type || parsedUrl.query.category || 'trending').toLowerCase().trim();
@@ -9379,6 +9413,12 @@ const server = http.createServer(async (req, res) => {
       handleVibeRecommendations(req, res, payload);
     });
     return;
+  }
+
+    if (parsedUrl.pathname === '/api/net-check') {
+    const online = await checkNetConnectivity();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ online: Boolean(online) }));
   }
 
   if (parsedUrl.pathname === '/api/trending') {

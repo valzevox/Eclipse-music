@@ -3182,7 +3182,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       const isTvkVisualizerVisible = state.isTvKaraokeOpen && tvkCanvas && tvkCanvas.offsetParent !== null && !document.hidden;
       const isBehindVizVisible = (document.body.classList.contains('bar-viz-behind') || isVizConnectedMode()) && localStorage.getItem('eclipse_bar_wave') !== '0' && !document.body.classList.contains('mini') && !document.hidden;
       const needBassPulse = !!(state.vfx && state.vfx.bassPulse);
-      const activeGap = document.querySelector('.lyric-line.lyric-gap.active');
+            const activeGap = document.querySelector('.lyric-line.lyric-gap.active');
+      if (activeGap && state.isPlaying && state.syncedLyrics) {
+        updateActiveGapProgress(activeGap, el.nativeAudio ? el.nativeAudio.currentTime : 0);
+      }
 
       if (!document.body.classList.contains('perf') && (isVisualizerVisible || isTvkVisualizerVisible || isBehindVizVisible || needBassPulse || activeGap)) {
         if (!freqData && audioEngine && audioEngine.getAnalyserNode) {
@@ -6246,6 +6249,22 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
   const CUSTOM_SHIFT_LEAD_SECONDS = 4.0;
 
+  
+  function updateActiveGapProgress(gapEl, time) {
+    if (!gapEl || !state.syncedLyrics) return;
+    const lineIdx = gapEl.id ? parseInt(gapEl.id.replace('lyric-line-', ''), 10) : -1;
+    if (lineIdx < 0 || !state.syncedLyrics[lineIdx]?.isGap) return;
+    const start = typeof getLineStartTime === 'function' ? getLineStartTime(lineIdx) : 0;
+    const end = typeof getLineEndTime === 'function' ? getLineEndTime(lineIdx) : (start + 4.0);
+    const dur = Math.max(0.1, end - start);
+    const effectiveTime = (time !== undefined && time !== null) ? time : ((el.nativeAudio ? el.nativeAudio.currentTime : 0));
+    const progress = Math.min(1, Math.max(0, (effectiveTime - start) / dur));
+    const pct = progress >= 0.999 ? '100%' : (progress * 100).toFixed(2) + '%';
+    if (gapEl.style.getPropertyValue('--gap-pct') !== pct) {
+      gapEl.style.setProperty('--gap-pct', pct);
+    }
+  }
+
   function getLineStartTime(idx) {
     const lines = state.syncedLyrics;
     if (idx < 0 || idx >= lines.length) return -1;
@@ -8493,6 +8512,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         state.isPlaying = true;
         mvController.onPlay();
         updatePlayPauseButton(true, false);
+      try { updateTopMomentPin(); prefetchUpcomingQueueStreams(); } catch (_) {}
       }
       return;
     }
@@ -11034,7 +11054,356 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     }
   }, true);
 
+
+  // === ECLIPSE MERGE: RESET TRACK AUDIO SOURCE ===
+  async function resetTrackAudioSource(track) {
+    if (!track) return;
+    const oldSourceId = track.resolvedYtId || (track.id && !String(track.id).startsWith('eclipse-') ? track.id : null) || track.url;
+
+    try {
+      let blockedSources = JSON.parse(localStorage.getItem('eclipse_blocked_audio_sources') || '[]');
+      if (oldSourceId && !blockedSources.includes(oldSourceId)) {
+        blockedSources.push(oldSourceId);
+        localStorage.setItem('eclipse_blocked_audio_sources', JSON.stringify(blockedSources));
+      }
+    } catch (_) {}
+
+    delete track._preloadedStreamUrl;
+    delete track._preloadedStreamQuality;
+    delete track._preloadedAt;
+    delete track.streamUrl;
+    delete track.resolvedYtId;
+    track.isCached = false;
+    if (typeof cachedTrackIds !== 'undefined' && cachedTrackIds instanceof Set) {
+      if (track.id) cachedTrackIds.delete(track.id);
+      if (oldSourceId) cachedTrackIds.delete(oldSourceId);
+    }
+
+    if (track.id) {
+      fetch(`http://127.0.0.1:${state.serverPort}/api/offline-delete?id=${encodeURIComponent(track.id)}`, { method: 'POST' }).catch(() => {});
+    }
+    if (oldSourceId && oldSourceId !== track.id) {
+      fetch(`http://127.0.0.1:${state.serverPort}/api/offline-delete?id=${encodeURIComponent(oldSourceId)}`, { method: 'POST' }).catch(() => {});
+    }
+
+    showToast(typeof t === 'function' ? t('Searching new audio source...') : 'Searching new audio source...');
+
+    try {
+      const q = `${track.artist ? track.artist + ' ' : ''}${track.title || ''}`.trim();
+      let searchRes = await fetch(`http://127.0.0.1:${state.serverPort}/api/search?q=${encodeURIComponent(q)}&platform=ytmusic`);
+      let searchData = await searchRes.json().catch(() => ({}));
+      let results = (searchData && (searchData.tracks || searchData.results)) || [];
+      if (!results.length) {
+        searchRes = await fetch(`http://127.0.0.1:${state.serverPort}/api/search?q=${encodeURIComponent(q)}&platform=youtube`);
+        searchData = await searchRes.json().catch(() => ({}));
+        results = (searchData && (searchData.tracks || searchData.results)) || [];
+      }
+
+      let blockedList = [];
+      try { blockedList = JSON.parse(localStorage.getItem('eclipse_blocked_audio_sources') || '[]'); } catch (_) {}
+
+      const candidate = results.find(c => {
+        const cid = c.id || c.videoId || c.url;
+        return cid && cid !== oldSourceId && !blockedList.includes(cid);
+      });
+
+      if (candidate) {
+        track.resolvedYtId = candidate.id || candidate.videoId;
+        if (candidate.url) track.url = candidate.url;
+        if (candidate.duration && (!track.duration || track._hadNoDurationOnImport)) {
+          track.duration = candidate.duration;
+        }
+        showToast(typeof t === 'function' ? t('Audio source updated!') : 'Audio source updated!');
+        if (state.currentTrack && isSameTrack(state.currentTrack, track)) {
+          playTrack(track, state.queue, state.queueIndex, state.currentTrackContext);
+        }
+      } else {
+        showToast(typeof t === 'function' ? t('No alternative audio source found') : 'No alternative audio source found', 'warn');
+      }
+    } catch (err) {
+      showToast((typeof t === 'function' ? t('Failed to search new audio source') : 'Failed to search new audio source') + ': ' + err.message, 'error');
+    }
+  }
+
+  // === ECLIPSE MERGE: TOP MOMENT PIN ===
+  function getTopMomentsMap() {
+    try {
+      return JSON.parse(localStorage.getItem('eclipse_top_moments') || '{}');
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function getTopMoment(track) {
+    if (!track) return null;
+    const map = getTopMomentsMap();
+    if (typeof track === 'string' || typeof track === 'number') {
+      const v = map[String(track)];
+      return (typeof v === 'number' && Number.isFinite(v)) ? v : null;
+    }
+    const cid = (typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(track) : '') || track.id;
+    if (cid && typeof map[cid] === 'number') return map[cid];
+    if (track.id && typeof map[track.id] === 'number') return map[track.id];
+    const norm = (track.artist && track.title) ? `${track.artist.trim().toLowerCase()} - ${track.title.trim().toLowerCase()}` : '';
+    if (norm && typeof map[norm] === 'number') return map[norm];
+    return null;
+  }
+
+  function setTopMoment(track, timestamp) {
+    if (!track || typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return;
+    const map = getTopMomentsMap();
+    const val = Math.max(0, Math.round(timestamp * 100) / 100);
+    const cid = (typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(track) : '') || track.id;
+    if (cid) map[cid] = val;
+    if (track.id) map[track.id] = val;
+    const norm = (track.artist && track.title) ? `${track.artist.trim().toLowerCase()} - ${track.title.trim().toLowerCase()}` : '';
+    if (norm) map[norm] = val;
+    localStorage.setItem('eclipse_top_moments', JSON.stringify(map));
+    updateTopMomentPin();
+  }
+
+  function removeTopMoment(track) {
+    if (!track) return;
+    const map = getTopMomentsMap();
+    const cid = (typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(track) : '') || track.id;
+    if (cid) delete map[cid];
+    if (track.id) delete map[track.id];
+    const norm = (track.artist && track.title) ? `${track.artist.trim().toLowerCase()} - ${track.title.trim().toLowerCase()}` : '';
+    if (norm) delete map[norm];
+    localStorage.setItem('eclipse_top_moments', JSON.stringify(map));
+    updateTopMomentPin();
+  }
+
+  function getTopMomentIconHtml() {
+    const iconType = localStorage.getItem('eclipse_top_moment_icon') || 'heart';
+    if (iconType === 'minecraft') {
+      const mcSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9" shape-rendering="crispEdges" width="18" height="18" style="display:block;image-rendering:pixelated;"><rect x="2" y="0" width="1" height="1" fill="#000000"/><rect x="3" y="0" width="1" height="1" fill="#000000"/><rect x="5" y="0" width="1" height="1" fill="#000000"/><rect x="6" y="0" width="1" height="1" fill="#000000"/><rect x="1" y="1" width="1" height="1" fill="#000000"/><rect x="2" y="1" width="1" height="1" fill="#ff1313"/><rect x="3" y="1" width="1" height="1" fill="#ff1313"/><rect x="4" y="1" width="1" height="1" fill="#000000"/><rect x="5" y="1" width="1" height="1" fill="#ff1313"/><rect x="6" y="1" width="1" height="1" fill="#ff1313"/><rect x="7" y="1" width="1" height="1" fill="#000000"/><rect x="0" y="2" width="1" height="1" fill="#000000"/><rect x="1" y="2" width="1" height="1" fill="#ff1313"/><rect x="2" y="2" width="1" height="1" fill="#ffc8c8"/><rect x="3" y="2" width="1" height="1" fill="#ff1313"/><rect x="4" y="2" width="1" height="1" fill="#ff1313"/><rect x="5" y="2" width="1" height="1" fill="#ff1313"/><rect x="6" y="2" width="1" height="1" fill="#ff1313"/><rect x="7" y="2" width="1" height="1" fill="#ff1313"/><rect x="8" y="2" width="1" height="1" fill="#000000"/><rect x="0" y="3" width="1" height="1" fill="#000000"/><rect x="1" y="3" width="1" height="1" fill="#ff1313"/><rect x="2" y="3" width="1" height="1" fill="#ff1313"/><rect x="3" y="3" width="1" height="1" fill="#ff1313"/><rect x="4" y="3" width="1" height="1" fill="#ff1313"/><rect x="5" y="3" width="1" height="1" fill="#ff1313"/><rect x="6" y="3" width="1" height="1" fill="#ff1313"/><rect x="7" y="3" width="1" height="1" fill="#ff1313"/><rect x="8" y="3" width="1" height="1" fill="#000000"/><rect x="0" y="4" width="1" height="1" fill="#000000"/><rect x="1" y="4" width="1" height="1" fill="#bb1313"/><rect x="2" y="4" width="1" height="1" fill="#ff1313"/><rect x="3" y="4" width="1" height="1" fill="#ff1313"/><rect x="4" y="4" width="1" height="1" fill="#ff1313"/><rect x="5" y="4" width="1" height="1" fill="#ff1313"/><rect x="6" y="4" width="1" height="1" fill="#ff1313"/><rect x="7" y="4" width="1" height="1" fill="#bb1313"/><rect x="8" y="4" width="1" height="1" fill="#000000"/><rect x="1" y="5" width="1" height="1" fill="#000000"/><rect x="2" y="5" width="1" height="1" fill="#bb1313"/><rect x="3" y="5" width="1" height="1" fill="#ff1313"/><rect x="4" y="5" width="1" height="1" fill="#ff1313"/><rect x="5" y="5" width="1" height="1" fill="#ff1313"/><rect x="6" y="5" width="1" height="1" fill="#bb1313"/><rect x="7" y="5" width="1" height="1" fill="#000000"/><rect x="2" y="6" width="1" height="1" fill="#000000"/><rect x="3" y="6" width="1" height="1" fill="#bb1313"/><rect x="4" y="6" width="1" height="1" fill="#ff1313"/><rect x="5" y="6" width="1" height="1" fill="#bb1313"/><rect x="6" y="6" width="1" height="1" fill="#000000"/><rect x="3" y="7" width="1" height="1" fill="#000000"/><rect x="4" y="7" width="1" height="1" fill="#bb1313"/><rect x="5" y="7" width="1" height="1" fill="#000000"/><rect x="4" y="8" width="1" height="1" fill="#000000"/></svg>';
+      return `<div class="top-moment-inner top-moment-mc" style="width:18px;height:18px;position:relative;background:none !important;border-radius:0 !important;mask:none !important;-webkit-mask:none !important;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.5));">
+        <div style="position:absolute;inset:0;opacity:0.42;pointer-events:none;">${mcSvg}</div>
+        <div style="position:absolute;inset:0;clip-path:inset(0 calc(100% - var(--fill-pct, 0%)) 0 0);pointer-events:none;">${mcSvg}</div>
+      </div>`;
+    }
+    let maskUrl = '';
+    if (iconType === 'honey') {
+      maskUrl = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#000" stroke="#000" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M12 3.5c-.38 0-.73.16-1 .44L6.44 8.7C4.9 10.3 4 12.44 4 14.7 4 19.12 7.58 22.7 12 22.7s8-3.58 8-8c0-2.26-.9-4.4-2.44-6l-4.56-4.76c-.27-.28-.62-.44-1-.44z"/></svg>');
+    } else if (iconType === 'star') {
+      maskUrl = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#000" stroke="#000" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" d="m12 17.27 4.15 2.51c.76.46 1.69-.22 1.49-1.08l-1.1-4.73 3.67-3.18c.67-.58.31-1.68-.57-1.75l-4.83-.41-1.89-4.46c-.34-.81-1.5-.81-1.84 0L9.19 8.63l-4.83.41c-.88.07-1.24 1.17-.57 1.75l3.67 3.18-1.1 4.73c-.2.86.73 1.54 1.49 1.08l4.15-2.5z"/></svg>');
+    } else if (iconType === 'fire') {
+      maskUrl = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#000" stroke="#000" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" d="M13.5 1.5s.74 2.3.74 4.17c0 1.8-.9 3.25-2.7 3.25-1.8 0-3.15-1.45-3.15-3.25l.03-.31C6.2 7.36 5 9.8 5 13c0 4.1 3.13 7.5 7 7.5s7-3.4 7-7.5c0-4.7-2.25-8.9-5.5-11.5z"/></svg>');
+    } else {
+      maskUrl = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#000" stroke="#000" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round" d="M12 20.4c-.38 0-.74-.15-1.02-.42-1.3-1.18-2.61-2.29-3.8-3.32C4.1 14.01 2 11.75 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.25-2.1 5.51-5.18 8.16-1.19 1.03-2.5 2.14-3.8 3.32-.28.27-.64.42-1.02.42z"/></svg>');
+    }
+    return `<div class="top-moment-inner" style="-webkit-mask-image: url('${maskUrl}'); mask-image: url('${maskUrl}'); border-radius: 6px;"></div>`;
+  }
+
+  function updateTopMomentPin() {
+    const track = state.currentTrack;
+    if (!track) return;
+    const momentTime = getTopMoment(track);
+    const dur = typeof getReliableTrackDuration === 'function' ? getReliableTrackDuration() : (track.duration || 0);
+
+    ['scrubber-track', 'tvk-progress-row'].forEach(containerId => {
+      const container = document.getElementById(containerId);
+      if (!container) return;
+      let pin = container.querySelector('.top-moment-pin');
+      if (momentTime === null || dur <= 0 || momentTime > dur) {
+        if (pin) {
+          pin.classList.remove('visible');
+          setTimeout(() => { if (pin && !pin.classList.contains('visible')) pin.style.display = 'none'; }, 240);
+        }
+        return;
+      }
+      const isNewPin = !pin;
+      if (!pin) {
+        pin = document.createElement('div');
+        pin.className = 'top-moment-pin';
+        pin.id = containerId === 'scrubber-track' ? 'top-moment-pin' : 'tvk-top-moment-pin';
+        container.appendChild(pin);
+      }
+
+      const currentIconType = localStorage.getItem('eclipse_top_moment_icon') || 'heart';
+      if (!pin.firstElementChild || pin.dataset.iconType !== currentIconType) {
+        pin.innerHTML = getTopMomentIconHtml();
+        pin.dataset.iconType = currentIconType;
+      }
+
+      const ratio = Math.max(0, Math.min(1, momentTime / dur));
+      let targetLeft = '';
+      if (containerId === 'tvk-progress-row') {
+        const rowW = container.clientWidth || (typeof cachedTvkProgWidth !== 'undefined' ? cachedTvkProgWidth : 320);
+        const pad = 10;
+        const px = pad + ratio * Math.max(0, rowW - 2 * pad);
+        targetLeft = px + 'px';
+      } else {
+        targetLeft = `calc(5.5px + (100% - 11px) * ${ratio.toFixed(4)})`;
+      }
+
+      const wasVisible = !isNewPin && pin.classList.contains('visible');
+      pin.style.display = 'flex';
+
+      if (!wasVisible) {
+        pin.style.transition = 'none';
+        pin.style.left = targetLeft;
+        void pin.offsetWidth;
+        pin.style.transition = '';
+        requestAnimationFrame(() => pin.classList.add('visible'));
+      } else {
+        pin.classList.add('visible');
+        pin.style.left = targetLeft;
+      }
+
+      pin.title = `${typeof t === 'function' ? t('Top moment') : 'Top moment'}: ${formatDuration(momentTime)} (click to jump, right click to remove)`;
+
+      pin.onclick = (e) => {
+        e.stopPropagation();
+        if (el.nativeAudio && Number.isFinite(momentTime)) {
+          el.nativeAudio.currentTime = momentTime;
+          if (typeof updateMediaPositionState === 'function') updateMediaPositionState();
+        }
+      };
+      pin.oncontextmenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        removeTopMoment(track);
+        showToast(typeof t === 'function' ? t('Top moment removed') : 'Top moment removed');
+      };
+    });
+  }
+
+  // === ECLIPSE MERGE: STREAM PREFETCH & ZERO DELAY QUEUE ===
+  const streamPrefetchQueue = [];
+  let streamPrefetchActive = 0;
+  const STREAM_PREFETCH_MAX = 2;
+  const prefetchedTrackKeys = new Set();
+
+  function pumpStreamPrefetch() {
+    while (streamPrefetchActive < STREAM_PREFETCH_MAX && streamPrefetchQueue.length) {
+      const { run } = streamPrefetchQueue.shift();
+      streamPrefetchActive++;
+      run().finally(() => { streamPrefetchActive--; pumpStreamPrefetch(); });
+    }
+  }
+
+  function enqueueStreamPrefetch(track) {
+    if (!track || track.platform === 'local' || (typeof isStaticTikTokTrack === 'function' && isStaticTikTokTrack(track))) return;
+    if (track._preloadedStreamUrl) return;
+    const key = (typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(track) : '') || (track.id || track.url || (track.artist + '_' + track.title));
+    if (!key || prefetchedTrackKeys.has(key)) return;
+    prefetchedTrackKeys.add(key);
+    streamPrefetchQueue.push({ key, run: () => {
+      const quality = localStorage.getItem('eclipse_audio_quality') || 'medium';
+      const qQuality = encodeURIComponent(quality);
+      const qSearch = encodeURIComponent(track.searchQuery || ((track.artist ? track.artist + ' - ' : '') + (track.title || '')));
+      const u = `http://127.0.0.1:${state.serverPort}/api/stream-info?url=${encodeURIComponent(track.url || '')}&id=${encodeURIComponent(track.id || '')}&platform=${track.platform || state.platform}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&thumbnail=${encodeURIComponent(track.thumbnail || '')}&quality=${qQuality}&q=${qSearch}`;
+      return fetch(u)
+        .then((r) => r.json())
+        .then((d) => {
+          if (d && d.success && d.streamUrl) {
+            track._preloadedStreamUrl = d.streamUrl;
+            track._preloadedStreamQuality = quality;
+          } else {
+            prefetchedTrackKeys.delete(key);
+          }
+        })
+        .catch(() => { prefetchedTrackKeys.delete(key); });
+    } });
+    pumpStreamPrefetch();
+  }
+
+  function prefetchUpcomingQueueStreams() {
+    if (!state.queue || state.queueIndex < 0) return;
+    if (typeof preloadNextTrackStream === 'function') preloadNextTrackStream();
+    const secondNext = state.queue[state.queueIndex + 2];
+    if (secondNext && !secondNext._preloadedStreamUrl && secondNext.platform !== 'local' && !(typeof isStaticTikTokTrack === 'function' && isStaticTikTokTrack(secondNext))) {
+      enqueueStreamPrefetch(secondNext);
+    }
+  }
+
+  // === ECLIPSE MERGE: OFFLINE MODE ===
+  function setOfflineBannerVisible(offline) {
+    const banner = document.getElementById('offline-top-banner');
+    if (banner) {
+      banner.classList.toggle('hidden', !offline);
+    }
+  }
+  window.setOfflineBannerVisible = setOfflineBannerVisible;
+
+  async function checkAndShowOfflineMode(isStartup = false) {
+    const modal = document.getElementById('offline-mode-modal');
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      setOfflineBannerVisible(true);
+      if (modal && typeof openModal === 'function') openModal(modal);
+      return;
+    }
+    try {
+      const port = state.serverPort || 38472;
+      const res = await fetch(`http://127.0.0.1:${port}/api/net-check`);
+      const data = await res.json();
+      if (data && data.online === false) {
+        setOfflineBannerVisible(true);
+        if (modal && typeof openModal === 'function') openModal(modal);
+      } else if (data && data.online) {
+        setOfflineBannerVisible(false);
+      }
+    } catch (_) {
+      if (!isStartup) {
+        setOfflineBannerVisible(true);
+        if (modal && typeof openModal === 'function') openModal(modal);
+      }
+    }
+  }
+
+  function initOfflineMode() {
+    const modal = document.getElementById('offline-mode-modal');
+    const btnOk = document.getElementById('btn-offline-ok');
+    const btnRetry = document.getElementById('btn-offline-retry');
+    const btnTopRetry = document.getElementById('btn-offline-top-retry');
+
+    if (btnOk && modal) {
+      btnOk.addEventListener('click', () => {
+        if (typeof closeModal === 'function') closeModal(modal);
+        if (typeof switchView === 'function') switchView('local');
+      });
+    }
+
+    const doRetry = async (btn) => {
+      if (btn) btn.disabled = true;
+      try {
+        const port = state.serverPort || 38472;
+        const res = await fetch(`http://127.0.0.1:${port}/api/net-check`);
+        const data = await res.json();
+        if (data && data.online) {
+          setOfflineBannerVisible(false);
+          if (modal && typeof closeModal === 'function') closeModal(modal);
+          if (typeof goHome === 'function') goHome();
+        } else {
+          setOfflineBannerVisible(true);
+          showToast(typeof t === 'function' ? t('Still offline') : 'Still offline', 'warning');
+        }
+      } catch (_) {
+        setOfflineBannerVisible(true);
+        showToast(typeof t === 'function' ? t('Still offline') : 'Still offline', 'warning');
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    };
+
+    if (btnRetry) btnRetry.addEventListener('click', () => doRetry(btnRetry));
+    if (btnTopRetry) btnTopRetry.addEventListener('click', () => doRetry(btnTopRetry));
+
+    window.addEventListener('offline', () => {
+      setOfflineBannerVisible(true);
+      if (modal && typeof openModal === 'function') openModal(modal);
+    });
+    window.addEventListener('online', () => {
+      setOfflineBannerVisible(false);
+    });
+  }
+
   function openTrackContextMenu(e, track, options = {}) {
+    const capturedCurTime = (typeof options.timestamp === "number" && Number.isFinite(options.timestamp))
+      ? options.timestamp
+      : ((state.currentTrack && isSameTrack(state.currentTrack, track) && el.nativeAudio) ? el.nativeAudio.currentTime : 0);
     if (ctxMenuEl && ctxMenuEl.classList.contains('open')) {
       closeTrackContextMenu();
       return;

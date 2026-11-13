@@ -60,6 +60,11 @@
   </header>
 
   <div class="top-nav">
+        <div class="offline-top-banner hidden" id="offline-top-banner">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22.61 16.95A5 5 0 0 0 18 10h-1.26a8 8 0 0 0-7.05-6M5 5a8 8 0 0 0 4 15h9a5 5 0 0 0 1.7-.3"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+      <span data-i18n>Offline mode</span>
+      <button type="button" class="offline-top-retry-btn" id="btn-offline-top-retry" data-i18n>Retry</button>
+    </div>
     <div class="search-box-wrapper">
       <div class="search-box">
         <button id="search-icon-btn" class="search-icon-btn" title="Search" type="button">
@@ -328,6 +333,7 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.5" y2="16.5"></line></svg>
           <input type="text" class="view-search-input" id="favorites-search-input" placeholder="Search favorites..." autocomplete="off">
         </div>
+        <div class="sp-tracks-table-head"><span class="sp-th-num">#</span><span class="sp-th-title" data-i18n>Title</span><span class="sp-th-album" data-i18n>Album</span><span class="sp-th-plays" data-i18n>Plays</span><span class="sp-th-date" data-i18n>Date added</span><span class="sp-th-dur"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg></span></div>
         <div class="tracks-list" id="favorites-tracks-list">
           <div class="empty-hint">No favorite tracks yet. Click the heart icon on any song to save it.</div>
         </div>
@@ -434,6 +440,7 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.5" y2="16.5"></line></svg>
           <input type="text" class="view-search-input" id="playlist-search-input" placeholder="Search in playlist..." autocomplete="off">
         </div>
+        <div class="sp-tracks-table-head"><span class="sp-th-num">#</span><span class="sp-th-title" data-i18n>Title</span><span class="sp-th-album" data-i18n>Album</span><span class="sp-th-plays" data-i18n>Plays</span><span class="sp-th-date" data-i18n>Date added</span><span class="sp-th-dur"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg></span></div>
         <div class="tracks-list" id="playlist-tracks-list"></div>
       </section>
 
@@ -4027,5 +4034,6 @@
       </div>
     </div>
 
+  <div class="modal-backdrop hidden" id="offline-mode-modal"><div class="dialog-card" style="max-width:380px;text-align:center;align-items:center;gap:14px;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg><p style="margin:0;font-size:15px;font-weight:600;line-height:1.45;color:var(--md-sys-color-on-surface);" data-i18n>You are in offline mode because there is no WiFi connection.</p><div class="dialog-actions" style="justify-content:center;width:100%;gap:10px;"><button type="button" class="btn-outline-pill" id="btn-offline-ok" style="flex:1;justify-content:center;" data-i18n>OK</button><button type="button" class="btn-pill-primary" id="btn-offline-retry" style="flex:1;justify-content:center;" data-i18n>Retry</button></div></div></div>
 </body>
 </html>
