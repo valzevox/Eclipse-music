@@ -208,10 +208,12 @@ async function launchInstallerAndExit(installerPath, hooks) {
     child.unref();
   } else if (process.platform === 'win32') {
     try {
-      const execDir = path.dirname(process.execPath);
+      const execPath = process.execPath;
+      const execDir = path.dirname(execPath);
       const isUnpacked = fs.existsSync(path.join(execDir, 'resources', 'app.asar'));
       const dirArg = isUnpacked ? ' /D=' + execDir : '';
-      const cmd = 'timeout /t 2 /nobreak >nul & start "" "' + installerPath + '" /S' + dirArg;
+      const restartCmd = ' & ping 127.0.0.1 -n 12 >nul & start "" "' + execPath + '"';
+      const cmd = 'ping 127.0.0.1 -n 3 >nul & start "" "' + installerPath + '" /S' + dirArg + restartCmd;
       const child = spawn('cmd.exe', ['/c', cmd], { detached: true, stdio: 'ignore', windowsHide: true });
       child.unref();
       try { app.exit(0); } catch (_) { process.exit(0); }
