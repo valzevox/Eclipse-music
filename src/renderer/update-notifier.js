@@ -208,6 +208,19 @@
           });
         }
 
+        if (window.electronAPI.onUpdateError) {
+          window.electronAPI.onUpdateError((err) => {
+            if (statusTxt) {
+              statusTxt.textContent = (err && err.message) ? err.message : 'Update failed';
+              statusTxt.style.color = '#ff7b7b';
+            }
+            goBtn.disabled = false;
+            goBtn.style.opacity = '1';
+            goBtn.textContent = 'Retry';
+            if (laterBtn) laterBtn.style.display = 'inline-block';
+          });
+        }
+
         window.electronAPI.installUpdateNow();
         return;
       }

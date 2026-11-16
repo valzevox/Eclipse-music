@@ -212,9 +212,19 @@ async function launchInstallerAndExit(installerPath, hooks) {
       const execDir = path.dirname(execPath);
       const isUnpacked = fs.existsSync(path.join(execDir, 'resources', 'app.asar'));
       const dirArg = isUnpacked ? ' /D=' + execDir : '';
-      const restartCmd = ' & ping 127.0.0.1 -n 12 >nul & start "" "' + execPath + '"';
-      const cmd = 'ping 127.0.0.1 -n 3 >nul & start "" "' + installerPath + '" /S' + dirArg + restartCmd;
-      const child = spawn('cmd.exe', ['/c', cmd], { detached: true, stdio: 'ignore', windowsHide: true });
+      const batPath = path.join(app.getPath('temp'), `eclipse-updater-${Date.now()}.bat`);
+      const batLines = [
+        '@echo off',
+        'ping 127.0.0.1 -n 3 >nul',
+        'taskkill /F /IM "Eclipse.exe" /T >nul 2>&1',
+        'ping 127.0.0.1 -n 2 >nul',
+        `start /wait "" "${installerPath}" /S${dirArg}`,
+        'ping 127.0.0.1 -n 2 >nul',
+        `start "" "${execPath}"`,
+        '(goto) 2>nul & del "%~f0"'
+      ];
+      fs.writeFileSync(batPath, batLines.join('\r\n'), 'utf8');
+      const child = spawn('cmd.exe', ['/c', `"${batPath}"`], { detached: true, stdio: 'ignore', windowsHide: true });
       child.unref();
       try { app.exit(0); } catch (_) { process.exit(0); }
       return;
