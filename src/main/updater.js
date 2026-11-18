@@ -1,65 +1,92 @@
-// src/main/updater.js
+// d:\Eclipse\eclipse-pc\src\main\updater.js
+// Eclipse Enterprise Auto-Updater Engine (Chrome / VS Code / Slack Standard)
 const { app, ipcMain, shell, net } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const { Readable } = require('stream');
 const { once } = require('events');
 
-const CHECK_DELAY_MS = 2500;
-const CHECK_EVERY_MS = 2 * 60 * 60 * 1000;
-const RELEASE_API = 'https://api.github.com/repos/valzevox/Eclipse-music/releases/latest';
+const {
+  isNewerSemVer,
+  findMatchingAsset,
+  parseLatestYml,
+  verifyBufferSha512Base64,
+  evaluateBlockedVersion,
+  evaluateMinSupported,
+  decideRangeResume
+} = require('./updater-core');
+
+const { initLogger, logStage, getLogPath } = require('./updater-logger');
+
+const REPO = 'valzevox/Eclipse-music';
+const CDN_STATIC_MANIFEST = `https://github.com/${REPO}/releases/latest/download/latest.json`;
+const CDN_STATIC_YML = `https://github.com/${REPO}/releases/latest/download/latest.yml`;
+const RELEASE_API = `https://api.github.com/repos/${REPO}/releases/latest`;
+
+const CHECK_DELAY_MS = 3000;
+const CHECK_EVERY_MS = 4 * 60 * 60 * 1000; // 4 hours
 const DOWNLOAD_IDLE_TIMEOUT_MS = 30000;
-const ARTIFACT_MIN_AGE_MS = 30 * 60 * 1000;
+const ARTIFACT_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 
-function readIgnored(file) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')).version || ''; } catch (_) { return ''; }
+let pendingInstallerPath = null;
+let pendingTargetVersion = null;
+let lastManifestEtag = null;
+let crashCounterChecked = false;
+
+function getUpdateStateFile() {
+  return path.join(app.getPath('userData'), 'update-state.json');
 }
 
-function writeIgnored(file, version) {
-  try { fs.writeFileSync(file, JSON.stringify({ version })); } catch (_) {}
-}
-
-function isNewer(latest, current) {
-  const p1 = String(latest || '').replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
-  const p2 = String(current || '').replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
-  for (let i = 0; i < Math.max(p1.length, p2.length); i++) {
-    const a = p1[i] || 0;
-    const b = p2[i] || 0;
-    if (a > b) return true;
-    if (a < b) return false;
+function readUpdateState() {
+  try {
+    const raw = fs.readFileSync(getUpdateStateFile(), 'utf8');
+    return JSON.parse(raw) || {};
+  } catch (_) {
+    return { consecutiveCrashes: 0, startedOk: true, failedVersions: {} };
   }
-  return false;
 }
 
-function findMatchingAsset(assets = [], platform = process.platform, arch = process.arch) {
-  if (!Array.isArray(assets) || assets.length === 0) return null;
-  if (platform === 'win32') {
-    const is64 = arch === 'x64' || arch === 'arm64' || !!process.env.ProgramFiles;
-    if (is64) {
-      const win64 = assets.find(a => /x64\.exe$/i.test(a.name)) || assets.find(a => /win\.exe$/i.test(a.name));
-      if (win64) return win64;
-    } else {
-      const win32 = assets.find(a => /ia32\.exe$/i.test(a.name));
-      if (win32) return win32;
+function writeUpdateState(state) {
+  try {
+    fs.writeFileSync(getUpdateStateFile(), JSON.stringify(state, null, 2), 'utf8');
+  } catch (_) {}
+}
+
+function checkCrashRollback(currentVer) {
+  if (crashCounterChecked) return;
+  crashCounterChecked = true;
+
+  const state = readUpdateState();
+  if (state.startedOk === false) {
+    state.consecutiveCrashes = (state.consecutiveCrashes || 0) + 1;
+    logStage('crash-guard', `App failed to run 60s previously. Crash count: ${state.consecutiveCrashes}`);
+    if (state.lastAttemptedVersion && state.consecutiveCrashes >= 2) {
+      state.failedVersions = state.failedVersions || {};
+      state.failedVersions[state.lastAttemptedVersion] = (state.failedVersions[state.lastAttemptedVersion] || 0) + 1;
+      logStage('rollback', `Blacklisting version ${state.lastAttemptedVersion} due to 2 consecutive crashes.`);
     }
-    return assets.find(a => /\.exe$/i.test(a.name) && !/blockmap/i.test(a.name)) || null;
+  } else {
+    state.consecutiveCrashes = 0;
   }
-  if (platform === 'linux') {
-    return assets.find(a => /\.AppImage$/i.test(a.name)) || assets.find(a => /\.deb$/i.test(a.name)) || null;
-  }
-  if (platform === 'darwin') {
-    const isArm = arch === 'arm64';
-    if (isArm) {
-      return assets.find(a => /arm64\.dmg$/i.test(a.name)) || assets.find(a => /\.dmg$/i.test(a.name)) || null;
-    }
-    return assets.find(a => /x64\.dmg$/i.test(a.name)) || assets.find(a => /\.dmg$/i.test(a.name)) || null;
-  }
-  return null;
+
+  state.startedOk = false;
+  state.currentVersion = currentVer;
+  writeUpdateState(state);
+
+  // Set startedOk to true after 60s of stable execution
+  setTimeout(() => {
+    try {
+      const s = readUpdateState();
+      s.startedOk = true;
+      s.consecutiveCrashes = 0;
+      writeUpdateState(s);
+      logStage('health', 'App running stably for 60s. Marked startedOk = true');
+    } catch (_) {}
+  }, 60000).unref();
 }
 
-// Use Chromium's network stack first so the app proxy / system proxy / VPN settings apply
 async function httpFetch(url, opts = {}) {
   const useNet = net && typeof net.fetch === 'function';
   try {
@@ -70,309 +97,470 @@ async function httpFetch(url, opts = {}) {
   }
 }
 
-async function fetchLatestRelease() {
-  const res = await httpFetch(RELEASE_API, {
-    headers: { 'User-Agent': 'Eclipse-Player', Accept: 'application/vnd.github+json' },
-    signal: AbortSignal.timeout(15000)
-  });
-  if (!res.ok) throw new Error('GitHub API HTTP ' + res.status);
-  return res.json();
-}
+async function fetchLatestManifest() {
+  // 1. Try static latest.json from GitHub CDN (Bypasses 60 req/h rate limit)
+  try {
+    const headers = { 'User-Agent': 'Eclipse-Player' };
+    if (lastManifestEtag) headers['If-None-Match'] = lastManifestEtag;
 
-function buildUpdate(json, fallbackReleasesUrl) {
-  const version = String(json.tag_name || '').replace(/^v/i, '');
-  const asset = findMatchingAsset(json.assets || []);
-  const digest = asset && typeof asset.digest === 'string' && /^sha256:/i.test(asset.digest)
-    ? asset.digest.slice(7).toLowerCase() : '';
+    const res = await httpFetch(CDN_STATIC_MANIFEST, {
+      headers,
+      signal: AbortSignal.timeout(8000),
+      redirect: 'follow'
+    });
+
+    if (res.status === 304) {
+      logStage('check', 'Manifest not modified (304 ETag match)');
+      return { notModified: true };
+    }
+
+    if (res.ok) {
+      lastManifestEtag = res.headers.get('etag');
+      const data = await res.json();
+      logStage('check', 'Fetched static latest.json via GitHub CDN', { version: data.version });
+      return data;
+    }
+  } catch (err) {
+    logStage('check-warning', 'Static latest.json unavailable, attempting latest.yml / API fallback', err.message);
+  }
+
+  // 2. Try static latest.yml from GitHub CDN
+  try {
+    const ymlRes = await httpFetch(CDN_STATIC_YML, {
+      headers: { 'User-Agent': 'Eclipse-Player' },
+      signal: AbortSignal.timeout(8000),
+      redirect: 'follow'
+    });
+    if (ymlRes.ok) {
+      const ymlText = await ymlRes.text();
+      const parsedYml = parseLatestYml(ymlText);
+      if (parsedYml) {
+        logStage('check', 'Fetched static latest.yml via GitHub CDN', parsedYml);
+        return {
+          version: parsedYml.version,
+          sha512: parsedYml.sha512,
+          url: `https://github.com/${REPO}/releases/download/v${parsedYml.version}/${parsedYml.path}`,
+          assetName: parsedYml.path
+        };
+      }
+    }
+  } catch (err) {
+    logStage('check-warning', 'Static latest.yml unavailable', err.message);
+  }
+
+  // 3. Fallback to GitHub Releases API (rate-limited, with backoff)
+  logStage('check', 'Falling back to GitHub Releases API');
+  const apiRes = await httpFetch(RELEASE_API, {
+    headers: { 'User-Agent': 'Eclipse-Player', Accept: 'application/vnd.github+json' },
+    signal: AbortSignal.timeout(12000)
+  });
+  if (!apiRes.ok) throw new Error(`GitHub API HTTP ${apiRes.status}`);
+  const json = await apiRes.json();
+  const matched = findMatchingAsset(json.assets || []);
   return {
-    version,
-    releaseNotes: json.body || 'Cập nhật phiên bản mới, sửa lỗi và nâng cấp hiệu năng.',
-    publishedAt: json.published_at || '',
-    htmlUrl: json.html_url || `${fallbackReleasesUrl}/tag/v${version}`,
-    downloadUrl: asset ? asset.browser_download_url : null,
-    assetName: asset ? path.basename(asset.name) : `eclipse-${version}-win-x64.exe`,
-    assetSize: asset ? Number(asset.size) || 0 : 0,
-    digest
+    version: String(json.tag_name || '').replace(/^v/i, ''),
+    url: matched ? matched.browser_download_url : null,
+    assetName: matched ? matched.name : null,
+    size: matched ? matched.size : 0,
+    notes: json.body || '',
+    htmlUrl: json.html_url
   };
 }
 
-function sha256File(file) {
+async function sha512FileBase64(filePath) {
   return new Promise((resolve, reject) => {
-    const h = crypto.createHash('sha256');
-    fs.createReadStream(file)
+    const h = crypto.createHash('sha512');
+    fs.createReadStream(filePath)
       .on('data', d => h.update(d))
-      .on('end', () => resolve(h.digest('hex')))
+      .on('end', () => resolve(h.digest('base64')))
       .on('error', reject);
   });
 }
 
-async function fileIsValid(file, size, digest) {
-  try {
-    const st = fs.statSync(file);
-    if (size > 0 && st.size !== size) return false;
-    if (digest) return (await sha256File(file)) === digest;
-    return size > 0;
-  } catch (_) { return false; }
-}
-
-async function downloadFile(url, dest, expectedSize, onProgress) {
+async function downloadFileWithResume(url, dest, expectedSize, expectedSha512, onProgress) {
   const part = dest + '.part';
-  try { fs.unlinkSync(part); } catch (_) {}
+  let existingBytes = 0;
+  if (fs.existsSync(part)) {
+    try {
+      existingBytes = fs.statSync(part).size;
+    } catch (_) { existingBytes = 0; }
+  }
 
   const ac = new AbortController();
   let idle = setTimeout(() => ac.abort(), DOWNLOAD_IDLE_TIMEOUT_MS);
   const bump = () => { clearTimeout(idle); idle = setTimeout(() => ac.abort(), DOWNLOAD_IDLE_TIMEOUT_MS); };
 
-  const out = fs.createWriteStream(part);
+  const headers = { 'User-Agent': 'Eclipse-Player' };
+  if (existingBytes > 0) {
+    headers['Range'] = `bytes=${existingBytes}-`;
+  }
+
+  logStage('download', `Starting download: ${url}`, { existingBytes, dest });
+
+  const res = await httpFetch(url, { headers, redirect: 'follow', signal: ac.signal });
+  if (!res.ok && res.status !== 206) {
+    throw new Error(`Download HTTP error: ${res.status}`);
+  }
+
+  const rangeDecision = decideRangeResume(res.status, existingBytes, expectedSize);
+  let writeStream;
+  let received = rangeDecision.startByte;
+
+  if (rangeDecision.mode === 'overwrite') {
+    try { fs.unlinkSync(part); } catch (_) {}
+    writeStream = fs.createWriteStream(part);
+  } else {
+    writeStream = fs.createWriteStream(part, { flags: 'a' });
+  }
+
+  const total = Number(res.headers.get('content-length')) ? (rangeDecision.startByte + Number(res.headers.get('content-length'))) : (expectedSize || 0);
+
   let outError = null;
-  out.on('error', (e) => { outError = e; });
+  writeStream.on('error', (e) => { outError = e; });
 
   try {
-    const res = await httpFetch(url, { headers: { 'User-Agent': 'Eclipse-Player' }, redirect: 'follow', signal: ac.signal });
-    if (!res.ok || !res.body) throw new Error('Tải bản cập nhật thất bại: HTTP ' + res.status);
-
-    const total = Number(res.headers.get('content-length')) || expectedSize || 0;
-    let received = 0;
-    let lastPct = -1;
-
     for await (const chunk of Readable.fromWeb(res.body)) {
       if (outError) throw outError;
       bump();
       received += chunk.length;
-      if (!out.write(chunk)) await once(out, 'drain');
+      if (!writeStream.write(chunk)) await once(writeStream, 'drain');
       if (total > 0) {
         const pct = Math.min(99, Math.round((received / total) * 100));
-        if (pct !== lastPct) { lastPct = pct; onProgress(pct, received, total); }
+        onProgress(pct, received, total);
       }
     }
-    out.end();
-    await once(out, 'finish');
+    writeStream.end();
+    await once(writeStream, 'finish');
     if (outError) throw outError;
 
-    if (total > 0 && received !== total) throw new Error(`File tải về bị thiếu (${received}/${total} bytes)`);
+    if (total > 0 && received !== total) {
+      throw new Error(`Incomplete download: received ${received} of ${total} bytes`);
+    }
+
+    // Verify SHA-512 base64 if expected
+    if (expectedSha512) {
+      logStage('verify', 'Verifying sha512 hash...');
+      const actualSha512 = await sha512FileBase64(part);
+      if (actualSha512.trim() !== expectedSha512.trim()) {
+        try { fs.unlinkSync(part); } catch (_) {}
+        throw new Error(`Checksum mismatch! Expected sha512: ${expectedSha512}, got: ${actualSha512}`);
+      }
+      logStage('verify', 'SHA-512 verification passed.');
+    }
+
+    try { fs.unlinkSync(dest); } catch (_) {}
     fs.renameSync(part, dest);
+    logStage('download', 'Download completed successfully', { dest, totalBytes: received });
     return dest;
   } catch (err) {
-    try { out.destroy(); } catch (_) {}
-    try { fs.unlinkSync(part); } catch (_) {}
-    if (ac.signal.aborted) throw new Error('Mất kết nối khi tải bản cập nhật (quá 30s không có dữ liệu)');
+    try { writeStream.destroy(); } catch (_) {}
+    if (rangeDecision.mode === 'overwrite') {
+      try { fs.unlinkSync(part); } catch (_) {}
+    }
+    logStage('download-error', err.message);
     throw err;
   } finally {
     clearTimeout(idle);
   }
 }
 
-function removeIfOld(p) {
+function flushPlaybackResume(rendererWindow) {
   try {
-    const st = fs.statSync(p);
-    if (Date.now() - st.mtimeMs < ARTIFACT_MIN_AGE_MS) return 0;
-    fs.unlinkSync(p);
-    return st.size;
-  } catch (_) { return 0; }
-}
-
-function cleanOldVersionArtifacts() {
-  let freed = 0;
-  const localAppData = process.env.LOCALAPPDATA;
-  if (localAppData) {
-    const updaterDir = path.join(localAppData, 'eclipse-updater');
-    const updaterPending = path.join(updaterDir, 'pending');
-    try {
-      if (fs.existsSync(updaterPending)) {
-        for (const f of fs.readdirSync(updaterPending)) freed += removeIfOld(path.join(updaterPending, f));
-      }
-    } catch (_) {}
-    try {
-      if (fs.existsSync(updaterDir)) {
-        for (const f of fs.readdirSync(updaterDir)) {
-          if (/\.exe$/i.test(f) || /\.blockmap$/i.test(f)) freed += removeIfOld(path.join(updaterDir, f));
-        }
-      }
-    } catch (_) {}
-  }
-  try {
-    const tempDir = app.getPath('temp');
-    for (const f of fs.readdirSync(tempDir)) {
-      if (/^(?:eclipse|Eclipse)-.*(?:\.exe|\.tmp|\.part)$/i.test(f)) freed += removeIfOld(path.join(tempDir, f));
+    const resumeFile = path.join(app.getPath('userData'), 'playback-resume.json');
+    if (rendererWindow && !rendererWindow.isDestroyed()) {
+      rendererWindow.webContents.send('playback-persist-req');
     }
-  } catch (_) {}
-  return freed;
+    logStage('apply', 'Flushed playback state to disk before installer launch');
+  } catch (err) {
+    logStage('apply-warning', 'Failed to flush playback resume state', err.message);
+  }
 }
 
-async function launchInstallerAndExit(installerPath, hooks) {
+async function executeInstaller(installerPath, hooks = {}, getWindow = null) {
+  logStage('apply', 'Executing installer...', { installerPath, pid: process.pid });
+  flushPlaybackResume(getWindow ? getWindow() : null);
+
   try { if (hooks && typeof hooks.beforeExit === 'function') hooks.beforeExit(); } catch (_) {}
 
-  if (process.platform === 'linux' && process.env.APPIMAGE) {
-    fs.chmodSync(installerPath, 0o755);
-    const child = spawn(installerPath, [], { detached: true, stdio: 'ignore' });
+  if (process.platform === 'win32') {
+    const execPath = process.execPath;
+    const execDir = path.dirname(execPath);
+    const isUnpacked = fs.existsSync(path.join(execDir, 'resources', 'app.asar'));
+    const dirArg = isUnpacked ? ' /D=' + execDir : '';
+    const pid = process.pid;
+
+    const logDir = path.join(app.getPath('userData'), 'logs');
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    const updateLogFile = path.join(logDir, 'eclipse-update.log');
+
+    const batPath = path.join(app.getPath('temp'), `eclipse-updater-${Date.now()}.bat`);
+    const batLines = [
+      '@echo off',
+      'chcp 65001 >nul',
+      `echo [%%date%% %%time%%] Updater started for PID ${pid} >> "${updateLogFile}"`,
+      'ping 127.0.0.1 -n 3 >nul',
+      `taskkill /PID ${pid} /T /F >nul 2>&1`,
+      'ping 127.0.0.1 -n 2 >nul',
+      `echo [%%date%% %%time%%] Running installer: "${installerPath}" /S${dirArg} >> "${updateLogFile}"`,
+      `start /wait "" "${installerPath}" /S${dirArg}`,
+      `echo [%%date%% %%time%%] Installer completed with code %%ERRORLEVEL%% >> "${updateLogFile}"`,
+      'ping 127.0.0.1 -n 2 >nul',
+      `echo [%%date%% %%time%%] Relaunching: "${execPath}" >> "${updateLogFile}"`,
+      `start "" "${execPath}"`,
+      '(goto) 2>nul & del "%~f0"'
+    ];
+
+    fs.writeFileSync(batPath, batLines.join('\r\n'), 'utf8');
+    const child = spawn('cmd.exe', ['/c', `"${batPath}"`], { detached: true, stdio: 'ignore', windowsHide: true });
     child.unref();
-  } else if (process.platform === 'win32') {
-    try {
-      const execPath = process.execPath;
-      const execDir = path.dirname(execPath);
-      const isUnpacked = fs.existsSync(path.join(execDir, 'resources', 'app.asar'));
-      const dirArg = isUnpacked ? ' /D=' + execDir : '';
-      const batPath = path.join(app.getPath('temp'), `eclipse-updater-${Date.now()}.bat`);
-      const batLines = [
-        '@echo off',
-        'ping 127.0.0.1 -n 3 >nul',
-        'taskkill /F /IM "Eclipse.exe" /T >nul 2>&1',
-        'ping 127.0.0.1 -n 2 >nul',
-        `start /wait "" "${installerPath}" /S${dirArg}`,
-        'ping 127.0.0.1 -n 2 >nul',
-        `start "" "${execPath}"`,
-        '(goto) 2>nul & del "%~f0"'
-      ];
-      fs.writeFileSync(batPath, batLines.join('\r\n'), 'utf8');
-      const child = spawn('cmd.exe', ['/c', `"${batPath}"`], { detached: true, stdio: 'ignore', windowsHide: true });
-      child.unref();
-      try { app.exit(0); } catch (_) { process.exit(0); }
-      return;
-    } catch (_) {
-      const err = await shell.openPath(installerPath);
-      if (err) throw new Error('Không mở được trình cài đặt: ' + err);
-    }
-  } else {
-    const err = await shell.openPath(installerPath);
-    if (err) throw new Error('Không mở được trình cài đặt: ' + err);
+
+    logStage('apply', 'Spawned detached updater batch script. Exiting app cleanly (0).');
+    setTimeout(() => { try { app.exit(0); } catch (_) { process.exit(0); } }, 200);
+    return;
   }
 
-  setTimeout(() => { try { app.quit(); } catch (_) {} }, 300);
-  setTimeout(() => { try { app.exit(0); } catch (_) { process.exit(0); } }, 1000);
+  // Linux AppImage / macOS
+  const err = await shell.openPath(installerPath);
+  if (err) throw new Error(`Could not launch installer: ${err}`);
+  setTimeout(() => { try { app.exit(0); } catch (_) { process.exit(0); } }, 500);
+}
+
+async function checkAndUpdateYtDlp() {
+  try {
+    const userData = app.getPath('userData');
+    const binDir = path.join(userData, 'bin');
+    if (!fs.existsSync(binDir)) {
+      fs.mkdirSync(binDir, { recursive: true });
+    }
+    const exeName = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+    const targetPath = path.join(binDir, exeName);
+
+    // Check version if binary already exists
+    if (fs.existsSync(targetPath)) {
+      await new Promise((res) => {
+        execFile(targetPath, ['--version'], { timeout: 10000 }, (err, stdout) => {
+          if (!err && stdout) {
+            logStage('yt-dlp', `Existing managed yt-dlp version: ${stdout.trim()}`);
+          }
+          res();
+        });
+      });
+    }
+
+    // Check latest release from yt-dlp official github
+    const checkUrl = 'https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest';
+    const req = net.request({ url: checkUrl, method: 'GET' });
+    req.setHeader('User-Agent', 'Eclipse-Updater');
+    req.setHeader('Accept', 'application/vnd.github+json');
+
+    const body = await new Promise((res, rej) => {
+      let data = '';
+      req.on('response', (response) => {
+        if (response.statusCode !== 200) {
+          return rej(new Error(`yt-dlp api returned ${response.statusCode}`));
+        }
+        response.on('data', (c) => { data += c.toString('utf8'); });
+        response.on('end', () => res(data));
+      });
+      req.on('error', rej);
+      req.end();
+    });
+
+    const parsed = JSON.parse(body);
+    const assets = Array.isArray(parsed.assets) ? parsed.assets : [];
+    const targetAsset = assets.find((a) => a && a.name === exeName);
+
+    if (targetAsset && targetAsset.browser_download_url) {
+      const tempPath = `${targetPath}.tmp-${Date.now()}`;
+      logStage('yt-dlp', `Downloading updated yt-dlp from ${targetAsset.browser_download_url}`);
+      await downloadFileWithResume(targetAsset.browser_download_url, tempPath, targetAsset.size || 0, null);
+      if (fs.existsSync(targetPath)) {
+        try { fs.unlinkSync(targetPath); } catch (_) {}
+      }
+      fs.renameSync(tempPath, targetPath);
+      if (process.platform !== 'win32') {
+        try { fs.chmodSync(targetPath, 0o755); } catch (_) {}
+      }
+      logStage('yt-dlp', 'Successfully updated managed yt-dlp binary.');
+    }
+  } catch (err) {
+    logStage('yt-dlp', `Managed yt-dlp update check skipped/failed: ${err.message}. Using bundled fallback.`);
+  }
 }
 
 function initUpdater(getWindow, hooks = {}) {
-  const ignoreFile = path.join(app.getPath('userData'), 'ignored-update.json');
-  const pkg = require('../../package.json');
-  if (pkg.version && typeof app.setVersion === 'function') {
-    app.setVersion(pkg.version);
-  }
-  const releasesUrl = `${pkg.homepage || 'https://github.com/valzevox/Eclipse-music'}/releases`;
-  const currentVersion = () => pkg.version || app.getVersion();
-  console.log('[updater] running version', currentVersion());
+  const currentVer = app.getVersion();
+  initLogger(app.getPath('userData'));
+  logStage('init', `Updater initialized for Eclipse v${currentVer}`, { pid: process.pid, platform: process.platform, arch: process.arch });
+
+  checkCrashRollback(currentVer);
 
   let manualCheck = false;
-  let installing = false;
-  let currentUpdate = null;
-
-  try { ipcMain.removeHandler('clean-old-versions'); } catch (_) {}
-  ipcMain.handle('clean-old-versions', () => cleanOldVersionArtifacts());
-
-  setTimeout(() => { try { cleanOldVersionArtifacts(); } catch (_) {} }, 3500);
-
-  try { ipcMain.removeHandler('get-app-version'); } catch (_) {}
-  ipcMain.handle('get-app-version', () => currentVersion());
+  let isDownloading = false;
+  let activeManifest = null;
 
   const send = (channel, payload) => {
     const win = getWindow();
     if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
   };
 
-  const checkUpdates = async () => {
+  const checkForUpdates = async () => {
     try {
-      const json = await fetchLatestRelease();
-      const latestVer = String(json.tag_name || '').replace(/^v/i, '');
-      const curVer = currentVersion();
+      logStage('check', 'Checking for updates...');
+      const manifest = await fetchLatestManifest();
+      if (!manifest || manifest.notModified) return;
 
-      if (isNewer(latestVer, curVer)) {
-        currentUpdate = buildUpdate(json, releasesUrl);
-        const ignored = readIgnored(ignoreFile) === latestVer;
-        if (ignored && !manualCheck) return;
+      activeManifest = manifest;
+      const remoteVer = manifest.version;
+
+      // 1. MinSupported evaluation
+      const minCheck = evaluateMinSupported(manifest, currentVer);
+      if (!minCheck.supported) {
+        logStage('guard', `Current version ${currentVer} is below minSupported ${minCheck.minSupported}`);
+        send('update-mandatory', { current: currentVer, minSupported: minCheck.minSupported });
+      }
+
+      // 2. Blocked evaluation
+      const blockCheck = evaluateBlockedVersion(manifest, currentVer, remoteVer);
+      if (blockCheck.currentBlocked) {
+        logStage('guard-blocked', `Current version ${currentVer} is revoked/blocked!`);
+        send('update-current-blocked', { current: currentVer, target: remoteVer });
+      }
+      if (blockCheck.targetBlocked) {
+        logStage('guard-blocked', `Remote target version ${remoteVer} is blocked from installation.`);
+        return;
+      }
+
+      // 3. Rollback guard (2 crashes check)
+      const state = readUpdateState();
+      if (state.failedVersions && state.failedVersions[remoteVer] >= 2) {
+        logStage('guard-rollback', `Skipping auto-update to ${remoteVer}: crashed 2+ times previously.`);
+        if (manualCheck) {
+          send('update-error', { stage: 'check', message: `Bản v${remoteVer} đã bị tạm ngưng tự động do lỗi crash trước đó. Hãy tải thủ công.` });
+        }
         manualCheck = false;
+        return;
+      }
 
+      // 4. SemVer comparison
+      if (isNewerSemVer(remoteVer, currentVer)) {
+        logStage('check', `Newer version available: v${remoteVer} (local: v${currentVer})`);
         send('update-available', {
-          version: latestVer,
-          releaseNotes: currentUpdate.releaseNotes,
-          publishedAt: currentUpdate.publishedAt,
-          htmlUrl: currentUpdate.htmlUrl,
-          canInstall: !!currentUpdate.downloadUrl,
-          downloadUrl: currentUpdate.downloadUrl,
-          url: currentUpdate.htmlUrl
+          version: remoteVer,
+          releaseNotes: manifest.notes || 'Cập nhật phiên bản mới, sửa lỗi và nâng cấp hiệu năng.',
+          downloadUrl: manifest.url,
+          canInstall: !!manifest.url,
+          sha512: manifest.sha512
         });
       } else {
-        if (manualCheck) send('update-not-available', { version: curVer });
-        manualCheck = false;
+        logStage('check', `Application is up to date (v${currentVer})`);
+        if (manualCheck) send('update-not-available', { version: currentVer });
       }
+      manualCheck = false;
     } catch (err) {
-      console.warn('[updater] check failed:', err && err.message);
+      logStage('check-error', err.message);
       if (manualCheck) {
-        send('update-error', { stage: 'check', message: err && err.message ? err.message : 'Không thể kiểm tra cập nhật' });
+        send('update-error', { stage: 'check', message: err.message || 'Không thể kiểm tra cập nhật' });
       }
       manualCheck = false;
     }
   };
 
-  try { ipcMain.removeHandler('update-check'); } catch (_) {}
-  ipcMain.handle('update-check', () => {
-    manualCheck = true;
-    checkUpdates();
-    return { ok: true };
-  });
+  const startDownloadAndPrepare = async () => {
+    if (isDownloading) return { ok: true, status: 'downloading' };
+    if (!activeManifest || !activeManifest.url) {
+      throw new Error('Chưa có thông tin file cài đặt hợp lệ');
+    }
 
-  const doInstallNow = async () => {
-    if (installing) return { ok: true };
-    installing = true;
+    isDownloading = true;
+    const targetVer = activeManifest.version;
+    const assetName = activeManifest.assetName || `eclipse-${targetVer}-win-x64.exe`;
+    const dest = path.join(app.getPath('temp'), assetName);
+
+    // Track attempt in update-state
+    const state = readUpdateState();
+    state.lastAttemptedVersion = targetVer;
+    writeUpdateState(state);
+
+    send('update-progress', { percent: 1 });
+
     try {
-      if (!currentUpdate || !currentUpdate.downloadUrl) {
-        currentUpdate = buildUpdate(await fetchLatestRelease(), releasesUrl);
-      }
-      if (!currentUpdate.downloadUrl) {
-        throw new Error(`Bản v${currentUpdate.version} chưa có file cài đặt phù hợp (có thể đang được upload). Thử lại sau vài phút.`);
-      }
-
-      send('update-progress', { percent: 1 });
-      const dest = path.join(app.getPath('temp'), currentUpdate.assetName || `eclipse-${currentUpdate.version}-setup.exe`);
-
-      if (await fileIsValid(dest, currentUpdate.assetSize, currentUpdate.digest)) {
-        send('update-progress', { percent: 100 });
-      } else {
-        try { fs.unlinkSync(dest); } catch (_) {}
-        await downloadFile(currentUpdate.downloadUrl, dest, currentUpdate.assetSize, (pct) => {
-          send('update-progress', { percent: pct });
-        });
-        if (currentUpdate.digest) {
-          const actual = await sha256File(dest);
-          if (actual !== currentUpdate.digest) {
-            try { fs.unlinkSync(dest); } catch (_) {}
-            throw new Error('File cài đặt tải về không khớp mã SHA-256, đã huỷ.');
-          }
+      await downloadFileWithResume(
+        activeManifest.url,
+        dest,
+        activeManifest.size || 0,
+        activeManifest.sha512 || null,
+        (pct, received, total) => {
+          send('update-progress', { percent: pct, received, total });
         }
-        send('update-progress', { percent: 100 });
-      }
+      );
 
-      send('update-ready', { version: currentUpdate.version });
-      send('update-downloaded', { version: currentUpdate.version, canInstall: true });
-      await launchInstallerAndExit(dest, hooks);
-      return { ok: true };
-    } catch (err) {
-      installing = false;
-      const message = err && err.message ? err.message : 'Lỗi tải bản cập nhật';
-      console.warn('[updater] install failed:', message);
-      send('update-error', {
-        stage: 'install',
-        message,
-        htmlUrl: (currentUpdate && currentUpdate.htmlUrl) || releasesUrl
+      pendingInstallerPath = dest;
+      pendingTargetVersion = targetVer;
+      isDownloading = false;
+
+      send('update-ready', {
+        version: targetVer,
+        canInstallNow: true,
+        canInstallOnQuit: true
       });
-      return { ok: false, error: message };
+      return { ok: true, dest };
+    } catch (err) {
+      isDownloading = false;
+      send('update-error', { stage: 'download', message: err.message });
+      throw err;
     }
   };
 
-  try { ipcMain.removeHandler('install-update-now'); } catch (_) {}
-  ipcMain.handle('install-update-now', () => doInstallNow());
-  try { ipcMain.removeAllListeners('install-update-now'); } catch (_) {}
-  ipcMain.on('install-update-now', () => { doInstallNow(); });
-
-  try { ipcMain.removeAllListeners('update-action'); } catch (_) {}
-  ipcMain.on('update-action', (event, action) => {
-    if (action === 'ignore' || action === 'skip') {
-      if (currentUpdate && currentUpdate.version) writeIgnored(ignoreFile, currentUpdate.version);
-      return;
-    }
-    if (action === 'now') doInstallNow();
+  // IPC Handlers
+  ipcMain.handle('update-check', () => {
+    manualCheck = true;
+    checkForUpdates();
+    return { ok: true };
   });
 
-  setTimeout(checkUpdates, CHECK_DELAY_MS);
-  setInterval(checkUpdates, CHECK_EVERY_MS).unref();
+  ipcMain.handle('install-update-now', async () => {
+    if (pendingInstallerPath && fs.existsSync(pendingInstallerPath)) {
+      await executeInstaller(pendingInstallerPath, hooks, getWindow);
+      return { ok: true };
+    }
+    // If not downloaded yet, trigger download first
+    await startDownloadAndPrepare();
+    if (pendingInstallerPath && fs.existsSync(pendingInstallerPath)) {
+      await executeInstaller(pendingInstallerPath, hooks, getWindow);
+    }
+    return { ok: true };
+  });
+
+  ipcMain.handle('install-update-on-quit', () => {
+    logStage('apply', 'User selected Install on Quit');
+    return { ok: true };
+  });
+
+  // Hook before-quit for System Tray quit execution
+  app.on('before-quit', (event) => {
+    if (pendingInstallerPath && fs.existsSync(pendingInstallerPath)) {
+      logStage('apply', 'Triggering pending update during app before-quit');
+      executeInstaller(pendingInstallerPath, hooks, getWindow);
+    }
+  });
+
+  // Initial check with randomized jitter
+  const initialDelay = CHECK_DELAY_MS + Math.floor(Math.random() * 2000);
+  setTimeout(checkForUpdates, initialDelay);
+
+  // Periodic check with jitter (±15 mins)
+  const jitter = Math.floor((Math.random() - 0.5) * 30 * 60 * 1000);
+  setInterval(checkForUpdates, CHECK_EVERY_MS + jitter).unref();
+
+  // Background decoupled update check for yt-dlp binary (delayed 10s after startup)
+  setTimeout(() => { checkAndUpdateYtDlp().catch(() => {}); }, 10000);
 }
 
-module.exports = { initUpdater };
+module.exports = {
+  initUpdater,
+  fetchLatestManifest,
+  downloadFileWithResume,
+  executeInstaller,
+  checkAndUpdateYtDlp
+};
