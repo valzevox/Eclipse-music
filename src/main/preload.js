@@ -76,9 +76,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     try { ipcRenderer.send('update-action', 'now'); } catch (_) {}
   },
   installUpdateOnQuit: () => ipcRenderer.invoke('install-update-on-quit'),
+  syncPlaybackState: (state) => ipcRenderer.send('playback-state-sync', state),
   onPlaybackPersistReq: (cb) => ipcRenderer.on('playback-persist-req', () => cb()),
   onUpdateMandatory: (cb) => ipcRenderer.on('update-mandatory', (e, d) => cb(d)),
   onUpdateCurrentBlocked: (cb) => ipcRenderer.on('update-current-blocked', (e, d) => cb(d)),
+  onUpdateNoSafeTarget: (cb) => ipcRenderer.on('update-no-safe-target', (e, d) => cb(d)),
   onUpdateAvailable: (cb) => ipcRenderer.on('update-available', (e, d) => cb(d)),
   onUpdateDownloaded: (cb) => ipcRenderer.on('update-downloaded', (e, d) => cb(d)),
   onUpdateProgress: (cb) => ipcRenderer.on('update-progress', (e, d) => cb(d)),

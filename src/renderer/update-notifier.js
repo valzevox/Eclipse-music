@@ -64,6 +64,21 @@
     }
   }
 
+  // Periodic playback state snapshot sync to Main Process (every 10s)
+  setInterval(() => {
+    try {
+      const audio = document.querySelector('audio');
+      if (audio && window.electronAPI && window.electronAPI.syncPlaybackState) {
+        window.electronAPI.syncPlaybackState({
+          currentTime: audio.currentTime || 0,
+          paused: audio.paused,
+          volume: audio.volume || 1,
+          savedAt: Date.now()
+        });
+      }
+    } catch (_) {}
+  }, 10000).unref?.();
+
   // Hook playback state persistence request from main process
   if (window.electronAPI && window.electronAPI.onPlaybackPersistReq) {
     window.electronAPI.onPlaybackPersistReq(() => {
@@ -89,6 +104,7 @@
     const isChangelog = mode === 'changelog';
     const isBlocked = mode === 'blocked';
     const isMandatory = mode === 'mandatory';
+    const isNoSafeTarget = mode === 'no-safe-target';
 
     let title = "Bản Cập Nhật Mới";
     let subtitle = `Eclipse v${update.version} • Bản phát hành chính thức`;
@@ -97,6 +113,10 @@
     if (isChangelog) {
       title = "Có Gì Mới Trong Eclipse";
       subtitle = `Eclipse v${update.version} • Vừa cập nhật`;
+      actionBtnText = "Đã Hiểu";
+    } else if (isNoSafeTarget) {
+      title = "Cảnh Báo Thu Hồi Bản Phát Hành";
+      subtitle = `Phiên bản hiện tại (v${CURRENT_VER}) đã bị thu hồi`;
       actionBtnText = "Đã Hiểu";
     } else if (isBlocked) {
       title = "Cảnh Báo Phiên Bản Lỗi";
@@ -160,7 +180,7 @@
 
     const goBtn = modalEl.querySelector('#eclipse-upd-go');
     goBtn.addEventListener('click', () => {
-      if (isChangelog) {
+      if (isChangelog || isNoSafeTarget) {
         modalEl.remove();
         modalEl = null;
         return;
@@ -260,6 +280,15 @@
           minSupported: d.minSupported,
           releaseNotes: `### YÊU CẦU CẬP NHẬT TỐI THIỂU\n\nEclipse yêu cầu tối thiểu phiên bản **v${d.minSupported}** để duy trì kết nối hệ thống.`
         }, 'mandatory');
+      });
+    }
+
+    if (window.electronAPI.onUpdateNoSafeTarget) {
+      window.electronAPI.onUpdateNoSafeTarget((d) => {
+        showUpdateModal({
+          version: d.current,
+          releaseNotes: `### CẢNH BÁO BẢN PHÁT HÀNH LỖI\n\n${d.reason || 'Bản hiện tại bị thu hồi và bản mục tiêu cũng đang bị lỗi. Vui lòng quay lại sau.'}`
+        }, 'no-safe-target');
       });
     }
   }

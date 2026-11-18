@@ -90,7 +90,7 @@ function verifyBufferSha512Base64(buffer, expectedSha512Base64) {
 }
 
 function evaluateBlockedVersion(manifest, currentVer, targetVer) {
-  if (!manifest) return { allowed: true, currentBlocked: false, targetBlocked: false };
+  if (!manifest) return { allowed: true, currentBlocked: false, targetBlocked: false, status: 'ok' };
   const blockedList = Array.isArray(manifest.blocked)
     ? manifest.blocked.map(v => String(v).replace(/^v/i, '').trim())
     : [];
@@ -101,10 +101,26 @@ function evaluateBlockedVersion(manifest, currentVer, targetVer) {
   const currentBlocked = blockedList.includes(cur);
   const targetBlocked = blockedList.includes(tgt);
 
+  let status = 'ok';
+  let reason = '';
+
+  if (currentBlocked && targetBlocked) {
+    status = 'no-safe-target';
+    reason = 'Bản hiện tại bị thu hồi và bản mục tiêu cũng nằm trong danh sách lỗi. Vui lòng quay lại sau.';
+  } else if (currentBlocked) {
+    status = 'current-blocked';
+    reason = 'Phiên bản hiện tại gặp lỗi nghiêm trọng đã bị thu hồi. Cần cập nhật bản vá ngay.';
+  } else if (targetBlocked) {
+    status = 'target-blocked';
+    reason = 'Bản phát hành mục tiêu đã bị đánh dấu lỗi và tạm dừng phân phối.';
+  }
+
   return {
     allowed: !targetBlocked,
     currentBlocked,
-    targetBlocked
+    targetBlocked,
+    status,
+    reason
   };
 }
 

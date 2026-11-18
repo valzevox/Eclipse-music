@@ -52,15 +52,15 @@ const minCheck = core.evaluateMinSupported(manifest, '1.4.08');
 assert.strictEqual(minCheck.supported, false);
 console.log('✓ Blocked & minSupported evaluation verified.');
 
-// 5. Verify Mobile MediaControlsPlugin Java implementation
+// 5. Verify Mobile MediaControlsPlugin Java implementation (Spec v3)
 const javaPluginPath = path.resolve(__dirname, '../eclipse-mobile/android/app/src/main/java/io/github/cloverscripts/muriel/MediaControlsPlugin.java');
 const javaContent = fs.readFileSync(javaPluginPath, 'utf8');
 
 assert.ok(javaContent.includes('verifyApkSecurity'), 'Must contain verifyApkSecurity');
 assert.ok(javaContent.includes('currentPackage.equals(archiveInfo.packageName)'), 'Must dynamically check package name');
 assert.ok(javaContent.includes('newVersionCode <= currentVersionCode'), 'Must strictly reject non-greater versionCode');
-assert.ok(javaContent.includes('PlaybackService.running'), 'Must guard against active playback');
-assert.ok(javaContent.includes('PLAYBACK_ACTIVE'), 'Must return PLAYBACK_ACTIVE on active playback');
+assert.ok(javaContent.includes('persistPlaybackStateSync'), 'Must provide persistPlaybackStateSync');
+assert.ok(javaContent.includes('editor.commit()'), 'Must use synchronous editor.commit() directly to disk');
 assert.ok(javaContent.includes('GET_SIGNING_CERTIFICATES'), 'Must verify signing certificate');
 console.log('✓ Mobile native Java security gates verified.');
 

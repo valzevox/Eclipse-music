@@ -1,6 +1,6 @@
 // d:\Eclipse\eclipse-pc\src\main\updater.js
 // Eclipse Enterprise Auto-Updater Engine (Chrome / VS Code / Slack Standard)
-const { app, ipcMain, shell, net } = require('electron');
+const { app, ipcMain, shell, net, powerMonitor } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -32,8 +32,12 @@ const ARTIFACT_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 
 let pendingInstallerPath = null;
 let pendingTargetVersion = null;
+let pendingExpectedSha512 = null;
 let lastManifestEtag = null;
 let crashCounterChecked = false;
+let isApplyingUpdate = false;
+let isSystemShuttingDown = false;
+let latestPlaybackSnapshot = null;
 
 function getUpdateStateFile() {
   return path.join(app.getPath('userData'), 'update-state.json');
@@ -267,17 +271,48 @@ async function downloadFileWithResume(url, dest, expectedSize, expectedSha512, o
 function flushPlaybackResume(rendererWindow) {
   try {
     const resumeFile = path.join(app.getPath('userData'), 'playback-resume.json');
-    if (rendererWindow && !rendererWindow.isDestroyed()) {
+    if (latestPlaybackSnapshot) {
+      fs.writeFileSync(resumeFile, JSON.stringify(latestPlaybackSnapshot, null, 2), 'utf8');
+      logStage('apply', 'Flushed in-memory playback snapshot synchronously to disk');
+    } else if (rendererWindow && !rendererWindow.isDestroyed()) {
       rendererWindow.webContents.send('playback-persist-req');
+      logStage('apply', 'Sent playback-persist-req to renderer window');
     }
-    logStage('apply', 'Flushed playback state to disk before installer launch');
   } catch (err) {
     logStage('apply-warning', 'Failed to flush playback resume state', err.message);
   }
 }
 
 async function executeInstaller(installerPath, hooks = {}, getWindow = null) {
+  if (isApplyingUpdate) {
+    logStage('apply', 'executeInstaller already running. Skipping re-entrant call.');
+    return;
+  }
+  if (isSystemShuttingDown) {
+    logStage('apply', 'System is shutting down. Skipping installer execution to avoid corruption.');
+    return;
+  }
+
+  isApplyingUpdate = true;
   logStage('apply', 'Executing installer...', { installerPath, pid: process.pid });
+
+  // Re-verify sha512 checksum right before running installer
+  if (pendingExpectedSha512) {
+    try {
+      const fileBuf = fs.readFileSync(installerPath);
+      const ok = verifyBufferSha512Base64(fileBuf, pendingExpectedSha512);
+      if (!ok) {
+        isApplyingUpdate = false;
+        throw new Error('sha512 mismatch on pre-install verification! Installer file corrupted or tampered.');
+      }
+      logStage('apply', 'Pre-install sha512 verification passed.');
+    } catch (verr) {
+      isApplyingUpdate = false;
+      logStage('apply-error', `Pre-install sha512 check failed: ${verr.message}`);
+      throw verr;
+    }
+  }
+
   flushPlaybackResume(getWindow ? getWindow() : null);
 
   try { if (hooks && typeof hooks.beforeExit === 'function') hooks.beforeExit(); } catch (_) {}
@@ -321,7 +356,10 @@ async function executeInstaller(installerPath, hooks = {}, getWindow = null) {
 
   // Linux AppImage / macOS
   const err = await shell.openPath(installerPath);
-  if (err) throw new Error(`Could not launch installer: ${err}`);
+  if (err) {
+    isApplyingUpdate = false;
+    throw new Error(`Could not launch installer: ${err}`);
+  }
   setTimeout(() => { try { app.exit(0); } catch (_) { process.exit(0); } }, 500);
 }
 
@@ -422,12 +460,19 @@ function initUpdater(getWindow, hooks = {}) {
 
       // 2. Blocked evaluation
       const blockCheck = evaluateBlockedVersion(manifest, currentVer, remoteVer);
+      if (blockCheck.status === 'no-safe-target') {
+        logStage('guard-blocked', 'Both current and target versions are blocked. Halting update attempts.');
+        send('update-no-safe-target', { current: currentVer, target: remoteVer, reason: blockCheck.reason });
+        manualCheck = false;
+        return;
+      }
       if (blockCheck.currentBlocked) {
         logStage('guard-blocked', `Current version ${currentVer} is revoked/blocked!`);
         send('update-current-blocked', { current: currentVer, target: remoteVer });
       }
       if (blockCheck.targetBlocked) {
         logStage('guard-blocked', `Remote target version ${remoteVer} is blocked from installation.`);
+        manualCheck = false;
         return;
       }
 
@@ -497,6 +542,7 @@ function initUpdater(getWindow, hooks = {}) {
 
       pendingInstallerPath = dest;
       pendingTargetVersion = targetVer;
+      pendingExpectedSha512 = activeManifest.sha512 || null;
       isDownloading = false;
 
       send('update-ready', {
@@ -537,8 +583,27 @@ function initUpdater(getWindow, hooks = {}) {
     return { ok: true };
   });
 
+  // Listen to periodic playback snapshot sync from Renderer
+  ipcMain.on('playback-state-sync', (event, snapshot) => {
+    if (snapshot && typeof snapshot === 'object') {
+      latestPlaybackSnapshot = snapshot;
+    }
+  });
+
+  // Guard against Windows session shutdown / OS restart
+  if (powerMonitor && typeof powerMonitor.on === 'function') {
+    powerMonitor.on('shutdown', () => {
+      isSystemShuttingDown = true;
+      logStage('apply', 'powerMonitor shutdown detected: suppressing auto-update installer.');
+    });
+  }
+
   // Hook before-quit for System Tray quit execution
   app.on('before-quit', (event) => {
+    if (isSystemShuttingDown) {
+      logStage('apply', 'before-quit triggered by OS shutdown. Preserving installer for next startup.');
+      return;
+    }
     if (pendingInstallerPath && fs.existsSync(pendingInstallerPath)) {
       logStage('apply', 'Triggering pending update during app before-quit');
       executeInstaller(pendingInstallerPath, hooks, getWindow);
