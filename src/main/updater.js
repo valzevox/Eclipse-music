@@ -63,10 +63,11 @@ function checkCrashRollback(currentVer) {
   crashCounterChecked = true;
 
   const state = readUpdateState();
-  if (state.startedOk === false) {
+  // Only count a crash against an updated version if we are ACTUALLY running that newly applied version
+  if (state.startedOk === false && state.lastAttemptedVersion && currentVer === state.lastAttemptedVersion) {
     state.consecutiveCrashes = (state.consecutiveCrashes || 0) + 1;
-    logStage('crash-guard', `App failed to run 60s previously. Crash count: ${state.consecutiveCrashes}`);
-    if (state.lastAttemptedVersion && state.consecutiveCrashes >= 2) {
+    logStage('crash-guard', `App v${currentVer} failed to run 60s previously. Crash count: ${state.consecutiveCrashes}`);
+    if (state.consecutiveCrashes >= 2) {
       state.failedVersions = state.failedVersions || {};
       state.failedVersions[state.lastAttemptedVersion] = (state.failedVersions[state.lastAttemptedVersion] || 0) + 1;
       logStage('rollback', `Blacklisting version ${state.lastAttemptedVersion} due to 2 consecutive crashes.`);
@@ -228,7 +229,7 @@ async function downloadFileWithResume(url, dest, expectedSize, expectedSha512, o
       bump();
       received += chunk.length;
       if (!writeStream.write(chunk)) await once(writeStream, 'drain');
-      if (total > 0) {
+      if (total > 0 && typeof onProgress === 'function') {
         const pct = Math.min(99, Math.round((received / total) * 100));
         onProgress(pct, received, total);
       }
@@ -332,21 +333,30 @@ async function executeInstaller(installerPath, hooks = {}, getWindow = null) {
     const batLines = [
       '@echo off',
       'chcp 65001 >nul',
-      `echo [%%date%% %%time%%] Updater started for PID ${pid} >> "${updateLogFile}"`,
+      `echo [%date% %time%] Updater started for PID ${pid} >> "${updateLogFile}"`,
       'ping 127.0.0.1 -n 3 >nul',
       `taskkill /PID ${pid} /T /F >nul 2>&1`,
       'ping 127.0.0.1 -n 2 >nul',
-      `echo [%%date%% %%time%%] Running installer: "${installerPath}" /S${dirArg} >> "${updateLogFile}"`,
+      `echo [%date% %time%] Running installer: "${installerPath}" /S${dirArg} >> "${updateLogFile}"`,
       `start /wait "" "${installerPath}" /S${dirArg}`,
-      `echo [%%date%% %%time%%] Installer completed with code %%ERRORLEVEL%% >> "${updateLogFile}"`,
+      `echo [%date% %time%] Installer completed with code %ERRORLEVEL% >> "${updateLogFile}"`,
       'ping 127.0.0.1 -n 2 >nul',
-      `echo [%%date%% %%time%%] Relaunching: "${execPath}" >> "${updateLogFile}"`,
+      `echo [%date% %time%] Relaunching: "${execPath}" >> "${updateLogFile}"`,
       `start "" "${execPath}"`,
       '(goto) 2>nul & del "%~f0"'
     ];
 
+    // Mark clean exit before handing off to installer so crash-guard never counts this as a crash
+    try {
+      const st = readUpdateState();
+      st.startedOk = true;
+      st.consecutiveCrashes = 0;
+      writeUpdateState(st);
+    } catch (_) {}
+
     fs.writeFileSync(batPath, batLines.join('\r\n'), 'utf8');
-    const child = spawn('cmd.exe', ['/c', `"${batPath}"`], { detached: true, stdio: 'ignore', windowsHide: true });
+    // IMPORTANT: Do NOT wrap batPath in manual quotes when shell: false (Node escapes them as \"...\" which breaks cmd.exe!)
+    const child = spawn('cmd.exe', ['/d', '/c', batPath], { detached: true, stdio: 'ignore', windowsHide: true });
     child.unref();
 
     logStage('apply', 'Spawned detached updater batch script. Exiting app cleanly (0).');
@@ -600,6 +610,14 @@ function initUpdater(getWindow, hooks = {}) {
 
   // Hook before-quit for System Tray quit execution
   app.on('before-quit', (event) => {
+    // Mark clean user-initiated quit so closing app in <60s is never counted as a crash
+    try {
+      const st = readUpdateState();
+      st.startedOk = true;
+      st.consecutiveCrashes = 0;
+      writeUpdateState(st);
+    } catch (_) {}
+
     if (isSystemShuttingDown) {
       logStage('apply', 'before-quit triggered by OS shutdown. Preserving installer for next startup.');
       return;
