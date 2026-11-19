@@ -3,6 +3,9 @@ const fs = require('fs');
 const path = require('path');
 
 const [,, targetLock] = process.argv;
+if (!targetLock && !process.send) {
+  process.exit(0);
+}
 
 const qr = fs.existsSync(path.join(__dirname, 'src/server/qr-session-transfer.js'))
   ? require('./src/server/qr-session-transfer')

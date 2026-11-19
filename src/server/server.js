@@ -327,11 +327,14 @@ const downloadInFlight = new Map();
   };
 });
 
-setInterval(() => {
+const cacheSweepTimer = setInterval(() => {
   boundMap(searchCache, 20);
   boundMap(lyricsCache, 30);
   if (global.gc) { try { global.gc(); } catch (_) {} }
 }, 300000);
+if (cacheSweepTimer && typeof cacheSweepTimer.unref === 'function') {
+  cacheSweepTimer.unref();
+}
 
 const MAX_CACHE_ENTRIES = 500;
 function cacheSet(map, key, value, max = MAX_CACHE_ENTRIES) {
@@ -422,6 +425,89 @@ async function pruneDiskCache() {
 }
 
 pruneDiskCache();
+
+function cleanSearchResults(results, query, options = {}) {
+  if (!Array.isArray(results) || results.length === 0) return [];
+  const qStr = String(query || '').trim();
+  const qTokens = qStr.toLowerCase().split(/\s+/).filter(Boolean);
+
+  const hourAudioRegex = /\b(\d+\s*hours?|hour\s*loop|loop|compilation|nightcore|slowed\s*\+\s*reverb|slowed|sped\s*up|tik\s*tok\s*audios?)\b/i;
+  const isExplicitHourOrMixQuery = hourAudioRegex.test(qStr);
+
+  const filtered = results.filter(track => {
+    if (!track) return false;
+    const title = String(track.title || '');
+    const artist = String(track.artist || track.uploader || '');
+    const combined = `${title} ${artist}`.toLowerCase();
+
+    // 1. Hour long / compilation filter
+    if (!isExplicitHourOrMixQuery && hourAudioRegex.test(title)) {
+      return false;
+    }
+
+    // 2. Multiword query match requirement
+    if (qTokens.length > 0) {
+      const matchCount = qTokens.filter(t => combined.includes(t)).length;
+      if (qTokens.length >= 2 && matchCount === 0) return false;
+      if (qTokens.length >= 2 && matchCount < Math.ceil(qTokens.length * 0.5)) {
+        // Must contain at least significant title or artist part
+        const hasSubstantialMatch = qTokens.some(t => t.length >= 3 && combined.includes(t));
+        if (!hasSubstantialMatch) return false;
+      }
+      if (qTokens.length === 1 && !combined.includes(qTokens[0])) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+
+  // 3. Deduplication: duplicate title + artist collapsing (preserving first / official)
+  const seen = new Set();
+  const deduplicated = [];
+  for (const track of filtered) {
+    const rawTitle = String(track.title || '').trim();
+    const rawArtist = String(track.artist || track.uploader || '').trim();
+    const cleanT = rawTitle.toLowerCase()
+      .replace(/\s*\([^)]*(official|audio|video|lyrics?|visualizer|remastered)[^)]*\)/gi, '')
+      .replace(/\s*\[[^\]]*\]/gi, '')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const cleanA = rawArtist.toLowerCase()
+      .replace(/\s*-\s*topic$/i, '')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const key = `${cleanA}:::${cleanT}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduplicated.push(track);
+    }
+  }
+
+  return deduplicated.length > 0 ? deduplicated : (options.allowFallback ? results : deduplicated);
+}
+
+// In-memory sync rooms relay store
+const syncRooms = new Map();
+function getOrCreateSyncRoom(roomCode) {
+  const code = String(roomCode || '').trim();
+  if (!code) return null;
+  if (!syncRooms.has(code)) {
+    syncRooms.set(code, {
+      code,
+      hostId: null,
+      track: null,
+      currentTime: 0,
+      isPlaying: false,
+      lastUpdate: Date.now(),
+      members: new Set(),
+      chat: []
+    });
+  }
+  return syncRooms.get(code);
+}
 
 function parseDurationSeconds(str) {
   if (!str) return 0;
@@ -6879,6 +6965,11 @@ async function handleSpotifyImport(req, res, inputUrl) {
       return res.end(JSON.stringify({ success: false, code: isPriv ? 'spotify_forbidden' : 'spotify_error', error: isPriv ? 'Private playlist' : 'Could not read tracks' }));
     }
 
+    if (limited && (!Array.isArray(entity?.trackList) || !Number.isInteger(entity.totalCount) || entity.totalCount > entity.trackList.length || entity.trackList.length > 100)) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, code: 'spotify_incomplete', error: 'Spotify exposed only part of this playlist. Connect your account or use Export files.' }));
+    }
+
     const hasMore = false;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, name, cover, tracks, hasMore, total, limited }));
@@ -9726,6 +9817,246 @@ if (parsedUrl.pathname === '/api/ytm/login-url') {
     return res.end(JSON.stringify({ started: true }));
   }
 
+  if (parsedUrl.pathname === '/api/ytm/song-info') {
+    const id = (parsedUrl.query.id || parsedUrl.query.videoId || '').toString();
+    const q = (parsedUrl.query.q || parsedUrl.query.query || '').toString();
+    const country = (parsedUrl.query.country || 'VN').toString();
+    try {
+      const data = await ytmDiscovery.getSongInfo(id, q, country);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(data));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/comments') {
+    const id = (parsedUrl.query.id || parsedUrl.query.videoId || '').toString();
+    const country = (parsedUrl.query.country || 'VN').toString();
+    try {
+      const data = await ytmDiscovery.getTrackComments(id, country);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(data));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/podcasts') {
+    const country = (parsedUrl.query.country || 'VN').toString();
+    try {
+      const data = await ytmDiscovery.getPodcasts(country);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(data));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/podcast-episodes') {
+    const id = (parsedUrl.query.id || parsedUrl.query.browseId || '').toString();
+    const country = (parsedUrl.query.country || 'VN').toString();
+    try {
+      const data = await ytmDiscovery.getPodcastEpisodes(id, country);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(data));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/rate' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const result = await ytmAuth.rateTrack(payload.videoId, payload.rating);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/playlist/create' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const result = await ytmAuth.createCloudPlaylist(payload.title, payload.description, payload.privacyStatus, payload.videoIds);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/playlist/edit' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const result = await ytmAuth.editCloudPlaylist(payload.playlistId, payload.actions);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/subscribe' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const result = await ytmAuth.setArtistSubscription(payload.channelId, payload.subscribe);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/telemetry' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const result = await ytmAuth.reportPlaybackTelemetry(payload.videoId, payload.watchedSeconds);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/sync-room/create' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const code = String(payload.roomCode || Math.floor(100000 + Math.random() * 900000));
+        const room = getOrCreateSyncRoom(code);
+        room.hostId = payload.peerId || 'host';
+        room.lastUpdate = Date.now();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, roomCode: code, serverNow: Date.now() }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/sync-room/join' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const code = String(payload.roomCode || '');
+        const room = syncRooms.get(code);
+        if (!room) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ success: false, error: 'Room not found' }));
+        }
+        if (payload.peerId) room.members.add(payload.peerId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({
+          success: true,
+          roomCode: code,
+          track: room.track,
+          currentTime: room.currentTime,
+          isPlaying: room.isPlaying,
+          serverNow: Date.now()
+        }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/sync-room/state') {
+    const code = String(parsedUrl.query.roomCode || '');
+    const room = syncRooms.get(code);
+    if (!room) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: 'Room not found' }));
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({
+      success: true,
+      roomCode: code,
+      track: room.track,
+      currentTime: room.currentTime,
+      isPlaying: room.isPlaying,
+      serverNow: Date.now()
+    }));
+  }
+
+  if (parsedUrl.pathname === '/api/sync-room/action' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const code = String(payload.roomCode || '');
+        const room = syncRooms.get(code);
+        if (!room) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ success: false, error: 'Room not found' }));
+        }
+        if (payload.action === 'SYNC_STATE' || payload.type === 'SYNC_STATE') {
+          if (payload.track !== undefined) room.track = payload.track;
+          if (payload.currentTime !== undefined) room.currentTime = Number(payload.currentTime) || 0;
+          if (payload.isPlaying !== undefined) room.isPlaying = Boolean(payload.isPlaying);
+          room.lastUpdate = Date.now();
+        } else if (payload.action === 'CHAT' || payload.type === 'CHAT') {
+          room.chat.push({
+            sender: payload.sender || 'Member',
+            text: payload.text || '',
+            time: Date.now()
+          });
+          if (room.chat.length > 100) room.chat.shift();
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, serverNow: Date.now() }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/api/mv-stream-info') {
     let vid = (parsedUrl.query.id || '').trim();
     const q = (parsedUrl.query.q || parsedUrl.query.title || '').trim();
@@ -10251,7 +10582,7 @@ function startServer(port = PORT) {
 
 function stopServer() { return new Promise((resolve) => { if (!server || !server.listening) return resolve(); server.close(() => resolve()); }); }
 
-module.exports = { stopServer, matchAndResolveTrack, handleLyrics, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchSyncLrc, parseKaraokeToWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc };
+module.exports = { stopServer, matchAndResolveTrack, handleLyrics, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchSyncLrc, parseKaraokeToWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc, cleanSearchResults };
 
 if (require.main === module) {
   startServer();

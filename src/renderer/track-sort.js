@@ -1,15 +1,41 @@
-const TRACK_SORT_MODES = ['manual', 'added-desc', 'added-asc'];
+const TRACK_SORT_MODES = ['manual', 'added-desc', 'added-asc', 'title-asc', 'artist-asc', 'duration-asc'];
 
 function sortTracks(tracks, mode) {
   const list = Array.isArray(tracks) ? tracks.slice() : [];
-  if (mode !== 'added-desc' && mode !== 'added-asc') return list;
-  const dir = mode === 'added-desc' ? -1 : 1;
-  return list.sort((a, b) => {
-    const at = a && typeof a.addedAt === 'number' ? a.addedAt : 0;
-    const bt = b && typeof b.addedAt === 'number' ? b.addedAt : 0;
-    if (at === bt) return 0;
-    return at < bt ? -dir : dir;
-  });
+  if (mode === 'added-desc' || mode === 'added-asc') {
+    const dir = mode === 'added-desc' ? -1 : 1;
+    return list.sort((a, b) => {
+      const at = a && typeof a.addedAt === 'number' ? a.addedAt : 0;
+      const bt = b && typeof b.addedAt === 'number' ? b.addedAt : 0;
+      if (at === bt) return 0;
+      return at < bt ? -dir : dir;
+    });
+  }
+  if (mode === 'title-asc') {
+    return list.slice().sort((a, b) => {
+      const aTitle = (a && a.title) || '';
+      const bTitle = (b && b.title) || '';
+      if (!aTitle && !bTitle) return 0;
+      if (!aTitle) return 1;
+      if (!bTitle) return -1;
+      return aTitle.localeCompare(bTitle, undefined, { sensitivity: 'base' });
+    });
+  }
+  if (mode === 'artist-asc') {
+    return list.slice().sort((a, b) => {
+      const aArt = (a && (a.artist || a.uploader)) || '';
+      const bArt = (b && (b.artist || b.uploader)) || '';
+      return aArt.localeCompare(bArt, undefined, { sensitivity: 'base' });
+    });
+  }
+  if (mode === 'duration-asc') {
+    return list.slice().sort((a, b) => {
+      const aDur = (a && typeof a.duration === 'number' && a.duration > 0) ? a.duration : Number.MAX_SAFE_INTEGER;
+      const bDur = (b && typeof b.duration === 'number' && b.duration > 0) ? b.duration : Number.MAX_SAFE_INTEGER;
+      return aDur - bDur;
+    });
+  }
+  return list;
 }
 
 function backfillAddedAt(tracks, newestFirst) {

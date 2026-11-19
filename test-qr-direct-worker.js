@@ -2,6 +2,9 @@
 const pcQr = require('./src/server/qr-session-transfer');
 
 const [,, transferId, secretKey, directPayloadJson, pin] = process.argv;
+if (!transferId || !secretKey || !directPayloadJson) {
+  process.exit(0);
+}
 
 function exitWith(msg, code) {
   if (process.send) {

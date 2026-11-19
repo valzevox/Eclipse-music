@@ -21599,6 +21599,16 @@ function bindCoverHoldZoom(wrapEl) {
         return;
       }
 
+      if (Array.isArray(data.skippedPlaylists) && data.skippedPlaylists.length > 0) {
+        const names = data.skippedPlaylists.map(p => `${p.name}: ${p.error}`).join('\n');
+        const proceed = window.confirm(`Some playlists could not be loaded:\n\n${names}\n\nDo you want to continue importing the rest of your library?`);
+        if (!proceed) {
+          dismissImportSpinnerToast();
+          if (btnConfirmSpotifyImport) btnConfirmSpotifyImport.disabled = false;
+          return;
+        }
+      }
+
       if (!(data.likes?.length || data.playlists?.some(pl => pl.tracks?.length))) {
         dismissImportSpinnerToast();
         showToast('No tracks found in your Spotify library', 'warning');

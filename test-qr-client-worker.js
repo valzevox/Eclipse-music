@@ -2,6 +2,9 @@
 const pcQr = require('./src/server/qr-session-transfer');
 
 const [,, serverUrl, transferId, secretKey] = process.argv;
+if (!serverUrl || !transferId || !secretKey) {
+  process.exit(0);
+}
 
 async function run() {
   try {

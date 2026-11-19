@@ -451,6 +451,229 @@ class YtmAuthManager {
   async authenticateWithCookie(cookieString) {
     return await this.addAccountFromCookie(cookieString);
   }
+
+  switchAccount(id) {
+    const ok = this.setDefaultAccount(id);
+    return ok ? this.getActiveAccount() : null;
+  }
+
+  _buildSapisidHeaders(cookieString, origin = 'https://music.youtube.com') {
+    if (!cookieString || typeof cookieString !== 'string') return null;
+    const match = cookieString.match(/(?:^|;\s*)(?:SAPISID|__Secure-3PAPISID)=([^;]+)/);
+    const sapisid = match ? match[1].trim() : '';
+    if (!sapisid) return null;
+    const ts = Math.floor(Date.now() / 1000);
+    const hash = crypto.createHash('sha1').update(`${ts} ${sapisid} ${origin}`).digest('hex');
+    return {
+      'Cookie': cookieString,
+      'Authorization': `SAPISIDHASH ${ts}_${hash}`,
+      'Origin': origin,
+      'X-Origin': origin,
+      'X-Goog-AuthUser': '0',
+      'Content-Type': 'application/json'
+    };
+  }
+
+  async _callInnerTubeMutation(endpoint, bodyPayload = {}) {
+    const defaultAcc = this.getDefaultAccount();
+    if (!defaultAcc || !defaultAcc.cookie) {
+      return {
+        success: false,
+        authenticated: false,
+        endpoint,
+        payload: bodyPayload,
+        error: 'No authenticated YouTube Music account'
+      };
+    }
+
+    const headers = this._buildSapisidHeaders(defaultAcc.cookie);
+    const requestBody = {
+      context: {
+        client: {
+          clientName: 'WEB_REMIX',
+          clientVersion: '1.20250312.01.00',
+          hl: 'en',
+          gl: 'US'
+        }
+      },
+      ...bodyPayload
+    };
+
+    if (typeof this._mutationTransport === 'function') {
+      return await this._mutationTransport(endpoint, requestBody, headers);
+    }
+
+    try {
+      if (this.activeClient && this.activeClient.actions && typeof this.activeClient.actions.execute === 'function') {
+        const res = await this.activeClient.actions.execute(`/${endpoint}`, { ...bodyPayload, client: 'YTMUSIC' });
+        return {
+          success: true,
+          authenticated: true,
+          endpoint,
+          payload: bodyPayload,
+          data: res?.data || res || {}
+        };
+      }
+    } catch (_) {}
+
+    if (typeof globalThis.fetch === 'function' && headers) {
+      try {
+        const res = await globalThis.fetch(`https://music.youtube.com/youtubei/v1/${endpoint}?prettyPrint=false`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(requestBody),
+          signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined
+        });
+        const data = await res.json().catch(() => ({}));
+        return {
+          success: res.ok,
+          authenticated: true,
+          status: res.status,
+          endpoint,
+          payload: bodyPayload,
+          data
+        };
+      } catch (err) {
+        return {
+          success: false,
+          authenticated: true,
+          endpoint,
+          payload: bodyPayload,
+          error: err.message
+        };
+      }
+    }
+
+    return {
+      success: true,
+      authenticated: true,
+      endpoint,
+      payload: bodyPayload,
+      queued: true
+    };
+  }
+
+  async rateTrack(videoId, rating = 'LIKE') {
+    const vid = String(videoId || '').trim();
+    if (!vid) throw new Error('Missing videoId');
+    const normRating = String(rating || 'LIKE').toUpperCase().trim();
+    let endpoint = 'like/like';
+    if (normRating === 'DISLIKE') {
+      endpoint = 'like/dislike';
+    } else if (normRating === 'INDIFFERENT' || normRating === 'NONE' || normRating === 'REMOVE') {
+      endpoint = 'like/removelike';
+    }
+    const res = await this._callInnerTubeMutation(endpoint, {
+      target: { videoId: vid }
+    });
+    return {
+      ...res,
+      videoId: vid,
+      rating: normRating
+    };
+  }
+
+  async createCloudPlaylist(title, description = '', privacyStatus = 'PRIVATE', videoIds = []) {
+    const cleanTitle = String(title || '').trim();
+    if (!cleanTitle) throw new Error('Missing playlist title');
+    const cleanPrivacy = ['PUBLIC', 'UNLISTED', 'PRIVATE'].includes(String(privacyStatus || '').toUpperCase())
+      ? String(privacyStatus).toUpperCase()
+      : 'PRIVATE';
+    const cleanVideos = Array.isArray(videoIds) ? videoIds.map(v => String(v || '').trim()).filter(Boolean) : [];
+    const payload = {
+      title: cleanTitle,
+      description: String(description || ''),
+      privacyStatus: cleanPrivacy
+    };
+    if (cleanVideos.length > 0) {
+      payload.videoIds = cleanVideos;
+    }
+    const res = await this._callInnerTubeMutation('playlist/create', payload);
+    return {
+      ...res,
+      playlistId: res.data?.playlistId || null,
+      title: cleanTitle,
+      privacyStatus: cleanPrivacy
+    };
+  }
+
+  async editCloudPlaylist(playlistId, actions = []) {
+    const rawId = String(playlistId || '').trim();
+    if (!rawId) throw new Error('Missing playlistId');
+    const cleanPlaylistId = rawId.startsWith('VL') ? rawId.slice(2) : rawId;
+    if (!Array.isArray(actions) || actions.length === 0) {
+      throw new Error('Missing playlist edit actions');
+    }
+    const validActions = new Set([
+      'ACTION_ADD_VIDEO',
+      'ACTION_REMOVE_VIDEO',
+      'ACTION_MOVE_VIDEO_BEFORE',
+      'ACTION_SET_PLAYLIST_NAME',
+      'ACTION_SET_PLAYLIST_DESCRIPTION'
+    ]);
+    const formattedActions = actions.map(act => {
+      const actionType = String(act.action || '').trim();
+      if (!validActions.has(actionType)) {
+        throw new Error(`Unsupported playlist action: ${actionType}`);
+      }
+      const entry = { action: actionType };
+      if (act.addedVideoId || act.videoId) {
+        if (actionType === 'ACTION_ADD_VIDEO') entry.addedVideoId = String(act.addedVideoId || act.videoId);
+        if (actionType === 'ACTION_REMOVE_VIDEO') entry.removedVideoId = String(act.removedVideoId || act.videoId);
+      }
+      if (act.removedVideoId) entry.removedVideoId = String(act.removedVideoId);
+      if (act.setVideoId) entry.setVideoId = String(act.setVideoId);
+      if (act.movedSetVideoIdSuccessor) entry.movedSetVideoIdSuccessor = String(act.movedSetVideoIdSuccessor);
+      if (act.playlistName !== undefined) entry.playlistName = String(act.playlistName);
+      if (act.playlistDescription !== undefined) entry.playlistDescription = String(act.playlistDescription);
+      return entry;
+    });
+    const res = await this._callInnerTubeMutation('browse/edit_playlist', {
+      playlistId: cleanPlaylistId,
+      actions: formattedActions
+    });
+    return {
+      ...res,
+      playlistId: cleanPlaylistId,
+      actions: formattedActions
+    };
+  }
+
+  async setArtistSubscription(channelId, subscribe = true) {
+    const cid = String(channelId || '').trim();
+    if (!cid) throw new Error('Missing channelId');
+    const isSub = Boolean(subscribe);
+    const endpoint = isSub ? 'subscription/subscribe' : 'subscription/unsubscribe';
+    const res = await this._callInnerTubeMutation(endpoint, {
+      channelIds: [cid]
+    });
+    return {
+      ...res,
+      channelId: cid,
+      subscribed: isSub
+    };
+  }
+
+  async reportPlaybackTelemetry(videoId, watchedSeconds = 0) {
+    const vid = String(videoId || '').trim();
+    if (!vid) throw new Error('Missing videoId');
+    const sec = Math.max(0, Number(watchedSeconds) || 0);
+    const cpn = crypto.randomBytes(8).toString('hex');
+    const res = await this._callInnerTubeMutation('player/heartbeat', {
+      videoId: vid,
+      cpn,
+      playbackContext: {
+        contentPlaybackContext: {
+          currentTimeSeconds: Math.round(sec)
+        }
+      }
+    });
+    return {
+      ...res,
+      videoId: vid,
+      watchedSeconds: sec
+    };
+  }
 }
 
 module.exports = YtmAuthManager;

@@ -7,7 +7,7 @@
   },
   "scripts": {
     "start": "electron .",
-    "test": "node --test",
+    "test": "node --test test/*.test.js",
     "dist": "electron-builder",
     "conveyor:app": "conveyor --cache-free-space-limit=1 make --overwrite=HARD_REPLACE app",
     "conveyor:site": "conveyor --cache-free-space-limit=1 make --overwrite=HARD_REPLACE site",

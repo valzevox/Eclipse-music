@@ -32,21 +32,123 @@ class AutoMixDJ {
   }
 
   /**
+   * Determine whether crossfade should be skipped for current/next track context
+   * @param {Object} currentTrack
+   * @param {Object} nextTrack
+   * @param {Object} context
+   * @returns {{ skip: boolean, reason?: string }}
+   */
+  shouldSkipCrossfade(currentTrack = {}, nextTrack = {}, context = {}) {
+    const curDur = Number(currentTrack?.duration) || 0;
+    const nextDur = Number(nextTrack?.duration) || 0;
+
+    // 1. Duration < 20s
+    if ((curDur > 0 && curDur < 20) || (nextDur > 0 && nextDur < 20)) {
+      return { skip: true, reason: 'duration_too_short' };
+    }
+
+    // 2. Either track is a Live Broadcast
+    if (currentTrack?.isLive === true || nextTrack?.isLive === true) {
+      return { skip: true, reason: 'live_broadcast' };
+    }
+
+    // 3. MV Video mode active
+    if (context.isVideoMode) {
+      return { skip: true, reason: 'video_mode_active' };
+    }
+
+    // 4. Eclipse Sync Room active
+    if (context.inSyncRoom) {
+      return { skip: true, reason: 'sync_room_active' };
+    }
+
+    // 5. Continuous gapless same-album playback
+    if (context.gaplessSameAlbum && currentTrack?.album && nextTrack?.album && currentTrack.album === nextTrack.album) {
+      return { skip: true, reason: 'gapless_same_album' };
+    }
+
+    return { skip: false };
+  }
+
+  /**
    * Calculate Beat-aligned transition duration based on tempo
    * Aligns crossfade to 2 bars (8 beats) or 4 bars (16 beats)
    */
-  getSmartTransitionOffsets(duration = 0, chorusOutroSec = null, nextIntroSec = null) {
-    // Smart Chorus Outro & Intro Transition (SimpMusic v2.6.0 parity)
-    // Default: fade out in the last 6-8s, or at chorus outro if detected
-    const fadeOutStart = (typeof chorusOutroSec === 'number' && chorusOutroSec > 0)
-      ? chorusOutroSec
-      : Math.max(0, duration - this.durationSec);
-    const fadeInSkip = (typeof nextIntroSec === 'number' && nextIntroSec > 0)
-      ? Math.min(nextIntroSec, 15)
-      : 0;
+  getSmartTransitionOffsets(durationOrTrack = 0, pcmEnergyEnvelopeOrChorus = null, nextIntroSec = null) {
+    let duration = 0;
+    let pcmEnvelope = null;
+    let chorusOutroSec = null;
+
+    if (typeof durationOrTrack === 'object' && durationOrTrack !== null) {
+      duration = Number(durationOrTrack.duration) || 0;
+      pcmEnvelope = (Array.isArray(pcmEnergyEnvelopeOrChorus) || ArrayBuffer.isView(pcmEnergyEnvelopeOrChorus)) ? pcmEnergyEnvelopeOrChorus : null;
+    } else {
+      duration = Number(durationOrTrack) || 0;
+      if (Array.isArray(pcmEnergyEnvelopeOrChorus) || ArrayBuffer.isView(pcmEnergyEnvelopeOrChorus)) {
+        pcmEnvelope = pcmEnergyEnvelopeOrChorus;
+      } else {
+        chorusOutroSec = typeof pcmEnergyEnvelopeOrChorus === 'number' ? pcmEnergyEnvelopeOrChorus : null;
+      }
+    }
+
+    let introEndSec = 0;
+    let lastChorusEndSec = null;
+    let outroStartSec = null;
+
+    if (pcmEnvelope && (Array.isArray(pcmEnvelope) || ArrayBuffer.isView(pcmEnvelope)) && pcmEnvelope.length >= 8) {
+      const len = pcmEnvelope.length;
+      const secPerPoint = duration > 0 ? duration / len : 1.0;
+      let maxEnergy = 0;
+      let totalEnergy = 0;
+      for (let i = 0; i < len; i++) {
+        const val = Number(pcmEnvelope[i]) || 0;
+        if (val > maxEnergy) maxEnergy = val;
+        totalEnergy += val;
+      }
+      const avgEnergy = totalEnergy / len;
+      const energyThresh = avgEnergy * 0.7;
+
+      // 1. Detect Intro End: First sustained rise in energy above threshold
+      for (let i = 0; i < Math.floor(len * 0.3); i++) {
+        if ((pcmEnvelope[i] || 0) >= energyThresh) {
+          introEndSec = Math.round(i * secPerPoint * 10) / 10;
+          break;
+        }
+      }
+
+      // 2. Detect Outro Start: Energy drop in final 35% of the song
+      const tailStartIndex = Math.floor(len * 0.65);
+      for (let i = len - 2; i >= tailStartIndex; i--) {
+        if ((pcmEnvelope[i] || 0) >= energyThresh) {
+          outroStartSec = Math.round((i + 1) * secPerPoint * 10) / 10;
+          lastChorusEndSec = outroStartSec;
+          break;
+        }
+      }
+    }
+
+    if (!outroStartSec && typeof chorusOutroSec === 'number' && chorusOutroSec > 0) {
+      outroStartSec = chorusOutroSec;
+      lastChorusEndSec = chorusOutroSec;
+    }
+
+    // Fallback heuristic if no envelope or drop detected
+    if (!outroStartSec) {
+      outroStartSec = Math.max(0, duration - this.durationSec);
+    }
+    if (typeof nextIntroSec === 'number' && nextIntroSec > 0) {
+      introEndSec = nextIntroSec;
+    }
+
+    const fadeOutStart = outroStartSec;
+    const fadeInSkip = Math.min(introEndSec, 15);
+
     return {
       fadeOutStart,
       fadeInSkip,
+      introEndSec,
+      lastChorusEndSec: lastChorusEndSec || fadeOutStart,
+      outroStartSec,
       crossfadeDuration: this.durationSec
     };
   }

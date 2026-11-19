@@ -2717,7 +2717,9 @@ ipcMain.on('window-minimize', () => {
       });
 
       app.whenReady().then(() => {
-        global.riffSessionFetch = (urlStr, opts) => session.defaultSession.fetch(urlStr, opts);
+        const sessionFetchFn = (urlStr, opts) => session.defaultSession.fetch(urlStr, opts);
+        global.eclipseSessionFetch = sessionFetchFn;
+        global.riffSessionFetch = sessionFetchFn;
         if (process.platform === 'darwin' && app.dock) {
           try {
             const dockIcon = nativeImage.createFromPath(path.join(__dirname, '../../assets', 'icon.png'));

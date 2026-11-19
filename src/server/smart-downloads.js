@@ -83,6 +83,28 @@ class SmartDownloadManager {
   }
 
   /**
+   * Determine if the current connection is unmetered Wi-Fi or Desktop Ethernet/Broadband.
+   * On Desktop Chromium/Electron/Node, navigator.connection.type is undefined; treat as unmetered unless saveData or cellular.
+   */
+  isWifiConnection(connOverride = null) {
+    return SmartDownloadManager.isWifiConnection(connOverride);
+  }
+
+  static isWifiConnection(connOverride = null) {
+    const conn = connOverride || (typeof navigator !== 'undefined' && (navigator.connection || navigator.mozConnection || navigator.webkitConnection)) || null;
+    if (!conn) return true;
+    if (conn.saveData === true) return false;
+    const type = typeof conn.type === 'string' ? conn.type.toLowerCase() : undefined;
+    if (type === undefined || type === 'wifi' || type === 'ethernet' || type === 'none' || type === 'unknown') {
+      return true;
+    }
+    if (type === 'cellular' || type === 'wimax' || type === 'bluetooth') {
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * Start executing smart download queue with concurrency and rate limiting
    */
   async startSync(downloadFn, isWifiFn) {
@@ -91,8 +113,9 @@ class SmartDownloadManager {
     }
 
     // Check Wi-Fi constraint if requested
-    if (this.wifiOnly && typeof isWifiFn === 'function') {
-      const onWifi = await isWifiFn();
+    if (this.wifiOnly) {
+      const checkFn = typeof isWifiFn === 'function' ? isWifiFn : () => this.isWifiConnection();
+      const onWifi = await checkFn();
       if (!onWifi) {
         this.emitStatus({ pausedReason: 'waiting_for_wifi' });
         return;

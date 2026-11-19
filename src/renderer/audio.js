@@ -13,8 +13,12 @@
       this.distortionNode = null;
       this.distortionGain = null;
       this.delayNode = null;
+      this.delayTap2Node = null;
+      this.delayFeedbackGain = null;
       this.delayFeedback = null;
+      this.delayWetGain = null;
       this.delayGain = null;
+      this.delayDryGain = null;
       this.convolverNode = null;
       this.reverbGain = null;
 
@@ -38,6 +42,9 @@
       this.levelAnalyser = null;
       this.levelBuf = null;
       this.fadeGain = null;
+      this.sleepFadeGain = null;
+      this._sleepFadeTimer = null;
+      this._sleepTailTimer = null;
       this.bus = null;
       this._analyserConnected = false;
       this._suspendTimer = null;
@@ -52,6 +59,12 @@
         air: 0,
         bass: 0
       };
+      this.echoDelaySettings = {
+        enabled: false,
+        delayTimeMs: 300,
+        feedback: 0.35,
+        mix: 0.0
+      };
       this.audioSettings = {
         speed: 1.0,
         speedPitch: 1.0,
@@ -60,6 +73,7 @@
         distortion: 0,
         volume: 1.0,
         echo: 0,
+        echoDelay: { ...this.echoDelaySettings },
         eq: { low: 0, mid: 0, high: 0 },
         eqBands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
       };
@@ -176,15 +190,29 @@
           this.distortionGain = this.ctx.createGain();
           this.distortionGain.gain.value = 0.0;
 
-          this.delayNode = this.ctx.createDelay(1.0);
+          this.delayNode = this.ctx.createDelay(1.5);
           this.delayNode.delayTime.value = 0.3;
-          this.delayFeedback = this.ctx.createGain();
-          this.delayFeedback.gain.value = 0.35;
-          this.delayGain = this.ctx.createGain();
-          this.delayGain.gain.value = 0.0;
-          this.delayNode.connect(this.delayFeedback);
-          this.delayFeedback.connect(this.delayNode);
-          this.delayNode.connect(this.delayGain);
+          this.delayTap2Node = this.ctx.createDelay(1.5);
+          this.delayTap2Node.delayTime.value = 0.45;
+
+          this.delayFeedbackGain = this.ctx.createGain();
+          this.delayFeedbackGain.gain.value = 0.35;
+          this.delayFeedback = this.delayFeedbackGain;
+
+          this.delayWetGain = this.ctx.createGain();
+          this.delayWetGain.gain.value = 0.0;
+          this.delayGain = this.delayWetGain;
+
+          this.delayDryGain = this.ctx.createGain();
+          this.delayDryGain.gain.value = 1.0;
+
+          // Multi-Tap Echo Loop: Tap 1 (0.30s) -> Feedback -> DelayNode; Tap 2 (0.45s) tapped from Tap 1
+          this.delayNode.connect(this.delayFeedbackGain);
+          this.delayFeedbackGain.connect(this.delayNode);
+          this.delayNode.connect(this.delayTap2Node);
+
+          this.delayNode.connect(this.delayWetGain);
+          this.delayTap2Node.connect(this.delayWetGain);
 
           this.convolverNode = this.ctx.createConvolver();
           this.convolverNode.buffer = this._createReverbImpulse(this.ctx);
@@ -238,7 +266,11 @@
           this.fadeGain = this.ctx.createGain();
           this.fadeGain.gain.value = 1.0;
 
-          // 8D Spatial Audio Panner Node (SimpMusic v2.6.0 parity)
+          // Dedicated Sleep Timer Equal-Power Cosine Fade Node (does not mutate user master volume)
+          this.sleepFadeGain = this.ctx.createGain();
+          this.sleepFadeGain.gain.value = 1.0;
+
+          // 8D Spatial Audio Panner Node (Eclipse High-Fidelity Spatial Audio)
           this.spatialPanner = null;
           if (typeof this.ctx.createPanner === 'function') {
             try {
@@ -283,7 +315,8 @@
             this.analyserNode.connect(this.fadeGain);
           }
 
-          this.fadeGain.connect(this.ctx.destination);
+          this.fadeGain.connect(this.sleepFadeGain);
+          this.sleepFadeGain.connect(this.ctx.destination);
           this.eqHigh.connect(this.levelAnalyser);
 
           this.graphInitialized = true;
@@ -311,7 +344,7 @@
       const s = this.audioSettings;
       const isEqOn = this._isEqActive();
       const isReverbOn = (s.reverb || 0) > 0;
-      const isEchoOn = (s.echo || 0) > 0;
+      const isEchoOn = (s.echo || 0) > 0 || !!(s.echoDelay && s.echoDelay.enabled);
       const isDistortionOn = (s.distortion || 0) > 0;
       const isHqOn = !!this.hqEnabled;
 
@@ -363,7 +396,11 @@
 
       if (isEchoOn) {
         this.bus.connect(this.delayNode);
-        this.delayGain.connect(this.masterGain);
+        if (this.delayWetGain) {
+          this.delayWetGain.connect(this.masterGain);
+        } else if (this.delayGain) {
+          this.delayGain.connect(this.masterGain);
+        }
       }
 
       if (isReverbOn) {
@@ -468,8 +505,135 @@
 
 
     setAudioSettings(settings) {
+      if (settings && settings.echoDelay) {
+        this.setEchoDelay(settings.echoDelay);
+      }
       Object.assign(this.audioSettings, settings);
       this.applySettings();
+    }
+
+    setEchoDelay(options = {}) {
+      if (!this.echoDelaySettings) {
+        this.echoDelaySettings = { enabled: false, delayTimeMs: 300, feedback: 0.35, mix: 0.0 };
+      }
+      if (typeof options.enabled === 'boolean') this.echoDelaySettings.enabled = options.enabled;
+      if (typeof options.delayTimeMs === 'number') {
+        this.echoDelaySettings.delayTimeMs = Math.max(10, Math.min(1500, options.delayTimeMs));
+      }
+      if (typeof options.feedback === 'number') {
+        this.echoDelaySettings.feedback = Math.max(0, Math.min(0.9, options.feedback));
+      }
+      if (typeof options.mix === 'number') {
+        this.echoDelaySettings.mix = Math.max(0, Math.min(1.0, options.mix));
+      }
+
+      this.audioSettings.echoDelay = { ...this.echoDelaySettings };
+
+      const timeSec = this.echoDelaySettings.delayTimeMs / 1000;
+      const fb = this.echoDelaySettings.feedback;
+      const wet = this.echoDelaySettings.enabled ? this.echoDelaySettings.mix : 0.0;
+      const dry = this.echoDelaySettings.enabled ? (1.0 - wet * 0.3) : 1.0;
+
+      if (this.delayNode && this.delayNode.delayTime) {
+        if (this.ctx && this.delayNode.delayTime.setTargetAtTime) {
+          this.delayNode.delayTime.setTargetAtTime(timeSec, this.ctx.currentTime, 0.02);
+        } else {
+          this.delayNode.delayTime.value = timeSec;
+        }
+      }
+      if (this.delayTap2Node && this.delayTap2Node.delayTime) {
+        const tap2Sec = Math.min(1.45, timeSec * 1.5);
+        if (this.ctx && this.delayTap2Node.delayTime.setTargetAtTime) {
+          this.delayTap2Node.delayTime.setTargetAtTime(tap2Sec, this.ctx.currentTime, 0.02);
+        } else {
+          this.delayTap2Node.delayTime.value = tap2Sec;
+        }
+      }
+      if (this.delayFeedbackGain && this.delayFeedbackGain.gain) {
+        if (this.ctx && this.delayFeedbackGain.gain.setTargetAtTime) {
+          this.delayFeedbackGain.gain.setTargetAtTime(fb, this.ctx.currentTime, 0.02);
+        } else {
+          this.delayFeedbackGain.gain.value = fb;
+        }
+      }
+      if (this.delayWetGain && this.delayWetGain.gain) {
+        if (this.ctx && this.delayWetGain.gain.setTargetAtTime) {
+          this.delayWetGain.gain.setTargetAtTime(wet, this.ctx.currentTime, 0.02);
+        } else {
+          this.delayWetGain.gain.value = wet;
+        }
+      }
+      if (this.delayDryGain && this.delayDryGain.gain) {
+        if (this.ctx && this.delayDryGain.gain.setTargetAtTime) {
+          this.delayDryGain.gain.setTargetAtTime(dry, this.ctx.currentTime, 0.02);
+        } else {
+          this.delayDryGain.gain.value = dry;
+        }
+      }
+
+      if (this.graphInitialized) this._updateRouting();
+      return { ...this.echoDelaySettings };
+    }
+
+    startSleepCosineFade(durationMs = 5000, tailSilenceMs = 800) {
+      if (this._sleepFadeTimer) {
+        clearInterval(this._sleepFadeTimer);
+        this._sleepFadeTimer = null;
+      }
+      if (this._sleepTailTimer) {
+        clearTimeout(this._sleepTailTimer);
+        this._sleepTailTimer = null;
+      }
+
+      if (!this.sleepFadeGain) {
+        if (this._attachedElement) {
+          try { this._attachedElement.pause(); } catch (_) {}
+        }
+        return Promise.resolve(true);
+      }
+
+      const totalSteps = Math.max(10, Math.floor(durationMs / 30));
+      const stepInterval = durationMs / totalSteps;
+      let step = 0;
+
+      return new Promise((resolve) => {
+        this._sleepFadeTimer = setInterval(() => {
+          step++;
+          const progress = Math.min(1.0, step / totalSteps);
+          // Equal-power cosine fade curve: cos(progress * PI / 2) -> 1.0 down to 0.0
+          const currentGain = Math.cos(progress * Math.PI * 0.5);
+
+          if (this.sleepFadeGain && this.sleepFadeGain.gain) {
+            if (this.ctx && this.sleepFadeGain.gain.setValueAtTime) {
+              this.sleepFadeGain.gain.setValueAtTime(currentGain, this.ctx.currentTime);
+            } else {
+              this.sleepFadeGain.gain.value = currentGain;
+            }
+          }
+
+          if (progress >= 1.0) {
+            clearInterval(this._sleepFadeTimer);
+            this._sleepFadeTimer = null;
+
+            // Tail silence before pausing playback
+            this._sleepTailTimer = setTimeout(() => {
+              this._sleepTailTimer = null;
+              if (this._attachedElement) {
+                try { this._attachedElement.pause(); } catch (_) {}
+              }
+              // Reset sleepFadeGain back to 1.0 for future playback
+              if (this.sleepFadeGain && this.sleepFadeGain.gain) {
+                if (this.ctx && this.sleepFadeGain.gain.setValueAtTime) {
+                  this.sleepFadeGain.gain.setValueAtTime(1.0, this.ctx.currentTime);
+                } else {
+                  this.sleepFadeGain.gain.value = 1.0;
+                }
+              }
+              resolve(true);
+            }, Math.max(0, tailSilenceMs));
+          }
+        }, stepInterval);
+      });
     }
 
     setEq(eq) {

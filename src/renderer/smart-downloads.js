@@ -105,10 +105,15 @@ class SmartDownloadManager {
     if (nav.onLine === false) return false;
     const conn = nav.connection || nav.mozConnection || nav.webkitConnection;
     if (!conn) {
-      // Fail-safe: Cannot verify Wi-Fi without NetworkInformation API
-      return false;
+      // Desktop fallback: if navigator.onLine is true and no connection API is present, consider connected
+      return nav.onLine !== false;
     }
     if (conn.saveData) return false;
+    // On Desktop Chromium / Electron, conn exists but conn.type is undefined (effectiveType is '4g').
+    // Desktop Ethernet/Wi-Fi must never be permanently blocked.
+    if (typeof conn.type === 'undefined') {
+      return nav.onLine !== false;
+    }
     if (typeof conn.type === 'string') {
       const t = conn.type.toLowerCase();
       return t === 'wifi' || t === 'ethernet';
@@ -205,7 +210,7 @@ class SmartDownloadManager {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = SmartDownloadManager;
+  module.exports = { SmartDownloadManager };
 } else {
   window.SmartDownloadManager = SmartDownloadManager;
 }

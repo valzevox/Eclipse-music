@@ -84,8 +84,10 @@ test('Spotify login reports callback errors and protects account routes', async 
 
 test('renderer fetch sends the server token to Spotify account routes', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+  const patchStart = source.indexOf('if (typeof window === \'undefined\' || window.__eclipseFetchPatched)');
+  const patchEnd = source.indexOf('})();', patchStart) + 5;
   const renderer = { electronAPI: { serverToken: getServerToken() }, fetch: fetch.bind(globalThis) };
-  vm.runInNewContext(source.slice(0, source.indexOf('})();') + 5), { window: renderer, Headers, URL });
+  vm.runInNewContext(source.slice(source.lastIndexOf('(() => {', patchStart), patchEnd), { window: renderer, Headers, URL });
   const port = await startServer(0);
   try {
     for (const route of ['/api/spotify-auth-start?clientId=' + 'a'.repeat(32), '/api/spotify-status', '/api/spotify-library?likes=1', '/api/spotify-logout']) {
@@ -188,6 +190,11 @@ test('renderer requires consent before importing a partial Spotify library', asy
     spotifyStatus: { textContent: '', style: {}, classList: { remove() {} } },
     btnConfirmSpotifyImport: { disabled: false }, btnCancelSpotifyImport: { disabled: false },
     state: { serverPort: 1234 }, spotifyHeaders: { 'X-Eclipse-Token': 'secret' },
+    closeSpotifyImportModal: () => {},
+    showImportSpinnerToast: () => {},
+    dismissImportSpinnerToast: () => {},
+    showToast: () => {},
+    getSpotifyHeaders: () => ({ 'X-Eclipse-Token': 'secret' }),
     window: { confirm(message) { prompt = message; return approved; } },
     fetch: async (url, options) => {
       assert.match(url, /\/api\/spotify-library\?/);

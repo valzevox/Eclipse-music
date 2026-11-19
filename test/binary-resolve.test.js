@@ -18,7 +18,7 @@ test('resolveBinary re-resolves after a cached managed binary disappears', () =>
   const managed = path.join(binDir, exe);
 
   fs.mkdirSync(binDir, { recursive: true });
-  fs.writeFileSync(managed, '');
+  fs.writeFileSync(managed, Buffer.alloc(5 * 1024 * 1024 + 64));
   try { fs.chmodSync(managed, 0o755); } catch (_) {}
 
   clearBinaryCache();
@@ -35,7 +35,7 @@ test('resolveBinary keeps returning a cached binary that still exists', () => {
   const managed = path.join(binDir, exe);
 
   fs.mkdirSync(binDir, { recursive: true });
-  fs.writeFileSync(managed, '');
+  fs.writeFileSync(managed, Buffer.alloc(5 * 1024 * 1024 + 64));
   try { fs.chmodSync(managed, 0o755); } catch (_) {}
 
   clearBinaryCache();
