@@ -237,10 +237,52 @@
           this.bus = this.ctx.createGain();
           this.fadeGain = this.ctx.createGain();
           this.fadeGain.gain.value = 1.0;
+
+          // 8D Spatial Audio Panner Node (SimpMusic v2.6.0 parity)
+          this.spatialPanner = null;
+          if (typeof this.ctx.createPanner === 'function') {
+            try {
+              this.spatialPanner = this.ctx.createPanner();
+              this.spatialPanner.panningModel = 'HRTF';
+              this.spatialPanner.distanceModel = 'inverse';
+              this.spatialPanner.refDistance = 1;
+              this.spatialPanner.maxDistance = 10000;
+              this.spatialPanner.rolloffFactor = 1;
+              this.spatialPanner.coneInnerAngle = 360;
+              this.spatialPanner.coneOuterAngle = 0;
+              this.spatialPanner.coneOuterGain = 0;
+              if (this.spatialPanner.positionX) {
+                this.spatialPanner.positionX.setValueAtTime(0, this.ctx.currentTime);
+                this.spatialPanner.positionY.setValueAtTime(0, this.ctx.currentTime);
+                this.spatialPanner.positionZ.setValueAtTime(1, this.ctx.currentTime);
+              } else {
+                this.spatialPanner.setPosition(0, 0, 1);
+              }
+            } catch (_) {
+              this.spatialPanner = null;
+            }
+          }
+
+          this.spatial8dSettings = {
+            enabled: false,
+            cycleSec: 14,
+            direction: 'cw',
+            radius: 2.0
+          };
+          this._spatial8dTimer = null;
+          this._spatial8dStartTime = 0;
+
           this.masterGain.connect(this.normGain);
           this.normGain.connect(this.normLimiter);
           this.normLimiter.connect(this.analyserNode);
-          this.analyserNode.connect(this.fadeGain);
+
+          if (this.spatialPanner) {
+            this.analyserNode.connect(this.spatialPanner);
+            this.spatialPanner.connect(this.fadeGain);
+          } else {
+            this.analyserNode.connect(this.fadeGain);
+          }
+
           this.fadeGain.connect(this.ctx.destination);
           this.eqHigh.connect(this.levelAnalyser);
 
@@ -622,7 +664,66 @@
       return rms > 0 ? 20 * Math.log10(rms) : -120;
     }
 
-    setNormalizeGainDb(db) {
+    setSpatial8d(options = {}) {
+    Object.assign(this.spatial8dSettings, options);
+    if (this.spatial8dSettings.enabled) {
+      this._startSpatial8d();
+    } else {
+      this._stopSpatial8d();
+    }
+    return { ...this.spatial8dSettings };
+  }
+
+  getSpatial8dSettings() {
+    return { ...this.spatial8dSettings };
+  }
+
+  _startSpatial8d() {
+    this._stopSpatial8d();
+    if (!this.spatialPanner || !this.ctx) return;
+    this._spatial8dStartTime = Date.now();
+    const updatePos = () => {
+      if (!this.spatial8dSettings.enabled || !this.spatialPanner || !this.ctx) return;
+      const elapsedSec = (Date.now() - this._spatial8dStartTime) / 1000;
+      const cycle = Math.max(4, this.spatial8dSettings.cycleSec || 14);
+      const dirSign = this.spatial8dSettings.direction === 'ccw' ? -1 : 1;
+      const theta = (2 * Math.PI * (elapsedSec % cycle) / cycle) * dirSign;
+      const r = this.spatial8dSettings.radius || 2.0;
+      const x = r * Math.cos(theta);
+      const z = r * Math.sin(theta);
+      const y = 0;
+
+      const t = this.ctx.currentTime;
+      if (this.spatialPanner.positionX) {
+        this.spatialPanner.positionX.setValueAtTime(x, t);
+        this.spatialPanner.positionY.setValueAtTime(y, t);
+        this.spatialPanner.positionZ.setValueAtTime(z, t);
+      } else if (typeof this.spatialPanner.setPosition === 'function') {
+        this.spatialPanner.setPosition(x, y, z);
+      }
+      this._spatial8dTimer = requestAnimationFrame(updatePos);
+    };
+    this._spatial8dTimer = requestAnimationFrame(updatePos);
+  }
+
+  _stopSpatial8d() {
+    if (this._spatial8dTimer) {
+      cancelAnimationFrame(this._spatial8dTimer);
+      this._spatial8dTimer = null;
+    }
+    if (this.spatialPanner && this.ctx) {
+      const t = this.ctx.currentTime;
+      if (this.spatialPanner.positionX) {
+        this.spatialPanner.positionX.setValueAtTime(0, t);
+        this.spatialPanner.positionY.setValueAtTime(0, t);
+        this.spatialPanner.positionZ.setValueAtTime(1, t);
+      } else if (typeof this.spatialPanner.setPosition === 'function') {
+        this.spatialPanner.setPosition(0, 0, 1);
+      }
+    }
+  }
+
+  setNormalizeGainDb(db) {
       if (!this.normGain || !this.ctx) return;
       this.normGain.gain.setTargetAtTime(Math.pow(10, db / 20), this.ctx.currentTime, 0.8);
     }

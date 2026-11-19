@@ -2,12 +2,27 @@
 
 const API_BASE = 'https://www.googleapis.com/youtube/v3';
 
-function thumbnailUrl(thumbnails) {
-  if (!thumbnails || typeof thumbnails !== 'object') return '';
-  for (const key of ['maxres', 'standard', 'high', 'medium', 'default']) {
-    if (thumbnails[key] && thumbnails[key].url) return thumbnails[key].url;
+// Cascading Thumbnail Ladder (EchoMusic v1.4.8 parity: maxres -> sddefault -> hq720 -> hqdefault)
+function thumbnailUrl(thumbnails, videoId = null) {
+  if (thumbnails && typeof thumbnails === 'object') {
+    for (const key of ['maxres', 'standard', 'high', 'medium', 'default']) {
+      if (thumbnails[key] && thumbnails[key].url) return thumbnails[key].url;
+    }
+  }
+  if (videoId && /^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+    return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
   }
   return '';
+}
+
+function getCascadingThumbnails(videoId) {
+  if (!videoId || !/^[a-zA-Z0-9_-]{11}$/.test(videoId)) return [];
+  return [
+    `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
+    `https://i.ytimg.com/vi/${videoId}/sddefault.jpg`,
+    `https://i.ytimg.com/vi/${videoId}/hq720.jpg`,
+    `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
+  ];
 }
 
 function durationInSeconds(value) {
@@ -163,4 +178,4 @@ async function fetchYouTubeLibrary(accessToken, options = {}, fetchImpl = fetch)
   };
 }
 
-module.exports = { fetchYouTubeLibrary, durationInSeconds };
+module.exports = { fetchYouTubeLibrary, durationInSeconds, thumbnailUrl, getCascadingThumbnails };

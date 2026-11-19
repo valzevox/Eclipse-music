@@ -35,6 +35,22 @@ class AutoMixDJ {
    * Calculate Beat-aligned transition duration based on tempo
    * Aligns crossfade to 2 bars (8 beats) or 4 bars (16 beats)
    */
+  getSmartTransitionOffsets(duration = 0, chorusOutroSec = null, nextIntroSec = null) {
+    // Smart Chorus Outro & Intro Transition (SimpMusic v2.6.0 parity)
+    // Default: fade out in the last 6-8s, or at chorus outro if detected
+    const fadeOutStart = (typeof chorusOutroSec === 'number' && chorusOutroSec > 0)
+      ? chorusOutroSec
+      : Math.max(0, duration - this.durationSec);
+    const fadeInSkip = (typeof nextIntroSec === 'number' && nextIntroSec > 0)
+      ? Math.min(nextIntroSec, 15)
+      : 0;
+    return {
+      fadeOutStart,
+      fadeInSkip,
+      crossfadeDuration: this.durationSec
+    };
+  }
+
   getBeatAlignedDuration(bpm = this.bpm) {
     const beatSec = 60 / bpm;
     const barSec = beatSec * 4;
