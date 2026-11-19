@@ -1,11 +1,11 @@
 /**
- * App Theme Color Presets & Waveform Audio Styles (SimpMusic v2.6.0 parity)
+ * Eclipse Dynamic Color Presets & Palette Profiles
  */
 const ECLIPSE_COLOR_PRESETS = [
   { id: 'eclipse_neon', name: 'Eclipse Neon (Default)', primary: '#a855f7', glow: 'rgba(168, 85, 247, 0.45)' },
-  { id: 'spotify_green', name: 'Spotify Green', primary: '#1ed760', glow: 'rgba(30, 215, 96, 0.45)' },
-  { id: 'soundcloud_orange', name: 'SoundCloud Orange', primary: '#ff5500', glow: 'rgba(255, 85, 0, 0.45)' },
-  { id: 'apple_music_red', name: 'Apple Music Red', primary: '#fa2d48', glow: 'rgba(250, 45, 72, 0.45)' },
+  { id: 'emerald_flow', name: 'Emerald Flow', primary: '#1ed760', glow: 'rgba(30, 215, 96, 0.45)' },
+  { id: 'solar_amber', name: 'Solar Amber', primary: '#ff5500', glow: 'rgba(255, 85, 0, 0.45)' },
+  { id: 'crimson_pulse', name: 'Crimson Pulse', primary: '#fa2d48', glow: 'rgba(250, 45, 72, 0.45)' },
   { id: 'cyber_cyan', name: 'Cyber Cyan', primary: '#06b6d4', glow: 'rgba(6, 182, 212, 0.45)' }
 ];
 
