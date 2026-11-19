@@ -211,6 +211,10 @@
   if (window.electronAPI) {
     if (window.electronAPI.onUpdateAvailable) {
       window.electronAPI.onUpdateAvailable((data) => {
+        // Cache release notes for post-update "What's New" changelog modal
+        if (data && data.version && (data.releaseNotes || data.notes)) {
+          store.set(`eclipse_release_notes_${data.version}`, data.releaseNotes || data.notes);
+        }
         const snooze = store.get('eclipse_update_snooze');
         if (snooze && snooze.ver === data.version && snooze.until > Date.now()) return;
         showUpdateModal(data, 'update');
@@ -297,10 +301,32 @@
   const lastSeenVer = store.get('eclipse_last_seen_version');
   if (lastSeenVer && isNewerVer(CURRENT_VER, lastSeenVer)) {
     store.set('eclipse_last_seen_version', CURRENT_VER);
-    showUpdateModal({
-      version: CURRENT_VER,
-      releaseNotes: `### Nâng Cấp Thành Công Lên v${CURRENT_VER}!\n\n- Tối ưu hóa hiệu năng và vá lỗi hệ thống.\n- Chúc bạn có trải nghiệm nghe nhạc tuyệt vời với Eclipse.`
-    }, 'changelog');
+    const cachedNotes = store.get(`eclipse_release_notes_${CURRENT_VER}`);
+    if (cachedNotes) {
+      showUpdateModal({
+        version: CURRENT_VER,
+        releaseNotes: cachedNotes
+      }, 'changelog');
+    } else {
+      // Fetch changelog from GitHub CDN / API if not cached locally
+      (async () => {
+        let fetchedNotes = '';
+        try {
+          const res = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/v${CURRENT_VER}`, {
+            headers: { 'User-Agent': 'Eclipse-Player' }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.body) fetchedNotes = data.body;
+          }
+        } catch (_) {}
+
+        showUpdateModal({
+          version: CURRENT_VER,
+          releaseNotes: fetchedNotes || `### Nâng Cấp Thành Công Lên v${CURRENT_VER}!\n\n- Tối ưu hóa hiệu năng và vá lỗi hệ thống.\n- Chúc bạn có trải nghiệm nghe nhạc tuyệt vời với Eclipse.`
+        }, 'changelog');
+      })();
+    }
   } else if (!lastSeenVer) {
     store.set('eclipse_last_seen_version', CURRENT_VER);
   }

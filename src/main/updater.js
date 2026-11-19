@@ -500,9 +500,25 @@ function initUpdater(getWindow, hooks = {}) {
       // 4. SemVer comparison
       if (isNewerSemVer(remoteVer, currentVer)) {
         logStage('check', `Newer version available: v${remoteVer} (local: v${currentVer})`);
+
+        // If manifest has no notes (e.g. from static latest.yml), attempt to fetch real release notes from API
+        let notes = manifest.notes || '';
+        if (!notes) {
+          try {
+            const relRes = await httpFetch(`https://api.github.com/repos/${REPO}/releases/tags/v${remoteVer}`, {
+              headers: { 'User-Agent': 'Eclipse-Player', Accept: 'application/vnd.github+json' },
+              signal: AbortSignal.timeout(6000)
+            });
+            if (relRes.ok) {
+              const relJson = await relRes.json();
+              if (relJson && relJson.body) notes = relJson.body;
+            }
+          } catch (_) {}
+        }
+
         send('update-available', {
           version: remoteVer,
-          releaseNotes: manifest.notes || 'Cập nhật phiên bản mới, sửa lỗi và nâng cấp hiệu năng.',
+          releaseNotes: notes || 'Cập nhật phiên bản mới, sửa lỗi và nâng cấp hiệu năng.',
           downloadUrl: manifest.url,
           canInstall: !!manifest.url,
           sha512: manifest.sha512
