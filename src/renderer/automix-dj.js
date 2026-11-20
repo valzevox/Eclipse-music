@@ -6,6 +6,8 @@ class AutoMixDJ {
     this.enabled = options.enabled ?? false;
     this.durationSec = options.durationSec || 6.0; // 4 to 12 seconds
     this.mode = options.mode || 'equal_power'; // 'equal_power' | 'linear' | 'tempo_synced'
+    this.djFilter = options.djFilter !== false;
+    this.autoDuration = !!options.autoDuration;
     this.bpm = options.bpm || 120;
     this.targetLufs = options.targetLufs || -14.0;
     this.isCrossfading = false;
@@ -15,6 +17,8 @@ class AutoMixDJ {
     if (typeof config.enabled === 'boolean') this.enabled = config.enabled;
     if (typeof config.durationSec === 'number') this.durationSec = Math.max(1, Math.min(15, config.durationSec));
     if (config.mode) this.mode = config.mode;
+    if (typeof config.djFilter === 'boolean') this.djFilter = config.djFilter;
+    if (typeof config.autoDuration === 'boolean') this.autoDuration = config.autoDuration;
     if (typeof config.bpm === 'number') this.bpm = Math.max(60, Math.min(200, config.bpm));
     if (typeof config.targetLufs === 'number') this.targetLufs = config.targetLufs;
     return this.getConfig();
@@ -204,6 +208,27 @@ class AutoMixDJ {
       ? this.computeTempoRatio(options.outgoingBpm || this.bpm, options.incomingBpm || this.bpm)
       : 1.0;
 
+    // Optional WebAudio DJ-Style Filter sweep (HPF 1400Hz -> 20Hz on incoming)
+    let inFilter = null;
+    if (this.djFilter && typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext)) {
+      try {
+        const ctx = (window.audioEngine && window.audioEngine.ctx) || this._mixCtx || (this._mixCtx = new (window.AudioContext || window.webkitAudioContext)());
+        if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+        if (!incomingAudio._eclipseMixSource) {
+          incomingAudio._eclipseMixSource = ctx.createMediaElementSource(incomingAudio);
+          incomingAudio._eclipseMixFilter = ctx.createBiquadFilter();
+          incomingAudio._eclipseMixFilter.type = 'highpass';
+          incomingAudio._eclipseMixFilter.Q.value = 0.7;
+          incomingAudio._eclipseMixSource.connect(incomingAudio._eclipseMixFilter);
+          incomingAudio._eclipseMixFilter.connect(ctx.destination);
+        }
+        inFilter = incomingAudio._eclipseMixFilter;
+        inFilter.frequency.setValueAtTime(1400, ctx.currentTime);
+      } catch (_) {
+        inFilter = null;
+      }
+    }
+
     // Start incoming audio at 0 volume and matched tempo
     try {
       incomingAudio.volume = 0;
@@ -236,12 +261,20 @@ class AutoMixDJ {
             outgoingAudio.playbackRate = 1.0;
             incomingAudio.volume = targetMaxVol;
             incomingAudio.playbackRate = 1.0;
+            if (inFilter && inFilter.context) {
+              inFilter.frequency.setValueAtTime(20, inFilter.context.currentTime);
+            }
           } catch (_) {}
           resolve(true);
           return;
         }
 
         const gains = this.computeGainValues(progress);
+        if (inFilter && inFilter.context) {
+          // Logarithmic HPF sweep from 1400Hz down to 20Hz
+          const freq = 1400 * Math.pow(20 / 1400, Math.min(1, progress));
+          inFilter.frequency.setValueAtTime(Math.max(20, freq), inFilter.context.currentTime);
+        }
         const getSafeUserVol = () => {
       if (typeof window !== 'undefined' && window.EclipseCore && window.EclipseCore.state && window.EclipseCore.state.volume != null) {
         return Math.max(0, Math.min(1, Number(window.EclipseCore.state.volume)));

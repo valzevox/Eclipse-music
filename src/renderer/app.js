@@ -14986,6 +14986,14 @@ function updateNavIndicator(animate) {
         window.autoMixDjInstance.configure({ enabled: resolvedEnabled, mode: resolvedMode });
       }
     }
+    if (resolvedEnabled && el.nativeAudio && el.nativeAudio.playbackRate !== 1.0) {
+      el.nativeAudio.playbackRate = 1.0;
+    }
+    const speedSliderEl = document.getElementById('slider-playback-speed') || document.getElementById('playback-speed-slider');
+    if (speedSliderEl) {
+      speedSliderEl.disabled = resolvedEnabled;
+      if (resolvedEnabled) speedSliderEl.value = '1';
+    }
   };
 
   const toggleAutoMixState = () => {
@@ -15028,6 +15036,30 @@ function updateNavIndicator(animate) {
     syncSkipAlbum(localStorage.getItem('eclipse_automix_skip_album') !== '0');
     toggleAutoMixSkipAlbum.addEventListener('click', () => {
       syncSkipAlbum(localStorage.getItem('eclipse_automix_skip_album') === '0');
+    });
+  }
+
+  const toggleAutoMixDjFilter = document.getElementById('toggle-automix-dj-filter');
+  if (toggleAutoMixDjFilter) {
+    const syncDjFilter = (val) => {
+      toggleAutoMixDjFilter.classList.toggle('active', !!val);
+      if (typeof window.syncAutoMixSettings === 'function') window.syncAutoMixSettings({ djFilter: !!val });
+    };
+    syncDjFilter(localStorage.getItem('eclipse_automix_dj_filter') !== '0');
+    toggleAutoMixDjFilter.addEventListener('click', () => {
+      syncDjFilter(localStorage.getItem('eclipse_automix_dj_filter') === '0');
+    });
+  }
+
+  const toggleAutoMixAuto = document.getElementById('toggle-automix-auto');
+  if (toggleAutoMixAuto) {
+    const syncAutoDur = (val) => {
+      toggleAutoMixAuto.classList.toggle('active', !!val);
+      if (typeof window.syncAutoMixSettings === 'function') window.syncAutoMixSettings({ autoDuration: !!val });
+    };
+    syncAutoDur(localStorage.getItem('eclipse_automix_auto') === '1');
+    toggleAutoMixAuto.addEventListener('click', () => {
+      syncAutoDur(localStorage.getItem('eclipse_automix_auto') !== '1');
     });
   }
 

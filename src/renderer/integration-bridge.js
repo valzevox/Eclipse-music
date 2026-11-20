@@ -114,6 +114,8 @@
           enabled: localStorage.getItem('eclipse_automix') === '1',
           durationSec: initialDurationSec,
           mode: initialMode,
+          djFilter: localStorage.getItem('eclipse_automix_dj_filter') !== '0',
+          autoDuration: localStorage.getItem('eclipse_automix_auto') === '1',
           bpm: 120
         });
 
@@ -122,6 +124,14 @@
           if (typeof opts.enabled === 'boolean') {
             cfg.enabled = opts.enabled;
             try { localStorage.setItem('eclipse_automix', opts.enabled ? '1' : '0'); } catch (_) {}
+          }
+          if (typeof opts.djFilter === 'boolean') {
+            cfg.djFilter = opts.djFilter;
+            try { localStorage.setItem('eclipse_automix_dj_filter', opts.djFilter ? '1' : '0'); } catch (_) {}
+          }
+          if (typeof opts.autoDuration === 'boolean') {
+            cfg.autoDuration = opts.autoDuration;
+            try { localStorage.setItem('eclipse_automix_auto', opts.autoDuration ? '1' : '0'); } catch (_) {}
           }
           if (typeof opts.durationSec === 'number' && Number.isFinite(opts.durationSec)) {
             const rawSec = Math.max(0, Math.min(15, opts.durationSec));
@@ -198,7 +208,10 @@
             const dur = nativeAudio.duration;
             const cur = nativeAudio.currentTime;
             const remaining = dur - cur;
-            const threshold = window.autoMixDjInstance.durationSec || 6.0;
+            const autoDur = window.autoMixDjInstance.autoDuration && typeof window.autoMixDjInstance.getBeatAlignedDuration === 'function'
+              ? window.autoMixDjInstance.getBeatAlignedDuration()
+              : (window.autoMixDjInstance.durationSec || 6.0);
+            const threshold = Math.max(2, Math.min(15, autoDur));
 
             if (dur > 20 && remaining <= threshold && remaining > 0.8) {
               const st = getCoreState();
