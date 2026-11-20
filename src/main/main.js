@@ -2669,9 +2669,11 @@ ipcMain.on('window-minimize', () => {
 
       function setupTray() {
         try {
-          const iconPath = path.join(__dirname, '../../assets', 'icon.png');
-          let trayIcon = nativeImage.createFromPath(iconPath);
-          trayIcon = trayIcon.resize({ width: 22, height: 22 });
+          const iconPath = path.join(__dirname, '../../assets', 'tray-icon.png');
+          const fallbackPath = path.join(__dirname, '../../assets', 'icon.png');
+          const targetPath = fs.existsSync(iconPath) ? iconPath : fallbackPath;
+          let trayIcon = nativeImage.createFromPath(targetPath);
+          trayIcon = trayIcon.resize({ width: 20, height: 20 });
           tray = new Tray(trayIcon);
           tray.setToolTip('Eclipse');
           const contextMenu = Menu.buildFromTemplate([
