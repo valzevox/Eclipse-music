@@ -19938,7 +19938,7 @@ function bindCoverHoldZoom(wrapEl) {
       }
       const engine = window.audioEngine || (typeof audioEngine !== 'undefined' ? audioEngine : null);
       if (engine && typeof engine.setSpatial8d === 'function') {
-        engine.setSpatial8d({ enabled: cfg.enabled, cycleSec: cfg.cycleSec, direction: cfg.direction });
+        try { engine.setSpatial8d({ enabled: cfg.enabled, cycleSec: cfg.cycleSec, direction: cfg.direction }); } catch (err) { console.warn('[spatial8d]', err); }
       }
     };
 

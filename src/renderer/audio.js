@@ -829,7 +829,7 @@
     }
 
     setSpatial8d(options = {}) {
-    Object.assign(this.spatial8dSettings, options);
+    this.spatial8dSettings = Object.assign(this.spatial8dSettings || { enabled: false, cycleSec: 14, direction: 'cw', radius: 2.0 }, options);
     if (this.spatial8dSettings.enabled) {
       this._startSpatial8d();
     } else {
