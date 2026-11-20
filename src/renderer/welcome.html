@@ -10,22 +10,22 @@
 
   <style>
     :root {
-      --bg-color: #8d5ef2;
-      --container-fill: #d8ceed;
-      --container-fill-hover: #e3d9f4;
-      --card-bg: #c8bddd;
-      --card-bg-hover: #bfb2d8;
-      --text-color: #211f24;
+      --bg-color: #0a0a0c;
+      --container-fill: #141418;
+      --container-fill-hover: #1c1c22;
+      --card-bg: #1c1c22;
+      --card-bg-hover: #25252d;
+      --text-color: #f4f4f5;
       --hero-text: #ffffff;
 
       --btn-bg: #ffffff;
-      --btn-text: #211f24;
-      --btn-bg-hover: #f5effe;
-      --btn-secondary-bg: #c4b8dc;
-      --btn-secondary-hover: #baaecd;
+      --btn-text: #09090b;
+      --btn-bg-hover: #e4e4e7;
+      --btn-secondary-bg: #222228;
+      --btn-secondary-hover: #2c2c34;
 
-      --slider-track: #b8abd0;
-      --ripple-color: rgba(33, 31, 36, 0.24);
+      --slider-track: #2c2c34;
+      --ripple-color: rgba(255, 255, 255, 0.16);
       --font-google-sans: 'Google Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     }
 
@@ -1122,7 +1122,7 @@
           <p class="step-header-subtitle" data-i18n>Select a preset or fine-tune color and intensity to your liking.</p>
 
           <div class="themes-grid">
-            <div class="theme-card" data-preset="dark">
+            <div class="theme-card active" data-preset="dark">
               <div class="mockup-window mock-dark">
                 <div class="mock-topbar"><div class="mock-search"></div></div>
                 <div class="mock-body">
@@ -1161,7 +1161,7 @@
               <span class="theme-card-name" data-i18n>Discord</span>
             </div>
 
-            <div class="theme-card active" data-preset="light-purple-vibrant">
+            <div class="theme-card" data-preset="light-purple-vibrant">
               <div class="mockup-window mock-light-purple-vibrant">
                 <div class="mock-topbar"><div class="mock-search"></div></div>
                 <div class="mock-body">
@@ -1578,7 +1578,7 @@
     const satVal = document.getElementById('satVal');
     const themeCards = document.querySelectorAll('.theme-card');
 
-    const themeState = { preset: 'light-purple-vibrant', h: 260, b: 66, s: 85 };
+    const themeState = { preset: 'dark', h: 0, b: 6, s: 0 };
 
     function syncSlider(input) {
       const v = (input.value - input.min) / (input.max - input.min);
@@ -1667,13 +1667,13 @@
 
     const presets = {
       'dark': {
-        h: 265, b: 10, s: 20,
+        h: 0, b: 6, s: 0,
         vars: {
-          '--bg-color': '#141218', '--container-fill': '#211f26', '--container-fill-hover': '#2b2930',
-          '--card-bg': '#2b2930', '--card-bg-hover': '#36343b', '--slider-track': '#36343b',
-          '--text-color': '#e6e0e9', '--hero-text': '#d0bcff', '--btn-bg': '#d0bcff',
-          '--btn-text': '#381e72', '--btn-bg-hover': '#dfcfff', '--btn-secondary-bg': '#36343b',
-          '--btn-secondary-hover': '#413f46', '--ripple-color': 'rgba(20, 18, 24, 0.3)'
+          '--bg-color': '#0a0a0c', '--container-fill': '#141418', '--container-fill-hover': '#1c1c22',
+          '--card-bg': '#1c1c22', '--card-bg-hover': '#25252d', '--slider-track': '#2c2c34',
+          '--text-color': '#f4f4f5', '--hero-text': '#ffffff', '--btn-bg': '#ffffff',
+          '--btn-text': '#09090b', '--btn-bg-hover': '#e4e4e7', '--btn-secondary-bg': '#222228',
+          '--btn-secondary-hover': '#2c2c34', '--ripple-color': 'rgba(255, 255, 255, 0.16)'
         }
       },
       'light': {
@@ -1935,7 +1935,7 @@
 
     Promise.race([document.fonts.ready, new Promise((resolve) => setTimeout(resolve, 1200))]).then(scheduleIntro, scheduleIntro);
 
-    applyPreset('light-purple-vibrant');
+    applyPreset('dark');
 
     const SWITCH_HTML = '<span class="sw-thumb"><svg viewBox="0 0 24 24"><path class="sw-icon"/></svg></span>';
     document.querySelectorAll('.sw').forEach((sw) => { sw.innerHTML = SWITCH_HTML; });

@@ -4,6 +4,7 @@ vendor/
 
 # Production build artifacts & binaries
 dist/
+dist-*/
 build/
 bin/
 *.exe

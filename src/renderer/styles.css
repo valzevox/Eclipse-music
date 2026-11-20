@@ -9123,7 +9123,9 @@ body.hide-explicit-badges .explicit-badge {
   height: 148px;
   border-radius: 28px 28px 8px 8px;
   overflow: hidden;
-  background: radial-gradient(65% 120% at 50% 15%, #9E6BFF 0%, #834DF2 52%, #6336B5 100%);
+  background: radial-gradient(65% 120% at 50% 15%, rgba(255, 255, 255, 0.10) 0%, #141418 52%, #0a0a0c 100%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -9139,7 +9141,7 @@ body.hide-explicit-badges .explicit-badge {
   z-index: 2;
   width: 92px;
   height: 92px;
-  background: #D7C2FF;
+  background: linear-gradient(145deg, #ffffff 0%, #e4e4e7 100%);
   clip-path: url(#m3-cookie-4);
   display: flex;
   align-items: center;
@@ -9148,11 +9150,11 @@ body.hide-explicit-badges .explicit-badge {
   transform: rotate(45deg);
 }
 .eclipse-hero-logo-main {
-  width: 46px;
-  height: 46px;
-  background-color: #36284E;
-  -webkit-mask: url('../../assets/riff.svg') no-repeat center / contain;
-  mask: url('../../assets/riff.svg') no-repeat center / contain;
+  width: 50px;
+  height: 50px;
+  background-color: #09090b;
+  -webkit-mask: url('../../assets/eclipse.svg') no-repeat center / contain;
+  mask: url('../../assets/eclipse.svg') no-repeat center / contain;
   transform: rotate(-45deg);
 }
 .eclipse-hero-floats {
@@ -9163,10 +9165,10 @@ body.hide-explicit-badges .explicit-badge {
 }
 .eclipse-float-logo {
   position: absolute;
-  background-color: #492E7D;
-  -webkit-mask: url('../../assets/riff.svg') no-repeat center / contain;
-  mask: url('../../assets/riff.svg') no-repeat center / contain;
-  opacity: 0.85;
+  background-color: rgba(255, 255, 255, 0.14);
+  -webkit-mask: url('../../assets/eclipse.svg') no-repeat center / contain;
+  mask: url('../../assets/eclipse.svg') no-repeat center / contain;
+  opacity: 0.9;
 }
 .eclipse-float-logo.f1 {
   width: 24px;
@@ -9314,12 +9316,18 @@ body:not(.m3-hero-covers-on) #tv-cover {
 #playlist-detail-title.playlist-inline-editable:hover:not(:focus), #playlist-detail-desc.playlist-inline-editable:hover:not(:focus) { background: color-mix(in srgb, var(--md-sys-color-on-surface) 6%, transparent); border-color: color-mix(in srgb, var(--md-sys-color-outline) 35%, transparent); }
 #playlist-detail-title.playlist-inline-editable:focus, #playlist-detail-desc.playlist-inline-editable:focus { border-color: var(--md-sys-color-primary); background: var(--md-sys-color-surface-container-high); box-shadow: 0 0 0 3px color-mix(in srgb, var(--md-sys-color-primary) 18%, transparent); }
 
-#splash { position: fixed; inset: 0; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; z-index: 999999; transition: opacity .45s cubic-bezier(0.2, 0, 0, 1); }
+@keyframes eclipse-splash-in {
+  0% { transform: scale3d(1.28, 1.28, 1); opacity: 0; }
+  35% { opacity: 1; }
+  100% { transform: scale3d(1, 1, 1); opacity: 1; }
+}
+#splash { position: fixed; inset: 0; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; z-index: 999999; transition: opacity .45s cubic-bezier(0.2, 0, 0, 1); will-change: opacity; contain: strict; }
 #splash.hide { opacity: 0; pointer-events: none; }
-#splash-logo { width: 26vmin; height: 26vmin; will-change: transform; }
+#splash-logo { width: 26vmin; height: 26vmin; will-change: transform, opacity; animation: eclipse-splash-in 1.15s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
 #splash-logo svg { width: 100%; height: 100%; overflow: visible; display: block; }
 body.perf #splash { transition: none !important; }
-body.perf #splash-logo { will-change: auto !important; }
+body.perf #splash-logo { will-change: auto !important; animation: none !important; }
+@media (prefers-reduced-motion: reduce) { #splash { transition: none !important; } #splash-logo { animation: none !important; } }
 
 .eclipse-share-action-btn { width: 36px; height: 36px; border-radius: 50%; background: transparent; border: none; color: var(--md-sys-color-on-surface-variant); display: inline-flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; flex-shrink: 0; }
 .eclipse-share-action-btn:hover { background: var(--md-sys-color-surface-container-highest); color: var(--md-sys-color-on-surface); }

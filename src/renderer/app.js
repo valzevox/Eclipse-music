@@ -173,56 +173,18 @@ try { window.electronAPI.storageSaveSync(diskMap); } catch (_) {}
   });
 })();
 
-(async function runEclipseSplash() {
+(function runEclipseSplash() {
   const splash = document.getElementById('splash');
-  const host = document.getElementById('splash-logo');
-  if (!splash || !host) return;
+  if (!splash) return;
+  const perf = /^(1|true)$/.test(localStorage.getItem('eclipse_perf_mode') || '');
+  const reduced = localStorage.getItem('eclipse_adv_reduce_motion') === 'true' || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  if (perf || reduced) { splash.remove(); return; }
   const finish = () => {
     if (!splash.isConnected || splash.classList.contains('hide')) return;
     splash.classList.add('hide');
     setTimeout(() => splash.remove(), 480);
   };
-  const safety = setTimeout(finish, 1850);
-  try {
-    const res = await fetch('../../assets/riff.svg');
-    const svgText = await res.text();
-    host.innerHTML = svgText;
-    const svg = host.querySelector('svg');
-    const paths = svg ? Array.from(svg.querySelectorAll('path, circle, rect, polygon, polyline')) : [];
-    const lengths = paths.map((p) => {
-      const len = typeof p.getTotalLength === 'function' ? p.getTotalLength() : 600;
-      p.style.fill = 'var(--md-sys-color-primary, #D0BCFF)';
-      p.style.fillOpacity = '0';
-      p.style.stroke = 'var(--md-sys-color-primary, #D0BCFF)';
-      p.style.strokeWidth = '6px';
-      p.style.strokeLinecap = 'round';
-      p.style.strokeLinejoin = 'round';
-      p.style.strokeDasharray = String(len);
-      p.style.strokeDashoffset = String(len);
-      return len;
-    });
-    const t0 = performance.now();
-    const dur = 1150;
-    const easeOut = (t) => 1 - Math.pow(1 - t, 3);
-    const tick = (now) => {
-      const p = Math.min(1, (now - t0) / dur);
-      const drawK = easeOut(Math.min(1, p / 0.72));
-      const fillK = p < 0.5 ? 0 : easeOut((p - 0.5) / 0.5);
-      const scale = 1.28 - 0.28 * easeOut(p);
-      host.style.transform = 'scale(' + scale.toFixed(3) + ')';
-      paths.forEach((elP, i) => {
-        elP.style.strokeDashoffset = String((lengths[i] * (1 - drawK)).toFixed(1));
-        elP.style.fillOpacity = String(fillK.toFixed(3));
-        elP.style.strokeOpacity = String((1 - fillK * 0.65).toFixed(3));
-      });
-      if (p < 1) requestAnimationFrame(tick);
-      else { clearTimeout(safety); finish(); }
-    };
-    requestAnimationFrame(tick);
-  } catch (_) {
-    clearTimeout(safety);
-    finish();
-  }
+  setTimeout(finish, 1150);
 })();
 
 function stripYoutubeTopic(artist) {
