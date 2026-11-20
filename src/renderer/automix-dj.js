@@ -279,8 +279,11 @@ class AutoMixDJ {
     if (!outgoingAudio || !incomingAudio || this.isCrossfading) return false;
 
     this.isCrossfading = true;
+    if (typeof window !== 'undefined') window._autoMixSuppressVolumeSync = true;
     const startTime = Date.now();
-    const durationMs = duration * 1000;
+    const durationMs = Math.max(200, duration * 1000);
+    const initialUserVol = Number.isFinite(outgoingAudio.volume) ? Math.max(0, Math.min(1, outgoingAudio.volume)) : 1.0;
+    const useFadeGainNode = !!(typeof window !== 'undefined' && window.audioEngine && window.audioEngine.fadeGain && window.audioEngine.ctx);
     const startInRate = this.mode === 'tempo_synced'
       ? this.computeTempoRatio(options.outgoingBpm || this.bpm, options.incomingBpm || this.bpm)
       : 1.0;
@@ -323,25 +326,21 @@ class AutoMixDJ {
           this.isCrossfading = false;
           try {
             outgoingAudio.pause();
-            const getSafeUserVol = () => {
-      if (typeof window !== 'undefined' && window.EclipseCore && window.EclipseCore.state && window.EclipseCore.state.volume != null) {
-        return Math.max(0, Math.min(1, Number(window.EclipseCore.state.volume)));
-      }
-      try {
-        const v = localStorage.getItem('riff_volume');
-        if (v !== null) return Math.max(0, Math.min(1, parseFloat(v)));
-      } catch (_) {}
-      return 1.0;
-    };
-            const targetMaxVol = getSafeUserVol();
-            outgoingAudio.volume = targetMaxVol;
+            if (useFadeGainNode) {
+              window.audioEngine.fadeGain.gain.setValueAtTime(1.0, window.audioEngine.ctx.currentTime);
+            } else {
+              outgoingAudio.volume = initialUserVol;
+            }
             outgoingAudio.playbackRate = 1.0;
-            incomingAudio.volume = targetMaxVol;
+            incomingAudio.volume = initialUserVol;
             incomingAudio.playbackRate = 1.0;
             if (inFilter && inFilter.context) {
               inFilter.frequency.setValueAtTime(20, inFilter.context.currentTime);
             }
           } catch (_) {}
+          if (typeof window !== 'undefined') {
+            setTimeout(() => { window._autoMixSuppressVolumeSync = false; }, 100);
+          }
           resolve(true);
           return;
         }
@@ -352,20 +351,13 @@ class AutoMixDJ {
           const freq = 1400 * Math.pow(20 / 1400, Math.min(1, progress));
           inFilter.frequency.setValueAtTime(Math.max(20, freq), inFilter.context.currentTime);
         }
-        const getSafeUserVol = () => {
-      if (typeof window !== 'undefined' && window.EclipseCore && window.EclipseCore.state && window.EclipseCore.state.volume != null) {
-        return Math.max(0, Math.min(1, Number(window.EclipseCore.state.volume)));
-      }
-      try {
-        const v = localStorage.getItem('riff_volume');
-        if (v !== null) return Math.max(0, Math.min(1, parseFloat(v)));
-      } catch (_) {}
-      return 1.0;
-    };
-        const userVol = getSafeUserVol();
         try {
-          outgoingAudio.volume = Math.max(0, Math.min(userVol, gains.fadeOutGain * userVol));
-          incomingAudio.volume = Math.max(0, Math.min(userVol, gains.fadeInGain * userVol));
+          if (useFadeGainNode) {
+            window.audioEngine.fadeGain.gain.setValueAtTime(Math.max(0, Math.min(1, gains.fadeOutGain)), window.audioEngine.ctx.currentTime);
+          } else {
+            outgoingAudio.volume = Math.max(0, Math.min(initialUserVol, gains.fadeOutGain * initialUserVol));
+          }
+          incomingAudio.volume = Math.max(0, Math.min(initialUserVol, gains.fadeInGain * initialUserVol));
           if (this.mode === 'tempo_synced' && startInRate !== 1.0) {
             incomingAudio.playbackRate = 1.0 + (startInRate - 1.0) * (1.0 - progress);
           }

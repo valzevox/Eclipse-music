@@ -8685,7 +8685,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
   if (el.nativeAudio) {
     el.nativeAudio.addEventListener('volumechange', () => {
-      if (!el.nativeAudio) return;
+      if (!el.nativeAudio || window._autoMixSuppressVolumeSync) return;
       const extMuted = !!el.nativeAudio.muted;
       if (audioEngine && Number.isFinite(audioEngine.appliedElementVolume) &&
           Math.abs(el.nativeAudio.volume - audioEngine.appliedElementVolume) < 0.005) return;
