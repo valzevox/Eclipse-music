@@ -11609,3 +11609,68 @@ body.hide-sp-table-cols .track-row-col-date {
   pointer-events: none;
 }
 
+@keyframes automixRainbowSlide {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+@keyframes automixShimmerText {
+  0% { background-position: -150% 0; }
+  100% { background-position: 150% 0; }
+}
+
+body.is-automixing .seek-fill,
+body.is-automixing #tvk-seek-slider::-webkit-slider-runnable-track {
+  background: linear-gradient(90deg, #ff4fa3, #8b5cf6, #38bdf8, #34d399, #fbbf24, #ff4fa3) !important;
+  background-size: 200% 100% !important;
+  animation: automixRainbowSlide 2.2s linear infinite;
+}
+
+.automix-mixing-badge {
+  position: fixed;
+  bottom: 96px;
+  left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  z-index: 99999;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(15, 16, 26, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.28s ease, transform 0.28s ease;
+}
+
+.automix-mixing-badge.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.automix-mixing-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ff4fa3, #38bdf8);
+  box-shadow: 0 0 10px rgba(255, 79, 163, 0.8);
+}
+
+.automix-mixing-text {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: linear-gradient(90deg, rgba(255,255,255,0.65) 0%, #ffffff 50%, rgba(255,255,255,0.65) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: automixShimmerText 1.8s linear infinite;
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+

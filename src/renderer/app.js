@@ -8554,19 +8554,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       }
     }
 
-    if (state.isAutoRemix) {
-      // AutoMix Mode: picks tempo/melody-aligned track in album/playlist, never loops back to recently played
-      const nextAutoTrack = typeof state.findAutoMixNextTrack === 'function' ? state.findAutoMixNextTrack() : null;
-      if (nextAutoTrack) {
-        const foundIdx = state.queue.findIndex(t => isSameTrack(t, nextAutoTrack));
-        if (foundIdx >= 0) {
-          state.queueIndex = foundIdx;
-          recordPlayedIndex(foundIdx);
-          playTrack(state.queue[foundIdx]);
-          return;
-        }
-      }
-    }
+    // AutoMix DJ preserves exact Queue/Album order so dual-source handover always matches next track
 
     if (state.isShuffle && !state.isAutoRemix) {
       const provider = shuffleProvider;
@@ -8926,6 +8914,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     }
 
     el.nativeAudio.addEventListener('ended', () => {
+      if (window._autoMixHandlingEnd) return;
       updatePlayPauseButton(false, false);
       if (state.sleepTimer && state.sleepTimer.mode === 'end') {
         state.sleepTimer = null;
@@ -9052,7 +9041,8 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       const dur = getReliableTrackDuration();
 
       const X = parseInt(localStorage.getItem('eclipse_crossfade') || '0', 10);
-      if (X > 0 && !crossfadeTriggered && !state.isRepeat && dur > Math.max(X * 3, 30) && (!hlsInstance || dur >= (state.currentTrack?.duration || 0) * 0.9) && cur >= dur - X && (!audioEngine || !audioEngine.isLiveStream(el.nativeAudio))) {
+      const autoMixActive = !!(window.autoMixDjInstance && window.autoMixDjInstance.enabled);
+      if (X > 0 && !autoMixActive && !window._autoMixHandlingEnd && !crossfadeTriggered && !state.isRepeat && dur > Math.max(X * 3, 30) && (!hlsInstance || dur >= (state.currentTrack?.duration || 0) * 0.9) && cur >= dur - X && (!audioEngine || !audioEngine.isLiveStream(el.nativeAudio))) {
         crossfadeTriggered = true;
         crossfadeFadeInPending = true;
         if (audioEngine) audioEngine.fadeOut(X / 2);
@@ -15028,6 +15018,39 @@ function updateNavIndicator(animate) {
       syncAutoMixUiAndEngine(state.isAutoRemix, btn.dataset.automixMode);
     });
   });
+
+  const toggleAutoMixSkipAlbum = document.getElementById('toggle-automix-skip-album');
+  if (toggleAutoMixSkipAlbum) {
+    const syncSkipAlbum = (val) => {
+      localStorage.setItem('eclipse_automix_skip_album', val ? '1' : '0');
+      toggleAutoMixSkipAlbum.classList.toggle('active', !!val);
+    };
+    syncSkipAlbum(localStorage.getItem('eclipse_automix_skip_album') !== '0');
+    toggleAutoMixSkipAlbum.addEventListener('click', () => {
+      syncSkipAlbum(localStorage.getItem('eclipse_automix_skip_album') === '0');
+    });
+  }
+
+  // Fullscreen Karaoke & Player Bar AutoMix motion indicator (RGB rainbow seek + shimmer badge)
+  let autoMixBadgeEl = document.getElementById('automix-mixing-badge');
+  if (!autoMixBadgeEl) {
+    autoMixBadgeEl = document.createElement('div');
+    autoMixBadgeEl.id = 'automix-mixing-badge';
+    autoMixBadgeEl.className = 'automix-mixing-badge';
+    autoMixBadgeEl.innerHTML = '<span class="automix-mixing-dot"></span><span class="automix-mixing-text">Mixing...</span>';
+    document.body.appendChild(autoMixBadgeEl);
+  }
+  window.addEventListener('eclipse:automix-state', (ev) => {
+    const active = !!(ev && ev.detail && ev.detail.active);
+    const nextTitle = ev && ev.detail && ev.detail.nextTrack && ev.detail.nextTrack.title ? ev.detail.nextTrack.title : '';
+    document.body.classList.toggle('is-automixing', active);
+    if (autoMixBadgeEl) {
+      const txt = autoMixBadgeEl.querySelector('.automix-mixing-text');
+      if (txt) txt.textContent = nextTitle ? `Mixing → ${nextTitle}` : 'Mixing...';
+      autoMixBadgeEl.classList.toggle('visible', active);
+    }
+  });
+
   syncAutoMixUiAndEngine(state.isAutoRemix, localStorage.getItem('eclipse_automix_mode') || 'equal_power');
 
   if (el.btnSavePresetDialog) {

@@ -201,32 +201,53 @@
             const threshold = window.autoMixDjInstance.durationSec || 6.0;
 
             if (dur > 20 && remaining <= threshold && remaining > 0.8) {
-              automixTriggeredForTrack = true;
               const st = getCoreState();
-              let nextTrack = null;
-              if (st && Array.isArray(st.queue) && st.queue.length > 0) {
-                if (typeof st.findAutoMixNextTrack === 'function') {
-                  const autoNext = st.findAutoMixNextTrack();
-                  if (autoNext) nextTrack = autoNext;
-                }
-                if (!nextTrack && st.queueIndex + 1 < st.queue.length) {
-                  nextTrack = st.queue[st.queueIndex + 1];
-                }
+              if (!st || !Array.isArray(st.queue) || st.queueIndex + 1 >= st.queue.length || st.isRepeat) return;
+              const currentTrack = st.currentTrack || st.queue[st.queueIndex];
+              const nextTrack = st.queue[st.queueIndex + 1];
+              if (!nextTrack) return;
+
+              const keepAlbumsContinuous = localStorage.getItem('eclipse_automix_skip_album') !== '0';
+              const skipCheck = typeof window.autoMixDjInstance.shouldSkipCrossfade === 'function'
+                ? window.autoMixDjInstance.shouldSkipCrossfade(currentTrack, nextTrack, {
+                    gaplessSameAlbum: keepAlbumsContinuous,
+                    isVideoMode: !!(window.eclipseMvPlayer && window.eclipseMvPlayer.isVideoMode)
+                  })
+                : { skip: false };
+              if (skipCheck.skip) {
+                automixTriggeredForTrack = true;
+                return;
               }
 
-              if (nextTrack) {
-                try {
-                  const nextStreamUrl = await resolveNextTrackStreamUrl(nextTrack);
-                  if (nextStreamUrl) {
-                    auxAudio.src = nextStreamUrl;
-                    auxAudio.currentTime = 0;
-                  }
-                } catch (_) {}
+              automixTriggeredForTrack = true;
+              window._autoMixHandlingEnd = true;
+
+              let nextStreamUrl = '';
+              try {
+                nextStreamUrl = await resolveNextTrackStreamUrl(nextTrack);
+              } catch (_) {}
+
+              if (!nextStreamUrl) {
+                window._autoMixHandlingEnd = false;
+                return;
               }
+
+              auxAudio.src = nextStreamUrl;
+              auxAudio.currentTime = 0;
+
+              window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+                detail: { active: true, nextTrack, durationSec: threshold }
+              }));
 
               console.log(`[EclipseBridge] AutoMix executing dual-source crossfade (${remaining.toFixed(1)}s remaining)...`);
-              await window.autoMixDjInstance.executeCrossfade(nativeAudio, auxAudio, threshold);
-              
+              try {
+                await window.autoMixDjInstance.executeCrossfade(nativeAudio, auxAudio, Math.min(threshold, remaining - 0.25));
+              } finally {
+                window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+                  detail: { active: false, nextTrack: null, durationSec: 0 }
+                }));
+              }
+
               // Seamless Handover: transfer playback offset and audio source without restarting nextTrack at 0:00
               const handoverTime = (auxAudio && !isNaN(auxAudio.currentTime)) ? auxAudio.currentTime : 0;
               const handoverSrc = (auxAudio && auxAudio.src) ? auxAudio.src : '';
@@ -249,6 +270,7 @@
               if (typeof window._eclipsePlayNext === 'function') {
                 window._eclipsePlayNext();
               }
+              setTimeout(() => { window._autoMixHandlingEnd = false; }, 1500);
             }
           });
         }
