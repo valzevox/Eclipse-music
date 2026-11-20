@@ -76,10 +76,17 @@ function parseLatestYml(ymlContent) {
 
   if (!versionMatch || !sha512Match) return null;
 
+  // files[] entries: "- url: X" followed by "sha512: Y" and "size: N"
+  const files = [];
+  const re = /-\s+url:\s*(\S+)\s*\n\s+sha512:\s*(\S+)\s*\n\s+size:\s*(\d+)/g;
+  let m;
+  while ((m = re.exec(ymlContent))) files.push({ name: m[1], sha512: m[2], size: Number(m[3]) });
+
   return {
     version: versionMatch[1].trim().replace(/^v/i, ''),
     path: pathMatch ? pathMatch[1].trim() : null,
-    sha512: sha512Match[1].trim()
+    sha512: sha512Match[1].trim(),
+    files
   };
 }
 

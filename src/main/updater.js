@@ -141,11 +141,14 @@ async function fetchLatestManifest() {
       const parsedYml = parseLatestYml(ymlText);
       if (parsedYml) {
         logStage('check', 'Fetched static latest.yml via GitHub CDN', parsedYml);
+        // Pick installer matching this binary's arch (x64 / ia32); fall back to universal `path`.
+        const pick = findMatchingAsset(parsedYml.files) || { name: parsedYml.path, sha512: parsedYml.sha512, size: 0 };
         return {
           version: parsedYml.version,
-          sha512: parsedYml.sha512,
-          url: `https://github.com/${REPO}/releases/download/v${parsedYml.version}/${parsedYml.path}`,
-          assetName: parsedYml.path
+          sha512: pick.sha512,
+          size: pick.size,
+          url: `https://github.com/${REPO}/releases/download/v${parsedYml.version}/${pick.name}`,
+          assetName: pick.name
         };
       }
     }
@@ -322,29 +325,13 @@ async function executeInstaller(installerPath, hooks = {}, getWindow = null) {
     const execPath = process.execPath;
     const execDir = path.dirname(execPath);
     const isUnpacked = fs.existsSync(path.join(execDir, 'resources', 'app.asar'));
-    const dirArg = isUnpacked ? ' /D=' + execDir : '';
     const pid = process.pid;
 
-    const logDir = path.join(app.getPath('userData'), 'logs');
-    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
-    const updateLogFile = path.join(logDir, 'eclipse-update.log');
-
-    const batPath = path.join(app.getPath('temp'), `eclipse-updater-${Date.now()}.bat`);
-    const batLines = [
-      '@echo off',
-      'chcp 65001 >nul',
-      `echo [%date% %time%] Updater started for PID ${pid} >> "${updateLogFile}"`,
-      'ping 127.0.0.1 -n 3 >nul',
-      `taskkill /PID ${pid} /T /F >nul 2>&1`,
-      'ping 127.0.0.1 -n 2 >nul',
-      `echo [%date% %time%] Running installer: "${installerPath}" /S${dirArg} >> "${updateLogFile}"`,
-      `start /wait "" "${installerPath}" /S${dirArg}`,
-      `echo [%date% %time%] Installer completed with code %ERRORLEVEL% >> "${updateLogFile}"`,
-      'ping 127.0.0.1 -n 2 >nul',
-      `echo [%date% %time%] Relaunching: "${execPath}" >> "${updateLogFile}"`,
-      `start "" "${execPath}"`,
-      '(goto) 2>nul & del "%~f0"'
-    ];
+    // electron-builder NSIS: --force-run relaunches the app after a silent install.
+    // Spawning the installer directly (no cmd/bat) removes console popups; NSIS itself waits for/closes the running app.
+    // /D= must be last and unquoted (NSIS rule).
+    const args = ['/S', '--force-run'];
+    if (isUnpacked) args.push('/D=' + execDir);
 
     // Mark clean exit before handing off to installer so crash-guard never counts this as a crash
     try {
@@ -354,12 +341,10 @@ async function executeInstaller(installerPath, hooks = {}, getWindow = null) {
       writeUpdateState(st);
     } catch (_) {}
 
-    fs.writeFileSync(batPath, batLines.join('\r\n'), 'utf8');
-    // IMPORTANT: Do NOT wrap batPath in manual quotes when shell: false (Node escapes them as \"...\" which breaks cmd.exe!)
-    const child = spawn('cmd.exe', ['/d', '/c', batPath], { detached: true, stdio: 'ignore', windowsHide: true });
+    const child = spawn(installerPath, args, { detached: true, stdio: 'ignore', windowsHide: true });
     child.unref();
 
-    logStage('apply', 'Spawned detached updater batch script. Exiting app cleanly (0).');
+    logStage('apply', 'Spawned installer directly with --force-run. Exiting app (0).', { args, pid });
     setTimeout(() => { try { app.exit(0); } catch (_) { process.exit(0); } }, 200);
     return;
   }
@@ -596,12 +581,9 @@ function initUpdater(getWindow, hooks = {}) {
       await executeInstaller(pendingInstallerPath, hooks, getWindow);
       return { ok: true };
     }
-    // If not downloaded yet, trigger download first
+    // Not downloaded yet: download only; renderer shows "Restart now" on update-ready and the user decides when to apply.
     await startDownloadAndPrepare();
-    if (pendingInstallerPath && fs.existsSync(pendingInstallerPath)) {
-      await executeInstaller(pendingInstallerPath, hooks, getWindow);
-    }
-    return { ok: true };
+    return { ok: true, status: 'ready' };
   });
 
   ipcMain.handle('install-update-on-quit', () => {
