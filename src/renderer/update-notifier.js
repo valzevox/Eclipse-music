@@ -33,22 +33,58 @@
   }
 
   function renderMarkdown(md) {
-    if (!md) return '<p>Xem chi tiết thay đổi trên trang phát hành GitHub.</p>';
+    if (!md) return '<p>No changelog details provided.</p>';
     const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const inline = (s) => esc(s)
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.1);padding:2px 6px;border-radius:5px;font-size:0.92em;">$1</code>');
-    return String(md).split(/\r?\n/).map((line) => {
+      .replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.1);padding:2px 6px;border-radius:5px;font-size:0.92em;font-family:monospace;">$1</code>');
+
+    const lines = String(md).split(/\r?\n/);
+    let out = '';
+    let inCodeBlock = false;
+    let codeContent = '';
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
       const t = line.trim();
-      if (!t || t.startsWith('<!--')) return '';
-      if (t.startsWith('### ')) return '<h4 style="margin:10px 0 4px;color:#fff;font-size:14px;">' + inline(t.slice(4)) + '</h4>';
-      if (t.startsWith('## ')) return '<h3 style="margin:12px 0 6px;color:#fff;font-size:15px;">' + inline(t.slice(3)) + '</h3>';
-      if (t.startsWith('# ')) return '<h3 style="margin:12px 0 6px;color:#fff;font-size:16px;">' + inline(t.slice(2)) + '</h3>';
-      if (t.startsWith('- ') || t.startsWith('* ')) {
-        return '<div style="display:flex;gap:8px;margin:4px 0;line-height:1.45;"><span style="color:var(--md-sys-color-primary,#B69DF8);">•</span><span>' + inline(t.slice(2)) + '</span></div>';
+
+      if (t.startsWith('```')) {
+        if (!inCodeBlock) {
+          inCodeBlock = true;
+          codeContent = '';
+        } else {
+          inCodeBlock = false;
+          out += `<pre style="background:rgba(0,0,0,0.45);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;font-family:monospace;font-size:11px;overflow-x:auto;color:#a1a1aa;margin:6px 0;"><code>${esc(codeContent.trim())}</code></pre>`;
+        }
+        continue;
       }
-      return '<p style="margin:4px 0;line-height:1.45;">' + inline(t) + '</p>';
-    }).join('');
+
+      if (inCodeBlock) {
+        codeContent += (codeContent ? '\n' : '') + line;
+        continue;
+      }
+
+      if (!t || t.startsWith('<!--')) continue;
+      if (t.startsWith('#### ')) {
+        out += '<h5 style="margin:10px 0 4px;color:#e4e4e7;font-size:13px;font-weight:600;">' + inline(t.slice(5)) + '</h5>';
+      } else if (t.startsWith('### ')) {
+        out += '<h4 style="margin:12px 0 6px;color:#fff;font-size:14px;font-weight:700;">' + inline(t.slice(4)) + '</h4>';
+      } else if (t.startsWith('## ')) {
+        out += '<h3 style="margin:14px 0 8px;color:#fff;font-size:15px;font-weight:700;">' + inline(t.slice(3)) + '</h3>';
+      } else if (t.startsWith('# ')) {
+        out += '<h3 style="margin:14px 0 8px;color:#fff;font-size:16px;font-weight:700;">' + inline(t.slice(2)) + '</h3>';
+      } else if (t.startsWith('- ') || t.startsWith('* ')) {
+        out += '<div style="display:flex;gap:8px;margin:5px 0;line-height:1.45;"><span style="color:var(--md-sys-color-primary,#B69DF8);flex-shrink:0;">•</span><span>' + inline(t.slice(2)) + '</span></div>';
+      } else {
+        out += '<p style="margin:4px 0;line-height:1.45;">' + inline(t) + '</p>';
+      }
+    }
+
+    if (inCodeBlock && codeContent) {
+      out += `<pre style="background:rgba(0,0,0,0.45);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;font-family:monospace;font-size:11px;overflow-x:auto;color:#a1a1aa;margin:6px 0;"><code>${esc(codeContent.trim())}</code></pre>`;
+    }
+
+    return out;
   }
 
   function openExternal(url) {
