@@ -295,8 +295,7 @@
                 }));
               }
 
-              // Seamless Handover: transfer exact targetIndex, playback offset and audio source
-              const handoverTime = (auxAudio && !isNaN(auxAudio.currentTime)) ? auxAudio.currentTime : 0;
+              // Zero-Gap Dual-Deck Handover: keep auxAudio playing continuously until nativeAudio is buffered & playing at live time
               const handoverSrc = (auxAudio && auxAudio.src) ? auxAudio.src : '';
               const curCoreState = getCoreState();
               if (curCoreState && nextTrack) {
@@ -306,18 +305,12 @@
                 }
                 curCoreState._autoMixHandover = {
                   src: handoverSrc,
-                  currentTime: handoverTime,
+                  auxAudio,
+                  currentTime: (auxAudio && !isNaN(auxAudio.currentTime)) ? auxAudio.currentTime : 0,
                   trackId: nextTrack.id || nextTrack.videoId,
                   targetIndex: nextIdx
                 };
               }
-
-              try {
-                if (auxAudio) {
-                  auxAudio.pause();
-                  auxAudio.currentTime = 0;
-                }
-              } catch (_) {}
 
               if (typeof window._eclipsePlayNext === 'function') {
                 window._eclipsePlayNext();

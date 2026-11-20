@@ -4745,25 +4745,57 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     loadSponsorBlockSegments(track);
     loadCanvasForTrack(track);
 
-    // AutoMix seamless handover: transfer playing stream and time offset from crossfade without restarting from 0:00
+    // Zero-Gap Dual-Deck Handover: keep auxAudio playing while nativeAudio buffers, then swap cleanly at live millisecond
     if (state._autoMixHandover && (track.id === state._autoMixHandover.trackId || (track.videoId && track.videoId === state._autoMixHandover.trackId) || (track._matchedYtId && track._matchedYtId === state._autoMixHandover.trackId))) {
       const handover = state._autoMixHandover;
       state._autoMixHandover = null;
       if (currentToken === state.loadToken) {
         if (hlsInstance) { try { hlsInstance.destroy(); } catch (_) {} hlsInstance = null; }
+        const auxEl = handover.auxAudio || document.getElementById('eclipse-aux-audio');
+        const stopAux = () => {
+          try {
+            if (auxEl) {
+              auxEl.pause();
+              auxEl.currentTime = 0;
+            }
+          } catch (_) {}
+        };
+        window._autoMixSuppressVolumeSync = true;
+        el.nativeAudio.muted = true;
         el.nativeAudio.preload = "auto";
         el.nativeAudio.src = handover.src;
-        const applyHandoverOffset = () => {
-          if (currentToken !== state.loadToken) return;
-          try { el.nativeAudio.currentTime = handover.currentTime; } catch (_) {}
-          el.nativeAudio.volume = state.volume != null ? state.volume : 1.0;
-          playSmooth();
+        let swapped = false;
+        const finishSwap = () => {
+          if (swapped) return;
+          swapped = true;
+          el.nativeAudio.muted = !!state.isMuted;
+          stopAux();
+          setTimeout(() => { window._autoMixSuppressVolumeSync = false; }, 80);
           applyAudioSettings();
         };
-        if (el.nativeAudio.readyState >= 1) {
+        const applyHandoverOffset = () => {
+          if (currentToken !== state.loadToken) {
+            el.nativeAudio.muted = !!state.isMuted;
+            stopAux();
+            window._autoMixSuppressVolumeSync = false;
+            return;
+          }
+          const liveTime = (auxEl && !auxEl.paused && Number.isFinite(auxEl.currentTime))
+            ? auxEl.currentTime + 0.04
+            : (handover.currentTime || 0);
+          try { el.nativeAudio.currentTime = liveTime; } catch (_) {}
+          el.nativeAudio.addEventListener("playing", finishSwap, { once: true });
+          const p = el.nativeAudio.play();
+          if (p && typeof p.catch === 'function') {
+            p.catch(() => finishSwap());
+          }
+          setTimeout(finishSwap, 600);
+        };
+        if (el.nativeAudio.readyState >= 3) {
           applyHandoverOffset();
         } else {
-          el.nativeAudio.addEventListener("loadedmetadata", applyHandoverOffset, { once: true });
+          el.nativeAudio.addEventListener("canplay", applyHandoverOffset, { once: true });
+          setTimeout(() => { if (!swapped) applyHandoverOffset(); }, 1200);
         }
         return;
       }
