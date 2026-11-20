@@ -8554,7 +8554,16 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       }
     }
 
-    // AutoMix DJ preserves exact Queue/Album order so dual-source handover always matches next track
+    // AutoMix DJ exact handover: jump straight to the track crossfaded by integration-bridge (Equal Power = i+1, Tempo Synced = closest BPM)
+    if (state._autoMixHandover && typeof state._autoMixHandover.targetIndex === 'number') {
+      const targetIdx = state._autoMixHandover.targetIndex;
+      if (targetIdx >= 0 && targetIdx < state.queue.length) {
+        state.queueIndex = targetIdx;
+        recordPlayedIndex(targetIdx);
+        playTrack(state.queue[targetIdx]);
+        return;
+      }
+    }
 
     if (state.isShuffle && !state.isAutoRemix) {
       const provider = shuffleProvider;

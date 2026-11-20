@@ -185,7 +185,22 @@
         let automixTriggeredForTrack = false;
         window.addEventListener('trackchanged', () => {
           automixTriggeredForTrack = false;
+          if (window.autoMixDjInstance && typeof window.autoMixDjInstance.resetLiveBpm === 'function') {
+            window.autoMixDjInstance.resetLiveBpm();
+          }
         });
+
+        // Live BPM sampler for Tempo Synced mode (lightweight 150ms tick only when playing)
+        setInterval(() => {
+          if (!window.autoMixDjInstance || !window.autoMixDjInstance.enabled || window.autoMixDjInstance.mode !== 'tempo_synced') return;
+          if (!nativeAudio || nativeAudio.paused || window.autoMixDjInstance.isCrossfading) return;
+          const analyser = window.audioEngine && window.audioEngine.analyserNode;
+          if (analyser && typeof window.autoMixDjInstance.sampleLiveBpm === 'function') {
+            const bpm = window.autoMixDjInstance.sampleLiveBpm(analyser);
+            const st = getCoreState();
+            if (st && st.currentTrack) st.currentTrack._detectedBpm = bpm;
+          }
+        }, 150);
 
         async function resolveNextTrackStreamUrl(nextTrack) {
           if (!nextTrack) return '';
@@ -215,15 +230,31 @@
 
             if (dur > 20 && remaining <= threshold && remaining > 0.8) {
               const st = getCoreState();
-              if (!st || !Array.isArray(st.queue) || st.queueIndex + 1 >= st.queue.length || st.isRepeat) return;
+              if (!st || !Array.isArray(st.queue) || st.queue.length <= 1 || st.isRepeat) return;
               const currentTrack = st.currentTrack || st.queue[st.queueIndex];
-              const nextTrack = st.queue[st.queueIndex + 1];
+              let nextIdx = st.queueIndex + 1;
+              let nextTrack = nextIdx < st.queue.length ? st.queue[nextIdx] : null;
+              let targetBpm = window.autoMixDjInstance.bpm || 120;
+
+              if (window.autoMixDjInstance.mode === 'tempo_synced' && typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function') {
+                const picked = window.autoMixDjInstance.pickTempoSyncedNext(
+                  st.queue,
+                  st.queueIndex,
+                  st.autoMixPlayedIds,
+                  (currentTrack && currentTrack._detectedBpm) || window.autoMixDjInstance.bpm || 120
+                );
+                if (picked && picked.track) {
+                  nextTrack = picked.track;
+                  nextIdx = picked.index;
+                  targetBpm = picked.targetBpm;
+                }
+              }
               if (!nextTrack) return;
 
               const keepAlbumsContinuous = localStorage.getItem('eclipse_automix_skip_album') !== '0';
               const skipCheck = typeof window.autoMixDjInstance.shouldSkipCrossfade === 'function'
                 ? window.autoMixDjInstance.shouldSkipCrossfade(currentTrack, nextTrack, {
-                    gaplessSameAlbum: keepAlbumsContinuous,
+                    gaplessSameAlbum: keepAlbumsContinuous && window.autoMixDjInstance.mode !== 'tempo_synced',
                     isVideoMode: !!(window.eclipseMvPlayer && window.eclipseMvPlayer.isVideoMode)
                   })
                 : { skip: false };
@@ -249,27 +280,35 @@
               auxAudio.currentTime = 0;
 
               window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
-                detail: { active: true, nextTrack, durationSec: threshold }
+                detail: { active: true, nextTrack, durationSec: threshold, mode: window.autoMixDjInstance.mode, bpm: window.autoMixDjInstance.bpm }
               }));
 
-              console.log(`[EclipseBridge] AutoMix executing dual-source crossfade (${remaining.toFixed(1)}s remaining)...`);
+              console.log(`[EclipseBridge] AutoMix (${window.autoMixDjInstance.mode}) crossfade (${remaining.toFixed(1)}s remaining, BPM ${window.autoMixDjInstance.bpm} -> ${targetBpm})...`);
               try {
-                await window.autoMixDjInstance.executeCrossfade(nativeAudio, auxAudio, Math.min(threshold, remaining - 0.25));
+                await window.autoMixDjInstance.executeCrossfade(nativeAudio, auxAudio, Math.min(threshold, remaining - 0.25), {
+                  outgoingBpm: (currentTrack && currentTrack._detectedBpm) || window.autoMixDjInstance.bpm || 120,
+                  incomingBpm: targetBpm
+                });
               } finally {
                 window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
                   detail: { active: false, nextTrack: null, durationSec: 0 }
                 }));
               }
 
-              // Seamless Handover: transfer playback offset and audio source without restarting nextTrack at 0:00
+              // Seamless Handover: transfer exact targetIndex, playback offset and audio source
               const handoverTime = (auxAudio && !isNaN(auxAudio.currentTime)) ? auxAudio.currentTime : 0;
               const handoverSrc = (auxAudio && auxAudio.src) ? auxAudio.src : '';
               const curCoreState = getCoreState();
               if (curCoreState && nextTrack) {
+                if (curCoreState.autoMixPlayedIds) {
+                  const tid = nextTrack.id || nextTrack.videoId;
+                  if (tid) curCoreState.autoMixPlayedIds.add(tid);
+                }
                 curCoreState._autoMixHandover = {
                   src: handoverSrc,
                   currentTime: handoverTime,
-                  trackId: nextTrack.id || nextTrack.videoId
+                  trackId: nextTrack.id || nextTrack.videoId,
+                  targetIndex: nextIdx
                 };
               }
 

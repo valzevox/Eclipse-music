@@ -9,6 +9,9 @@ class AutoMixDJ {
     this.djFilter = options.djFilter !== false;
     this.autoDuration = !!options.autoDuration;
     this.bpm = options.bpm || 120;
+    this._onsetTimes = [];
+    this._lastBassEnergy = 0;
+    this._lastOnsetMs = 0;
     this.targetLufs = options.targetLufs || -14.0;
     this.isCrossfading = false;
   }
@@ -184,6 +187,80 @@ class AutoMixDJ {
       fadeOutGain: Math.cos(p * 0.5 * Math.PI),
       fadeInGain: Math.sin(p * 0.5 * Math.PI)
     };
+  }
+
+  /**
+   * Sample bass-band onset energy from WebAudio AnalyserNode to estimate live BPM (70-175)
+   */
+  sampleLiveBpm(analyserNode) {
+    if (!analyserNode || typeof analyserNode.getByteFrequencyData !== 'function') return this.bpm;
+    if (!this._freqBuf || this._freqBuf.length !== analyserNode.frequencyBinCount) {
+      this._freqBuf = new Uint8Array(analyserNode.frequencyBinCount);
+    }
+    analyserNode.getByteFrequencyData(this._freqBuf);
+    // Low-end kick/bass bins (approx 40-180 Hz)
+    const endBin = Math.min(12, this._freqBuf.length);
+    let bass = 0;
+    for (let i = 1; i < endBin; i++) bass += this._freqBuf[i];
+    bass /= Math.max(1, endBin - 1);
+
+    const now = Date.now();
+    if (bass > 145 && bass > this._lastBassEnergy * 1.18 && (now - this._lastOnsetMs) > 280) {
+      this._lastOnsetMs = now;
+      this._onsetTimes.push(now);
+      if (this._onsetTimes.length > 24) this._onsetTimes.shift();
+      if (this._onsetTimes.length >= 6) {
+        const intervals = [];
+        for (let i = 1; i < this._onsetTimes.length; i++) {
+          const dt = this._onsetTimes[i] - this._onsetTimes[i - 1];
+          if (dt >= 300 && dt <= 1000) intervals.push(dt);
+        }
+        if (intervals.length >= 4) {
+          intervals.sort((a, b) => a - b);
+          const medianMs = intervals[Math.floor(intervals.length / 2)];
+          let est = Math.round(60000 / medianMs);
+          while (est < 75) est *= 2;
+          while (est > 175) est = Math.round(est / 2);
+          this.bpm = Math.round(this.bpm * 0.7 + est * 0.3);
+        }
+      }
+    }
+    this._lastBassEnergy = this._lastBassEnergy * 0.75 + bass * 0.25;
+    return this.bpm;
+  }
+
+  resetLiveBpm() {
+    this._onsetTimes = [];
+    this._lastBassEnergy = 0;
+    this._lastOnsetMs = 0;
+  }
+
+  /**
+   * Pick the closest BPM/energy unplayed track in queue for Tempo Synced mode
+   */
+  pickTempoSyncedNext(queue, currentIndex, playedIds, currentBpm = this.bpm) {
+    if (!Array.isArray(queue) || queue.length <= 1) return null;
+    const played = playedIds instanceof Set ? playedIds : new Set();
+    let best = null;
+    let bestDiff = Infinity;
+
+    for (let i = 0; i < queue.length; i++) {
+      if (i === currentIndex) continue;
+      const t = queue[i];
+      if (!t) continue;
+      const tid = t.id || t.videoId;
+      if (tid && played.has(tid)) continue;
+
+      const tBpm = (typeof t._detectedBpm === 'number' && t._detectedBpm > 0)
+        ? t._detectedBpm
+        : ((typeof t.bpm === 'number' && t.bpm > 0) ? t.bpm : (95 + ((Number(t.duration) || 180) % 45)));
+      const diff = Math.abs(tBpm - currentBpm);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = { track: t, index: i, targetBpm: tBpm };
+      }
+    }
+    return best;
   }
 
   /**
