@@ -369,9 +369,7 @@ function runGUI() {
       minHeight: 540,
                                    backgroundColor: firstRun ? '#8d5ef2' : '#000000',
                                    title: 'Eclipse',
-                                   icon: process.platform === 'win32'
-      ? path.join(__dirname, '../../assets', 'icon.ico')
-      : path.join(__dirname, '../../assets', 'icon.png'),
+                                   icon: path.join(__dirname, '../../assets', (process.platform === 'win32' ? 'icon.ico' : 'icon.png')),
                                    frame: false,
                                    titleBarStyle: 'hidden',
                                    show: false,
@@ -2673,7 +2671,7 @@ ipcMain.on('window-minimize', () => {
           const fallbackPath = path.join(__dirname, '../../assets', 'icon.png');
           const targetPath = fs.existsSync(iconPath) ? iconPath : fallbackPath;
           let trayIcon = nativeImage.createFromPath(targetPath);
-          trayIcon = trayIcon.resize({ width: 20, height: 20 });
+          trayIcon = trayIcon.resize({ width: 24, height: 24 });
           tray = new Tray(trayIcon);
           tray.setToolTip('Eclipse');
           const contextMenu = Menu.buildFromTemplate([
