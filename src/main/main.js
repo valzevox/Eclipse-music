@@ -2667,11 +2667,11 @@ ipcMain.on('window-minimize', () => {
 
       function setupTray() {
         try {
-          const iconPath = path.join(__dirname, '../../assets', 'tray-icon.png');
-          const fallbackPath = path.join(__dirname, '../../assets', 'icon.png');
-          const targetPath = fs.existsSync(iconPath) ? iconPath : fallbackPath;
+          const icoPath = path.join(__dirname, '../../assets', 'tray-icon.ico');
+          const pngPath = path.join(__dirname, '../../assets', 'tray-icon.png');
+          const fallbackPath = path.join(__dirname, '../../assets', 'icon.ico');
+          const targetPath = (process.platform === 'win32' && fs.existsSync(icoPath)) ? icoPath : (fs.existsSync(pngPath) ? pngPath : fallbackPath);
           let trayIcon = nativeImage.createFromPath(targetPath);
-          trayIcon = trayIcon.resize({ width: 24, height: 24 });
           tray = new Tray(trayIcon);
           tray.setToolTip('Eclipse');
           const contextMenu = Menu.buildFromTemplate([
