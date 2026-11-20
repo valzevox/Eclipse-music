@@ -11526,3 +11526,86 @@ body.hide-sp-table-cols .track-row-col-date {
 .offline-top-retry-btn:hover {
   background: rgba(239, 68, 68, 0.45);
 }
+
+/* Eclipse Dark Neon Glassmorphism: AutoMix DJ, 8D Spatial Audio, SponsorBlock Categories */
+.automix-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  transition: background 180ms ease, border-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
+}
+.automix-pill-btn:hover {
+  background: rgba(168, 85, 247, 0.16);
+  border-color: rgba(168, 85, 247, 0.4);
+  color: #fff;
+}
+.automix-pill-btn.active {
+  background: rgba(168, 85, 247, 0.24);
+  border-color: rgba(192, 132, 252, 0.75);
+  color: #f3e8ff;
+  box-shadow: 0 0 14px rgba(168, 85, 247, 0.4);
+}
+
+.glass-control-card {
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  padding: 12px 14px;
+}
+
+.glass-pill-row,
+.sb-cat-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.glass-mode-pill,
+.sb-cat-pill {
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+.glass-mode-pill:hover,
+.sb-cat-pill:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+.glass-mode-pill.active,
+.sb-cat-pill.active {
+  background: rgba(168, 85, 247, 0.22);
+  border-color: rgba(192, 132, 252, 0.65);
+  color: #f5f3ff;
+  box-shadow: 0 0 10px rgba(168, 85, 247, 0.28);
+}
+
+.spatial-8d-controls {
+  margin-top: 6px;
+}
+.spatial-8d-controls.disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+

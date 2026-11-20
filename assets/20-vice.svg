@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none">
+  <defs>
+    <path id="L" d="M275 45C153.5 45 55 143.5 55 265C55 386.5 153.5 485 275 485C349.2 485 414.8 448.3 454.7 392.1C430.5 410.2 400.5 420.9 367.9 420.9C287.8 420.9 222.9 356 222.9 275.9C222.9 195.8 287.8 130.9 367.9 130.9C400.5 130.9 430.5 141.6 454.7 159.7C414.8 103.5 349.2 45 275 45ZM395 210C386.7 210 380 216.7 380 225V325C380 333.3 386.7 340 395 340C403.3 340 410 333.3 410 325V225C410 216.7 403.3 210 395 210ZM448 182C439.7 182 433 188.7 433 197V353C433 361.3 439.7 368 448 368C456.3 368 463 361.3 463 353V197C463 188.7 456.3 182 448 182ZM342 242C333.7 242 327 248.7 327 257V293C327 301.3 333.7 308 342 308C350.3 308 357 301.3 357 293V257C357 248.7 350.3 242 342 242Z"/>
+    <clipPath id="vc-c"><rect width="512" height="512" rx="112"/></clipPath>
+    <!-- Exact Vice Sunset background gradient -->
+    <linearGradient id="vc-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c43cc9"/>
+      <stop offset="0.42" stop-color="#f053a6"/>
+      <stop offset="0.78" stop-color="#ff69a8"/>
+      <stop offset="1" stop-color="#ff85b3"/>
+    </linearGradient>
+    <!-- Exact VI-style chrome sunset gradient applied directly inside Eclipse logo -->
+    <linearGradient id="vc-logo-fill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#346ee8"/>
+      <stop offset="0.34" stop-color="#8b5cf6"/>
+      <stop offset="0.64" stop-color="#ff6cb8"/>
+      <stop offset="1" stop-color="#ffa84c"/>
+    </linearGradient>
+    <!-- Warm gold-peach inner rim stroke -->
+    <linearGradient id="vc-inner-rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffd580"/>
+      <stop offset="0.5" stop-color="#ff9ed2"/>
+      <stop offset="1" stop-color="#ffcf70"/>
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#vc-c)">
+    <rect width="512" height="512" fill="url(#vc-bg)"/>
+    <!-- Lush palm silhouettes matching reference background -->
+    <g fill="#7d1f7c" opacity="0.30">
+      <!-- Left tall palm -->
+      <path d="M22 512 Q42 340 62 165 L78 170 Q60 340 46 512 Z"/>
+      <path d="M68 168 Q10 120 -25 155 Q20 155 60 182 Z"/>
+      <path d="M68 168 Q22 80 -8 62 Q38 106 64 174 Z"/>
+      <path d="M70 168 Q92 80 142 68 Q102 114 76 174 Z"/>
+      <path d="M72 170 Q135 124 185 150 Q128 158 78 182 Z"/>
+      <path d="M70 174 Q126 178 166 226 Q116 202 74 184 Z"/>
+      <!-- Left secondary palm -->
+      <path d="M120 512 Q132 390 144 275 L154 278 Q144 390 136 512 Z" opacity="0.7"/>
+      <path d="M148 278 Q105 248 76 268 Q112 270 142 288 Z" opacity="0.7"/>
+      <path d="M148 278 Q178 238 214 252 Q180 264 152 288 Z" opacity="0.7"/>
+      <!-- Right tall palm -->
+      <path d="M484 512 Q462 340 438 168 L422 172 Q442 340 460 512 Z"/>
+      <path d="M432 170 Q492 122 532 156 Q482 158 440 184 Z"/>
+      <path d="M432 170 Q478 82 512 64 Q464 108 436 176 Z"/>
+      <path d="M430 170 Q406 82 356 70 Q396 116 424 176 Z"/>
+      <path d="M428 172 Q364 126 316 152 Q372 160 422 184 Z"/>
+      <path d="M430 176 Q374 180 334 228 Q384 204 426 186 Z"/>
+      <!-- Right lower palm -->
+      <path d="M398 512 Q410 420 420 338 L428 340 Q420 420 412 512 Z" opacity="0.65"/>
+      <path d="M422 340 Q388 314 362 330 Q392 332 418 348 Z" opacity="0.65"/>
+      <path d="M424 340 Q456 312 486 326 Q456 334 428 348 Z" opacity="0.65"/>
+    </g>
+  </g>
+  <!-- Eclipse SVG Logo ONLY (no VI behind): thick dark purple outer outline -> thin warm inner rim -> Vice gradient fill -->
+  <use href="#L" transform="translate(256 256) scale(0.62) translate(-256 -265)" fill="none" stroke="#280c46" stroke-width="34" stroke-linejoin="round"/>
+  <use href="#L" transform="translate(256 256) scale(0.62) translate(-256 -265)" fill="none" stroke="url(#vc-inner-rim)" stroke-width="14" stroke-linejoin="round"/>
+  <use href="#L" transform="translate(256 256) scale(0.62) translate(-256 -265)" fill="url(#vc-logo-fill)"/>
+</svg>

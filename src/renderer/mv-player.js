@@ -162,12 +162,19 @@
           this.currentVideoId = data.videoId;
           this.renderIframe(data.videoId, startTime);
         } else {
-          // Fallback to track ID directly if 11 chars
-          const fallbackId = /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : 'dQw4w9WgXcQ';
-          this.renderIframe(fallbackId, startTime);
+          this.currentVideoId = null;
+          this.switchToSong();
+          if (typeof window !== 'undefined' && typeof window.showToast === 'function') {
+            window.showToast('Music video unavailable for this track', 'info');
+          }
         }
       } catch (err) {
         console.error('[EclipseMvPlayer] Failed to load MV:', err);
+        this.currentVideoId = null;
+        this.switchToSong();
+        if (typeof window !== 'undefined' && typeof window.showToast === 'function') {
+          window.showToast('Music video unavailable for this track', 'info');
+        }
       } finally {
         if (this.loadingOverlay) this.loadingOverlay.classList.add('hidden');
       }

@@ -9016,7 +9016,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       try {
         if (localStorage.getItem('eclipse_sponsorblock_enabled') !== '0' && currentTrackSponsorSegments.length > 0 && el.nativeAudio && !isDraggingScrubber) {
           const curTime = el.nativeAudio.currentTime;
+          const enabledCats = typeof getEnabledSponsorBlockCategories === 'function' ? getEnabledSponsorBlockCategories() : null;
           for (const seg of currentTrackSponsorSegments) {
+            if (enabledCats && seg.category && !enabledCats.has(seg.category)) continue;
             if (curTime >= seg.start - 0.25 && curTime < seg.end - 0.5 && lastSkippedSegmentEnd !== seg.end) {
               lastSkippedSegmentEnd = seg.end;
               el.nativeAudio.currentTime = seg.end;
@@ -10534,6 +10536,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       <div class="np-queue-head">
         <div class="np-queue-tabs">
           <button type="button" class="np-queue-tab active" data-tab="queue">Queue</button>
+          <button type="button" class="np-queue-tab" data-tab="related">Related</button>
           <button type="button" class="np-queue-tab" data-tab="recent">Recently played</button>
         </div>
         <button type="button" class="btn-icon-pill np-queue-close" aria-label="Close">
@@ -10546,6 +10549,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     const body = panel.querySelector('#np-queue-body');
     let tab = 'queue';
     let signature = '';
+    let relatedCacheVid = '';
+    let relatedCacheTracks = [];
+    let relatedLoadingVid = '';
 
     const makeRow = (track, onClick, playing) => {
       const row = document.createElement('div');
@@ -10585,6 +10591,60 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     const render = () => {
       body.innerHTML = '';
       const current = state.currentTrack;
+      if (tab === 'related') {
+        if (!current) {
+          const empty = document.createElement('div');
+          empty.className = 'np-queue-empty';
+          empty.textContent = 'Play a track to see related songs';
+          body.appendChild(empty);
+          return;
+        }
+        const vid = current.videoId || current.id || '';
+        if (!vid) {
+          const empty = document.createElement('div');
+          empty.className = 'np-queue-empty';
+          empty.textContent = 'No related tracks available';
+          body.appendChild(empty);
+          return;
+        }
+        if (relatedCacheVid === vid) {
+          if (!relatedCacheTracks.length) {
+            const empty = document.createElement('div');
+            empty.className = 'np-queue-empty';
+            empty.textContent = 'No related tracks found';
+            body.appendChild(empty);
+            return;
+          }
+          body.appendChild(heading('Related tracks'));
+          relatedCacheTracks.forEach((t, idx) => {
+            body.appendChild(makeRow(t, () => playTrack(t, relatedCacheTracks, idx), false));
+          });
+          return;
+        }
+        const loading = document.createElement('div');
+        loading.className = 'np-queue-empty';
+        loading.textContent = 'Loading related tracks...';
+        body.appendChild(loading);
+        if (relatedLoadingVid !== vid) {
+          relatedLoadingVid = vid;
+          fetch(`http://127.0.0.1:${state.serverPort}/api/related?videoId=${encodeURIComponent(vid)}`)
+            .then(r => r.ok ? r.json() : [])
+            .then(data => {
+              const list = Array.isArray(data) ? data : (Array.isArray(data?.tracks) ? data.tracks : []);
+              relatedCacheVid = vid;
+              relatedCacheTracks = list;
+              relatedLoadingVid = '';
+              if (tab === 'related') render();
+            })
+            .catch(() => {
+              relatedCacheVid = vid;
+              relatedCacheTracks = [];
+              relatedLoadingVid = '';
+              if (tab === 'related') render();
+            });
+        }
+        return;
+      }
       if (tab === 'recent') {
         const recent = (state.history || []).filter(Boolean).slice(0, 40);
         if (!recent.length) {
@@ -11430,6 +11490,14 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         label: 'Add to queue',
         icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="16" y2="18"/><polygon points="3 6 3 10 6 8 3 6"/><line x1="19" y1="15" x2="19" y2="21"/><line x1="16" y1="18" x2="22" y2="18"/></svg>',
         action: () => addTrackToQueue(track)
+      },
+      {
+        id: 'radio',
+        label: 'Start Radio',
+        icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></svg>',
+        action: () => {
+          if (typeof startRadioForTrack === 'function') startRadioForTrack(track);
+        }
       },
       {
         id: 'share',
@@ -14876,31 +14944,91 @@ function updateNavIndicator(animate) {
   const addLocalFilesEmptyBtn = el.btnAddLocalFilesEmpty || document.getElementById('btn-add-local-files-empty');
   if (addLocalFilesEmptyBtn) addLocalFilesEmptyBtn.addEventListener('click', () => addLocalFiles());
 
-  if (el.btnAutoRemix) {
-    el.btnAutoRemix.classList.toggle('active', state.isAutoRemix);
-    el.btnAutoRemix.addEventListener('click', () => {
-      state.isAutoRemix = !state.isAutoRemix;
-      localStorage.setItem('eclipse_automix', state.isAutoRemix ? '1' : '0');
-      if (window.autoMixDjInstance) {
-        window.autoMixDjInstance.enabled = state.isAutoRemix;
+  async function startRadioForTrack(track) {
+    if (!track) return;
+    const vid = track.videoId || track.id || '';
+    if (!vid) {
+      playTrack(track, [track], 0);
+      return;
+    }
+    try {
+      const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/radio?videoId=${encodeURIComponent(vid)}`);
+      const data = res.ok ? await res.json() : [];
+      const rawList = Array.isArray(data) ? data : (Array.isArray(data?.tracks) ? data.tracks : []);
+      const seen = new Set([vid]);
+      const radioQueue = [track];
+      for (const item of rawList) {
+        const itemId = item && (item.videoId || item.id);
+        if (!item || (itemId && seen.has(itemId))) continue;
+        if (itemId) seen.add(itemId);
+        radioQueue.push(item);
       }
-      if (state.isAutoRemix) {
-        // Tắt Shuffle khi bật AutoMix (Mutual Exclusion)
-        state.isShuffle = false;
-        localStorage.setItem('eclipse_shuffle', '0');
-        if (el.btnShuffle) el.btnShuffle.classList.remove('active');
-        if (state.autoMixPlayedIds) state.autoMixPlayedIds.clear();
-        if (state.currentTrack) {
-          const tid = state.currentTrack.id || state.currentTrack.videoId;
-          if (tid) state.autoMixPlayedIds.add(tid);
-        }
-        if (typeof showToast === 'function') showToast('AutoMix DJ bật — Đã tắt Shuffle', 'success');
-      } else {
-        if (typeof showToast === 'function') showToast('AutoMix DJ đã tắt', 'info');
+      state.isRadioQueue = true;
+      playTrack(radioQueue[0], radioQueue, 0);
+      if (typeof showToast === 'function') {
+        showToast(`Radio started (${radioQueue.length} tracks)`, 'success');
       }
-      el.btnAutoRemix.classList.toggle('active', state.isAutoRemix);
-    });
+    } catch (_) {
+      state.isRadioQueue = false;
+      playTrack(track, [track], 0);
+    }
   }
+  window.startRadioForTrack = startRadioForTrack;
+
+  const syncAutoMixUiAndEngine = (enabled, mode) => {
+    const resolvedEnabled = typeof enabled === 'boolean' ? enabled : !!state.isAutoRemix;
+    const resolvedMode = mode || localStorage.getItem('eclipse_automix_mode') || 'equal_power';
+    state.isAutoRemix = resolvedEnabled;
+    localStorage.setItem('eclipse_automix', resolvedEnabled ? '1' : '0');
+    localStorage.setItem('eclipse_automix_mode', resolvedMode);
+    if (el.btnAutoRemix) el.btnAutoRemix.classList.toggle('active', resolvedEnabled);
+    const settingsToggle = document.getElementById('toggle-automix-dj');
+    if (settingsToggle) settingsToggle.classList.toggle('active', resolvedEnabled);
+    document.querySelectorAll('#automix-mode-group [data-automix-mode]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.automixMode === resolvedMode);
+    });
+    if (typeof window.syncAutoMixSettings === 'function') {
+      window.syncAutoMixSettings({ enabled: resolvedEnabled, mode: resolvedMode });
+    }
+    if (window.autoMixDjInstance) {
+      window.autoMixDjInstance.enabled = resolvedEnabled;
+      if (typeof window.autoMixDjInstance.configure === 'function') {
+        window.autoMixDjInstance.configure({ enabled: resolvedEnabled, mode: resolvedMode });
+      }
+    }
+  };
+
+  const toggleAutoMixState = () => {
+    const next = !state.isAutoRemix;
+    if (next) {
+      state.isShuffle = false;
+      localStorage.setItem('eclipse_shuffle', '0');
+      if (el.btnShuffle) el.btnShuffle.classList.remove('active');
+      if (state.autoMixPlayedIds) state.autoMixPlayedIds.clear();
+      if (state.currentTrack) {
+        const tid = state.currentTrack.id || state.currentTrack.videoId;
+        if (tid) state.autoMixPlayedIds.add(tid);
+      }
+      if (typeof showToast === 'function') showToast('AutoMix DJ enabled — Shuffle disabled', 'success');
+    } else if (typeof showToast === 'function') {
+      showToast('AutoMix DJ disabled', 'info');
+    }
+    syncAutoMixUiAndEngine(next);
+  };
+
+  if (el.btnAutoRemix) {
+    el.btnAutoRemix.addEventListener('click', toggleAutoMixState);
+  }
+  const toggleAutoMixDjBtn = document.getElementById('toggle-automix-dj');
+  if (toggleAutoMixDjBtn) {
+    toggleAutoMixDjBtn.addEventListener('click', toggleAutoMixState);
+  }
+  document.querySelectorAll('#automix-mode-group [data-automix-mode]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      syncAutoMixUiAndEngine(state.isAutoRemix, btn.dataset.automixMode);
+    });
+  });
+  syncAutoMixUiAndEngine(state.isAutoRemix, localStorage.getItem('eclipse_automix_mode') || 'equal_power');
 
   if (el.btnSavePresetDialog) {
     el.btnSavePresetDialog.addEventListener('click', () => {
@@ -17378,7 +17506,8 @@ function bindCoverHoldZoom(wrapEl) {
     { id: '16-chrome.svg', label: 'Chrome' },
     { id: '17-eclipse.svg', label: 'Eclipse' },
     { id: '18-nebula.svg', label: 'Nebula' },
-    { id: '19-horizon.svg', label: 'Horizon' }
+    { id: '19-horizon.svg', label: 'Horizon' },
+    { id: '20-vice.svg', label: 'Vice Sunset' }
   ];
   function resolveAppIconSrc(val) {
     if (!val) return '../../assets/02-editor.svg';
@@ -19774,6 +19903,65 @@ function bindCoverHoldZoom(wrapEl) {
     });
   }
 
+  (function initSpatial8dControls() {
+    const toggleBtn = document.getElementById('toggle-spatial-8d');
+    const speedSlider = document.getElementById('slider-spatial-8d-speed');
+    const speedVal = document.getElementById('val-spatial-8d-speed');
+    const controlsWrap = document.getElementById('spatial-8d-controls');
+    const dirBtns = document.querySelectorAll('#spatial-8d-dir-group [data-spatial-dir]');
+    if (!toggleBtn) return;
+
+    const loadSpatial8d = () => {
+      try {
+        const parsed = JSON.parse(localStorage.getItem('eclipse_spatial_8d') || 'null');
+        if (parsed && typeof parsed === 'object') {
+          return {
+            enabled: !!parsed.enabled,
+            cycleSec: Math.min(24, Math.max(4, Number(parsed.cycleSec) || 10)),
+            direction: parsed.direction === 'ccw' ? 'ccw' : 'cw'
+          };
+        }
+      } catch (_) {}
+      return { enabled: false, cycleSec: 10, direction: 'cw' };
+    };
+
+    let cfg = loadSpatial8d();
+
+    const applySpatial8d = (persist = true) => {
+      toggleBtn.classList.toggle('active', cfg.enabled);
+      if (controlsWrap) controlsWrap.classList.toggle('disabled', !cfg.enabled);
+      if (speedSlider) speedSlider.value = String(cfg.cycleSec);
+      if (speedVal) speedVal.textContent = `${cfg.cycleSec}s`;
+      dirBtns.forEach(b => b.classList.toggle('active', b.dataset.spatialDir === cfg.direction));
+      if (persist) {
+        try { localStorage.setItem('eclipse_spatial_8d', JSON.stringify(cfg)); } catch (_) {}
+      }
+      const engine = window.audioEngine || (typeof audioEngine !== 'undefined' ? audioEngine : null);
+      if (engine && typeof engine.setSpatial8d === 'function') {
+        engine.setSpatial8d({ enabled: cfg.enabled, cycleSec: cfg.cycleSec, direction: cfg.direction });
+      }
+    };
+
+    toggleBtn.addEventListener('click', () => {
+      cfg.enabled = !cfg.enabled;
+      applySpatial8d(true);
+    });
+    if (speedSlider) {
+      speedSlider.addEventListener('input', () => {
+        cfg.cycleSec = Math.min(24, Math.max(4, parseInt(speedSlider.value, 10) || 10));
+        applySpatial8d(true);
+      });
+    }
+    dirBtns.forEach(b => {
+      b.addEventListener('click', () => {
+        cfg.direction = b.dataset.spatialDir === 'ccw' ? 'ccw' : 'cw';
+        applySpatial8d(true);
+      });
+    });
+
+    applySpatial8d(false);
+  })();
+
   (function initUpdateUI() {
     const api = window.electronAPI;
     const $ = (id) => document.getElementById(id);
@@ -20448,6 +20636,19 @@ function bindCoverHoldZoom(wrapEl) {
     });
   }
 
+  const DEFAULT_SPONSORBLOCK_CATEGORIES = [
+    'sponsor', 'intro', 'outro', 'selfpromo', 'music_offtopic', 'interaction', 'preview', 'filler'
+  ];
+  function getEnabledSponsorBlockCategories() {
+    try {
+      const raw = localStorage.getItem('eclipse_sponsorblock_categories');
+      if (!raw) return new Set(DEFAULT_SPONSORBLOCK_CATEGORIES);
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return new Set(parsed);
+    } catch (_) {}
+    return new Set(DEFAULT_SPONSORBLOCK_CATEGORIES);
+  }
+
   const btnSponsorBlock = document.getElementById('btn-sponsorblock');
   if (btnSponsorBlock) {
     const on = localStorage.getItem('eclipse_sponsorblock_enabled') !== '0';
@@ -20458,6 +20659,28 @@ function bindCoverHoldZoom(wrapEl) {
       localStorage.setItem('eclipse_sponsorblock_enabled', next ? '1' : '0');
       showToast(next ? 'SponsorBlock enabled' : 'SponsorBlock disabled', 'info');
       if (next && state.currentTrack) loadSponsorBlockSegments(state.currentTrack);
+    });
+  }
+
+  const sbCatPills = document.querySelectorAll('#sponsorblock-categories-wrap .sb-cat-pill');
+  if (sbCatPills.length) {
+    const syncSbPills = () => {
+      const enabled = getEnabledSponsorBlockCategories();
+      sbCatPills.forEach(pill => {
+        pill.classList.toggle('active', enabled.has(pill.dataset.category));
+      });
+    };
+    syncSbPills();
+    sbCatPills.forEach(pill => {
+      pill.addEventListener('click', () => {
+        const cat = pill.dataset.category;
+        if (!cat) return;
+        const enabled = getEnabledSponsorBlockCategories();
+        if (enabled.has(cat)) enabled.delete(cat);
+        else enabled.add(cat);
+        localStorage.setItem('eclipse_sponsorblock_categories', JSON.stringify(Array.from(enabled)));
+        syncSbPills();
+      });
     });
   }
 

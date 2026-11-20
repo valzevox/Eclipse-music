@@ -101,12 +101,63 @@
     // 3. Phase 7: AutoMix DJ (Two-Source Equal-Power Crossfade with Auxiliary Incoming Audio)
     if (typeof window.AutoMixDJ !== 'undefined') {
       try {
+        const storedCrossfade = parseFloat(localStorage.getItem('eclipse_crossfade'));
+        const initialDurationSec = Number.isFinite(storedCrossfade) && storedCrossfade > 0
+          ? Math.max(1, Math.min(15, storedCrossfade))
+          : 6.0;
+        const storedMode = localStorage.getItem('eclipse_automix_mode');
+        const initialMode = (storedMode === 'equal_power' || storedMode === 'tempo_synced')
+          ? storedMode
+          : 'equal_power';
+
         window.autoMixDjInstance = new window.AutoMixDJ({
           enabled: localStorage.getItem('eclipse_automix') === '1',
-          durationSec: 6.0,
-          mode: 'equal_power',
+          durationSec: initialDurationSec,
+          mode: initialMode,
           bpm: 120
         });
+
+        window.syncAutoMixSettings = function (opts = {}) {
+          const cfg = {};
+          if (typeof opts.enabled === 'boolean') {
+            cfg.enabled = opts.enabled;
+            try { localStorage.setItem('eclipse_automix', opts.enabled ? '1' : '0'); } catch (_) {}
+          }
+          if (typeof opts.durationSec === 'number' && Number.isFinite(opts.durationSec)) {
+            const rawSec = Math.max(0, Math.min(15, opts.durationSec));
+            try { localStorage.setItem('eclipse_crossfade', String(rawSec)); } catch (_) {}
+            if (rawSec > 0) {
+              cfg.durationSec = Math.max(1, rawSec);
+            } else if (typeof opts.enabled !== 'boolean') {
+              cfg.enabled = false;
+              try { localStorage.setItem('eclipse_automix', '0'); } catch (_) {}
+            }
+          }
+          if (opts.mode === 'equal_power' || opts.mode === 'tempo_synced') {
+            cfg.mode = opts.mode;
+            try { localStorage.setItem('eclipse_automix_mode', opts.mode); } catch (_) {}
+          }
+          if (window.autoMixDjInstance && typeof window.autoMixDjInstance.configure === 'function') {
+            window.autoMixDjInstance.configure(cfg);
+            return typeof window.autoMixDjInstance.getStatus === 'function'
+              ? window.autoMixDjInstance.getStatus()
+              : cfg;
+          }
+          return cfg;
+        };
+
+        const crossfadeSlider = document.getElementById('slider-crossfade');
+        if (crossfadeSlider && !crossfadeSlider.dataset.automixBound) {
+          crossfadeSlider.dataset.automixBound = '1';
+          const onCrossfadeChange = () => {
+            const val = parseFloat(crossfadeSlider.value);
+            if (Number.isFinite(val)) {
+              window.syncAutoMixSettings({ durationSec: val });
+            }
+          };
+          crossfadeSlider.addEventListener('input', onCrossfadeChange);
+          crossfadeSlider.addEventListener('change', onCrossfadeChange);
+        }
 
         let auxAudio = document.getElementById('eclipse-aux-audio');
         if (!auxAudio && typeof document !== 'undefined' && document.body) {
