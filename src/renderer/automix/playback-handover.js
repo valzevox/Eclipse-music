@@ -2,7 +2,19 @@
 // JavaScript / playback-handover.js / Web / Eclipse PC & Mobile
 // Seamless dual-deck handover: preserves currentTime, synchronizes live decks, prevents premature cut
 
-let _suppressGeneration = 0;
+const { getVolumeSyncSuppression } = (typeof module !== 'undefined' && module.exports)
+  ? (function() {
+      try { return require('./suppression-controller'); }
+      catch (_) { return { getVolumeSyncSuppression: () => null }; }
+    })()
+  : { getVolumeSyncSuppression: () => (typeof window !== 'undefined' && window.volumeSyncSuppression ? window.volumeSyncSuppression : null) };
+
+function _getHandoverSuppressionManager() {
+  if (typeof window !== 'undefined' && window.volumeSyncSuppression) {
+    return window.volumeSyncSuppression;
+  }
+  return getVolumeSyncSuppression();
+}
 
 class PlaybackHandover {
   constructor(options = {}) {
@@ -49,18 +61,15 @@ class PlaybackHandover {
       } catch (_) {}
     };
 
-    const suppressToken = ++_suppressGeneration;
-    if (typeof window !== 'undefined') {
-      window._autoMixSuppressVolumeSync = true;
-      window._autoMixSuppressOwnerToken = suppressToken;
-    }
+    const suppressionMgr = _getHandoverSuppressionManager();
+    const suppressToken = suppressionMgr ? suppressionMgr.acquire('PlaybackHandover') : null;
 
     const releaseSuppression = () => {
-      if (typeof window !== 'undefined') {
-        if (window._autoMixSuppressOwnerToken === suppressToken) {
-          window._autoMixSuppressVolumeSync = false;
-          window._autoMixSuppressOwnerToken = null;
-        }
+      if (suppressionMgr && suppressToken !== null) {
+        suppressionMgr.release(suppressToken);
+      } else if (typeof window !== 'undefined' && !suppressionMgr) {
+        window._autoMixSuppressVolumeSync = false;
+        window._autoMixSuppressOwnerToken = null;
       }
     };
 

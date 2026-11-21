@@ -1,6 +1,20 @@
 // JavaScript / automix-dj.js / Smart Crossfade & Beat-Aligned Mixing Engine
 // Part of Eclipse Music Player — MIT License
 
+const { getVolumeSyncSuppression } = (typeof module !== 'undefined' && module.exports)
+  ? (function() {
+      try { return require('./automix/suppression-controller'); }
+      catch (_) { return { getVolumeSyncSuppression: () => null }; }
+    })()
+  : { getVolumeSyncSuppression: () => (typeof window !== 'undefined' && window.volumeSyncSuppression ? window.volumeSyncSuppression : null) };
+
+function _getDJSuppressionManager() {
+  if (typeof window !== 'undefined' && window.volumeSyncSuppression) {
+    return window.volumeSyncSuppression;
+  }
+  return getVolumeSyncSuppression();
+}
+
 class AutoMixDJ {
   constructor(options = {}) {
     this.enabled = options.enabled ?? false;
@@ -584,18 +598,20 @@ class AutoMixDJ {
    * @param {string} reason 'pause' | 'seek' | 'skip' | 'manual'
    */
   abortCrossfade(reason = 'manual') {
-    if (!this.isCrossfading || !this._currentFade) return false;
+    if (!this.isCrossfading && !this._currentFade) return false;
 
     const fade = this._currentFade;
+    const suppressToken = (fade && fade.suppressToken) || this._crossfadeSuppressToken;
     this.isCrossfading = false;
     this._currentFade = null;
+    this._crossfadeSuppressToken = null;
 
-    if (fade.interval) {
+    if (fade && fade.interval) {
       clearInterval(fade.interval);
       fade.interval = null;
     }
 
-    const { outgoingAudio, incomingAudio, inFilter, outFilter, initialUserVol, useDeckGains, audioEngine } = fade;
+    const { outgoingAudio, incomingAudio, inFilter, outFilter, initialUserVol, useDeckGains, audioEngine } = fade || {};
 
     try {
       if (useDeckGains && audioEngine && typeof audioEngine.setDeckGains === 'function') {
@@ -643,14 +659,25 @@ class AutoMixDJ {
       }
     } catch (_) {}
 
+    const suppressionMgr = _getDJSuppressionManager();
     if (typeof window !== 'undefined') {
-      setTimeout(() => { window._autoMixSuppressVolumeSync = false; }, 80);
+      setTimeout(() => {
+        if (suppressionMgr && suppressToken !== null) {
+          suppressionMgr.release(suppressToken);
+        } else if (typeof window !== 'undefined' && !suppressionMgr) {
+          window._autoMixSuppressVolumeSync = false;
+        }
+      }, 80);
       window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
         detail: { active: false, aborted: true, reason }
       }));
+    } else if (suppressionMgr && suppressToken !== null) {
+      setTimeout(() => {
+        suppressionMgr.release(suppressToken);
+      }, 80);
     }
 
-    if (typeof fade.reject === 'function') {
+    if (fade && typeof fade.reject === 'function') {
       fade.reject(new Error(`Crossfade aborted: ${reason}`));
     }
     return true;
@@ -663,7 +690,12 @@ class AutoMixDJ {
     if (!outgoingAudio || !incomingAudio || this.isCrossfading) return false;
 
     this.isCrossfading = true;
-    if (typeof window !== 'undefined') window._autoMixSuppressVolumeSync = true;
+    const suppressionMgr = _getDJSuppressionManager();
+    const suppressToken = suppressionMgr ? suppressionMgr.acquire('AutoMixDJ') : null;
+    this._crossfadeSuppressToken = suppressToken;
+    if (typeof window !== 'undefined' && !suppressionMgr) {
+      window._autoMixSuppressVolumeSync = true;
+    }
     const startTime = Date.now();
     const durationMs = Math.max(200, duration * 1000);
     const initialUserVol = Number.isFinite(outgoingAudio.volume) ? Math.max(0, Math.min(1, outgoingAudio.volume)) : 1.0;
@@ -758,8 +790,19 @@ class AutoMixDJ {
     } catch (playErr) {
       console.warn('[AutoMixDJ] incomingAudio.play() rejected; aborting crossfade and restoring outgoing volume:', playErr?.message || playErr);
       if (typeof window !== 'undefined') {
-        setTimeout(() => { window._autoMixSuppressVolumeSync = false; }, 50);
+        setTimeout(() => {
+          if (suppressionMgr && suppressToken !== null) {
+            suppressionMgr.release(suppressToken);
+          } else if (typeof window !== 'undefined' && !suppressionMgr) {
+            window._autoMixSuppressVolumeSync = false;
+          }
+        }, 50);
+      } else if (suppressionMgr && suppressToken !== null) {
+        setTimeout(() => {
+          suppressionMgr.release(suppressToken);
+        }, 50);
       }
+      this._crossfadeSuppressToken = null;
       // Rollback gains and filters immediately to prevent fading outgoing into silence or muffled LPF
       if (outFilter && outFilter.context) {
         try { outFilter.frequency.setValueAtTime(20000, outFilter.context.currentTime); } catch (_) {}
@@ -789,6 +832,7 @@ class AutoMixDJ {
         useDeckGains,
         useFadeGainNode,
         audioEngine,
+        suppressToken,
         interval: null,
         resolve,
         reject

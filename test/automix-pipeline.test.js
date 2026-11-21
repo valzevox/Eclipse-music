@@ -16,6 +16,7 @@ const AutoMixDJ = require('../src/renderer/automix-dj.js');
 const { PlaybackHandover } = require('../src/renderer/automix/playback-handover.js');
 const { TrackAnalyzer } = require('../src/renderer/automix/track-analyzer.js');
 const { TransitionPlanner } = require('../src/renderer/automix/transition-planner.js');
+const { VolumeSyncSuppressionManager, volumeSyncSuppression } = require('../src/renderer/automix/suppression-controller.js');
 
 test('AutoMixDJ - pickTempoSyncedNext enforces strict +/- 6% threshold and harmonic matching', () => {
   const dj = new AutoMixDJ();
@@ -576,3 +577,184 @@ test('PlaybackHandover - _autoMixSuppressVolumeSync ownership generation token p
     global.window = originalWindow;
   }
 });
+
+test('AutoMixDJ & PlaybackHandover - unified VolumeSyncSuppression ownership (Cases F, G, H, I)', async () => {
+  const originalWindow = global.window;
+  const suppressionMgr = new VolumeSyncSuppressionManager();
+
+  global.window = {
+    _autoMixSuppressVolumeSync: false,
+    _autoMixSuppressOwnerToken: null,
+    _autoMixSuppressOwner: null,
+    volumeSyncSuppression: suppressionMgr,
+    VolumeSyncSuppressionManager,
+    dispatchEvent: () => {},
+    audioEngine: {
+      setDeckGains: () => {},
+      fadeGain: { gain: { setValueAtTime: () => {} } },
+      ctx: { currentTime: 0 }
+    }
+  };
+
+  const createMockAudio = (opts = {}) => ({
+    volume: opts.volume ?? 1.0,
+    playbackRate: 1.0,
+    paused: false,
+    currentTime: opts.currentTime || 0,
+    play: opts.play || (() => Promise.resolve()),
+    pause: () => {}
+  });
+
+  const createMockNative = (opts = {}) => {
+    let listeners = {};
+    return {
+      src: opts.src || 'http://test/init.mp3',
+      readyState: opts.readyState || 0,
+      muted: false,
+      currentTime: 0,
+      listeners,
+      addEventListener: (ev, cb) => { listeners[ev] = cb; },
+      removeEventListener: (ev) => { delete listeners[ev]; },
+      play: opts.play || (() => Promise.resolve())
+    };
+  };
+
+  try {
+    // Case F: AutoMixDJ abort timeout (80ms) vs PlaybackHandover token acquisition
+    // Crossfade starts and aborts. Before 80ms timeout fires, PlaybackHandover acquires a new token.
+    // When the 80ms timeout fires, it must NOT clear suppression or overwrite Handover's owner token.
+    {
+      suppressionMgr.reset();
+      const dj = new AutoMixDJ({ enabled: true, durationSec: 4.0 });
+      const outAudio = createMockAudio({ volume: 1.0 });
+      const inAudio = createMockAudio({ volume: 0 });
+
+      const fadePromise = dj.executeCrossfade(outAudio, inAudio, 4.0);
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, true, 'AutoMixDJ acquired suppression');
+      const djToken = global.window._autoMixSuppressOwnerToken;
+      assert.ok(djToken, 'DJ token exists');
+
+      // Abort crossfade (triggers 80ms timeout)
+      dj.abortCrossfade('skip');
+      await fadePromise.catch(() => {});
+
+      // Immediately, PlaybackHandover acquires ownership
+      const handover = new PlaybackHandover();
+      const nativeAudio = createMockNative();
+      const auxAudio = createMockAudio({ currentTime: 15 });
+      const handoverToken = handover.createHandoverToken({ id: 'track-handover-f' }, auxAudio, 1);
+      handover.executeSwap(nativeAudio, auxAudio, handoverToken, {});
+
+      const handoverTokenId = global.window._autoMixSuppressOwnerToken;
+      assert.notStrictEqual(handoverTokenId, djToken, 'PlaybackHandover acquired a newer token');
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, true, 'Suppression remains active for Handover');
+
+      // Wait 120ms for AutoMixDJ 80ms timeout to fire
+      await new Promise(r => setTimeout(r, 120));
+
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, true, 'DJ abort 80ms timeout must NOT clear Handover suppression');
+      assert.strictEqual(global.window._autoMixSuppressOwnerToken, handoverTokenId, 'Owner token must remain Handover');
+    }
+
+    // Case G: AutoMixDJ play rejection timeout (50ms) vs PlaybackHandover
+    // Incoming audio play() rejects and schedules 50ms cleanup.
+    // PlaybackHandover starts before the 50ms expires.
+    // When the 50ms timeout fires, suppression must remain active under Handover's ownership.
+    {
+      suppressionMgr.reset();
+      const dj = new AutoMixDJ({ enabled: true, durationSec: 4.0 });
+      const outAudio = createMockAudio({ volume: 1.0 });
+      const inAudio = createMockAudio({
+        volume: 0,
+        play: () => Promise.reject(new Error('Audio policy blocked'))
+      });
+
+      let djTokenBeforeReject = null;
+      try {
+        const p = dj.executeCrossfade(outAudio, inAudio, 4.0);
+        djTokenBeforeReject = global.window._autoMixSuppressOwnerToken;
+        await p;
+      } catch (_) {}
+
+      // PlaybackHandover immediately takes over
+      const handover = new PlaybackHandover();
+      const nativeAudio = createMockNative();
+      const auxAudio = createMockAudio({ currentTime: 20 });
+      const handoverToken = handover.createHandoverToken({ id: 'track-handover-g' }, auxAudio, 2);
+      handover.executeSwap(nativeAudio, auxAudio, handoverToken, {});
+
+      const handoverTokenId = global.window._autoMixSuppressOwnerToken;
+      assert.notStrictEqual(handoverTokenId, djTokenBeforeReject, 'Handover has a fresh token');
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, true, 'Suppression enabled by Handover');
+
+      // Wait 100ms for AutoMixDJ 50ms timeout to fire
+      await new Promise(r => setTimeout(r, 100));
+
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, true, 'DJ play rejection 50ms timeout must NOT clear Handover suppression');
+      assert.strictEqual(global.window._autoMixSuppressOwnerToken, handoverTokenId, 'Owner token remains Handover');
+    }
+
+    // Case H: Crossfade succeeds, handover acquires token, old AutoMixDJ cleanup does not clear suppression,
+    // and handover releases its own token upon completion.
+    {
+      suppressionMgr.reset();
+      const dj = new AutoMixDJ({ enabled: true, durationSec: 0.2 });
+      const outAudio = createMockAudio({ volume: 1.0 });
+      const inAudio = createMockAudio({ volume: 0 });
+
+      // Short crossfade
+      const fadePromise = dj.executeCrossfade(outAudio, inAudio, 0.2);
+      const djToken = global.window._autoMixSuppressOwnerToken;
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, true, 'AutoMixDJ suppression started');
+
+      await fadePromise;
+
+      // Handover begins seamlessly
+      const handover = new PlaybackHandover();
+      const nativeAudio = createMockNative();
+      const auxAudio = inAudio;
+      const handoverToken = handover.createHandoverToken({ id: 'track-handover-h' }, auxAudio, 3);
+      handover.executeSwap(nativeAudio, auxAudio, handoverToken, {});
+
+      const handoverTokenId = global.window._autoMixSuppressOwnerToken;
+      assert.ok(handoverTokenId > djToken, 'Handover acquired newer generation token');
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, true, 'Suppression kept active across handover transition');
+
+      // Native audio gets loadedmetadata and playing event
+      nativeAudio.listeners['loadedmetadata']();
+      assert.ok(nativeAudio.listeners['playing'], 'Playing listener registered');
+      nativeAudio.listeners['playing'](); // triggers finishSwap
+
+      // Wait 120ms for Handover's 80ms delayed release
+      await new Promise(r => setTimeout(r, 120));
+
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, false, 'Handover releases suppression upon full completion');
+      assert.strictEqual(global.window._autoMixSuppressOwnerToken, null, 'Owner token cleared');
+    }
+
+    // Case I: AutoMixDJ abort without subsequent handover cleans up suppression to false and null
+    {
+      suppressionMgr.reset();
+      const dj = new AutoMixDJ({ enabled: true, durationSec: 5.0 });
+      const outAudio = createMockAudio({ volume: 1.0 });
+      const inAudio = createMockAudio({ volume: 0 });
+
+      const fadePromise = dj.executeCrossfade(outAudio, inAudio, 5.0);
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, true, 'Suppression enabled during fade');
+      assert.ok(global.window._autoMixSuppressOwnerToken, 'Token assigned to DJ');
+
+      dj.abortCrossfade('manual');
+      await fadePromise.catch(() => {});
+
+      // Wait 120ms for the 80ms abort timeout to fire
+      await new Promise(r => setTimeout(r, 120));
+
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, false, 'Suppression cleanly disabled when no handover took over');
+      assert.strictEqual(global.window._autoMixSuppressOwnerToken, null, 'Owner token reset to null');
+      assert.strictEqual(suppressionMgr.getCurrentToken(), null, 'Manager currentToken is null');
+    }
+  } finally {
+    global.window = originalWindow;
+  }
+});
+
