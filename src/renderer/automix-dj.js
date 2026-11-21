@@ -8,7 +8,9 @@ class AutoMixDJ {
     this.mode = options.mode || 'equal_power'; // 'equal_power' | 'linear' | 'tempo_synced'
     this.djFilter = options.djFilter !== false;
     this.autoDuration = !!options.autoDuration;
-    this.bpm = options.bpm || 120;
+    this.bpm = options.bpm || null;
+    this._detectedBpm = null;
+    this._bpmConfidence = 0;
     this._onsetTimes = [];
     this._lastBassEnergy = 0;
     this._lastOnsetMs = 0;
@@ -137,9 +139,18 @@ class AutoMixDJ {
       return { skip: true, reason: 'sync_room_active' };
     }
 
-    // 6. Continuous gapless same-album playback
-    if (context.gaplessSameAlbum && currentTrack?.album && nextTrack?.album && currentTrack.album === nextTrack.album) {
-      return { skip: true, reason: 'gapless_same_album' };
+    // 6. Continuous gapless same-album playback (using stable albumId if available, falling back to album + artist)
+    if (context.gaplessSameAlbum) {
+      const sameId = !!(currentTrack?.albumId && nextTrack?.albumId && currentTrack.albumId === nextTrack.albumId);
+      const sameNameAndArtist = !!(
+        !currentTrack?.albumId && !nextTrack?.albumId &&
+        currentTrack?.album && nextTrack?.album &&
+        currentTrack.album === nextTrack.album &&
+        (!currentTrack.artist || !nextTrack.artist || currentTrack.artist === nextTrack.artist)
+      );
+      if (sameId || sameNameAndArtist) {
+        return { skip: true, reason: 'gapless_same_album' };
+      }
     }
 
     return { skip: false };
@@ -330,25 +341,45 @@ class AutoMixDJ {
   }
 
   /**
-   * Sample bass-band onset energy from WebAudio AnalyserNode to estimate live BPM (70-175)
+   * Sample bass-band onset energy from WebAudio AnalyserNode to estimate live BPM (70-175).
+   * Calculates exact frequency bin indices from sampleRate and fftSize rather than hardcoded indices.
+   * Returns { bpm: number|null, confidence: number, source: 'live-analysis' }.
+   * Never fabricates a default 120 BPM when no reliable onsets are detected.
    */
   sampleLiveBpm(analyserNode) {
-    if (!analyserNode || typeof analyserNode.getByteFrequencyData !== 'function') return this.bpm;
-    if (!this._freqBuf || this._freqBuf.length !== analyserNode.frequencyBinCount) {
-      this._freqBuf = new Uint8Array(analyserNode.frequencyBinCount);
+    if (!analyserNode || typeof analyserNode.getByteFrequencyData !== 'function') {
+      return { bpm: null, confidence: 0, source: 'live-analysis' };
+    }
+    const binCount = analyserNode.frequencyBinCount || 0;
+    if (binCount <= 0) return { bpm: null, confidence: 0, source: 'live-analysis' };
+
+    if (!this._freqBuf || this._freqBuf.length !== binCount) {
+      this._freqBuf = new Uint8Array(binCount);
     }
     analyserNode.getByteFrequencyData(this._freqBuf);
-    // Low-end kick/bass bins (approx 40-180 Hz)
-    const endBin = Math.min(12, this._freqBuf.length);
+
+    // Exact Hz-to-bin mapping for kick/bass band (40Hz - 180Hz)
+    const sampleRate = (analyserNode.context && analyserNode.context.sampleRate) || 44100;
+    const fftSize = analyserNode.fftSize || (binCount * 2);
+    const binHz = sampleRate / fftSize;
+
+    const startBin = Math.max(0, Math.floor(40 / binHz));
+    const endBin = Math.min(binCount - 1, Math.max(startBin, Math.ceil(180 / binHz)));
+
     let bass = 0;
-    for (let i = 1; i < endBin; i++) bass += this._freqBuf[i];
-    bass /= Math.max(1, endBin - 1);
+    let count = 0;
+    for (let i = startBin; i <= endBin; i++) {
+      bass += this._freqBuf[i];
+      count++;
+    }
+    bass /= Math.max(1, count);
 
     const now = Date.now();
     if (bass > 145 && bass > this._lastBassEnergy * 1.18 && (now - this._lastOnsetMs) > 280) {
       this._lastOnsetMs = now;
       this._onsetTimes.push(now);
       if (this._onsetTimes.length > 24) this._onsetTimes.shift();
+
       if (this._onsetTimes.length >= 6) {
         const intervals = [];
         for (let i = 1; i < this._onsetTimes.length; i++) {
@@ -361,29 +392,60 @@ class AutoMixDJ {
           let est = Math.round(60000 / medianMs);
           while (est < 75) est *= 2;
           while (est > 175) est = Math.round(est / 2);
-          this.bpm = Math.round(this.bpm * 0.7 + est * 0.3);
+
+          // Compute variance-based confidence (tighter intervals = higher confidence)
+          let varianceSum = 0;
+          for (const dt of intervals) {
+            const relErr = Math.abs(dt - medianMs) / medianMs;
+            varianceSum += relErr;
+          }
+          const avgRelErr = varianceSum / intervals.length;
+          const sampleFactor = Math.min(1.0, intervals.length / 12);
+          const stabilityFactor = Math.max(0, 1.0 - avgRelErr * 3.0);
+          const confidence = Math.round(Math.min(0.85, sampleFactor * stabilityFactor * 0.85) * 100) / 100;
+
+          if (confidence >= 0.4) {
+            this._detectedBpm = this._detectedBpm
+              ? Math.round(this._detectedBpm * 0.7 + est * 0.3)
+              : est;
+            this._bpmConfidence = confidence;
+            this.bpm = this._detectedBpm;
+          }
         }
       }
     }
     this._lastBassEnergy = this._lastBassEnergy * 0.75 + bass * 0.25;
-    return this.bpm;
+    return {
+      bpm: this._detectedBpm,
+      confidence: this._bpmConfidence,
+      source: 'live-analysis'
+    };
   }
 
   resetLiveBpm() {
     this._onsetTimes = [];
     this._lastBassEnergy = 0;
     this._lastOnsetMs = 0;
+    this._detectedBpm = null;
+    this._bpmConfidence = 0;
+    this.bpm = null;
   }
 
   /**
-   * Pick the closest BPM/energy unplayed track in queue for Tempo Synced mode
-   * Enforces strict +/-6% harmonic compatibility; returns fallback sequential track if no match.
+   * Pick the closest BPM + harmonic key unplayed track in queue for Tempo Synced / DJ Mix mode.
+   * Enforces strict +/-6% BPM compatibility; incorporates Camelot harmonic scoring when available.
+   * Returns fallback sequential track if no verified BPM match is found.
    */
-  pickTempoSyncedNext(queue, currentIndex, playedIds, currentBpm = this.bpm) {
+  pickTempoSyncedNext(queue, currentIndex, playedIds, currentBpm = this.bpm, options = {}) {
     if (!Array.isArray(queue) || queue.length <= 1) return null;
     const played = playedIds instanceof Set ? playedIds : new Set();
+    const analyzer = options.analyzer || null;
+    const currentTrack = queue[currentIndex] || null;
+    const currentRecord = (analyzer && currentTrack && typeof analyzer.getCachedRecord === 'function') ? analyzer.getCachedRecord(currentTrack) : null;
+    const currentCamelot = options.currentCamelot || (currentRecord && currentRecord.camelot) || (currentTrack && currentTrack._camelot) || null;
+
     let best = null;
-    let bestDiffRatio = Infinity;
+    let bestScore = -Infinity;
 
     const validCurrentBpm = (typeof currentBpm === 'number' && currentBpm > 0) ? currentBpm : null;
 
@@ -395,10 +457,14 @@ class AutoMixDJ {
         const tid = t.id || t.videoId;
         if (tid && played.has(tid)) continue;
 
-        // Only trust verified detected BPM or metadata BPM (>0); do NOT fake BPM from duration
-        const tBpm = (typeof t._detectedBpm === 'number' && t._detectedBpm > 0)
-          ? t._detectedBpm
-          : ((typeof t.bpm === 'number' && t.bpm > 0) ? t.bpm : null);
+        const rec = (analyzer && typeof analyzer.getCachedRecord === 'function') ? analyzer.getCachedRecord(t) : null;
+
+        // Only trust verified detected BPM, analyzer record, or metadata BPM (>0); do NOT fake BPM from duration
+        const tBpm = (rec && typeof rec.bpm === 'number' && rec.bpm > 0 && (rec.bpmConfidence || 0) >= 0.4)
+          ? rec.bpm
+          : ((typeof t._detectedBpm === 'number' && t._detectedBpm > 0)
+            ? t._detectedBpm
+            : ((typeof t.bpm === 'number' && t.bpm > 0) ? t.bpm : null));
 
         if (!tBpm) continue;
 
@@ -407,9 +473,34 @@ class AutoMixDJ {
         for (const cand of candidates) {
           const ratio = validCurrentBpm / cand;
           const diffRatio = Math.abs(ratio - 1.0);
-          if (diffRatio <= 0.06 && diffRatio < bestDiffRatio) {
-            bestDiffRatio = diffRatio;
-            best = { track: t, index: i, targetBpm: cand, baseBpm: tBpm, compatible: true };
+          if (diffRatio <= 0.06) {
+            // BPM proximity score: 1.0 at exact match, 0.0 at 6% edge
+            const bpmScore = 1.0 - (diffRatio / 0.06);
+
+            // Harmonic compatibility score when Camelot keys exist on both tracks
+            const candCamelot = (rec && rec.camelot) || t._camelot || null;
+            let harmonic = { score: 0.5, relationship: 'unknown' };
+            if (currentCamelot && candCamelot && analyzer && typeof analyzer.scoreHarmonicCompatibility === 'function') {
+              harmonic = analyzer.scoreHarmonicCompatibility(currentCamelot, candCamelot);
+            }
+
+            const combinedScore = (currentCamelot && candCamelot)
+              ? (bpmScore * 0.65 + harmonic.score * 0.35)
+              : bpmScore;
+
+            if (combinedScore > bestScore) {
+              bestScore = combinedScore;
+              best = {
+                track: t,
+                index: i,
+                targetBpm: cand,
+                baseBpm: tBpm,
+                compatible: true,
+                harmonicScore: harmonic.score,
+                harmonicReason: harmonic.relationship,
+                camelot: candCamelot,
+              };
+            }
           }
         }
       }
@@ -417,7 +508,7 @@ class AutoMixDJ {
 
     // Fallback: if no track has verified BPM or matches within 6%, pick next sequential unplayed track without forcing fake tempo sync
     if (!best && currentIndex + 1 < queue.length) {
-      return { track: queue[currentIndex + 1], index: currentIndex + 1, targetBpm: validCurrentBpm || 120, fallback: true, compatible: false };
+      return { track: queue[currentIndex + 1], index: currentIndex + 1, targetBpm: validCurrentBpm || null, fallback: true, compatible: false };
     }
     return best;
   }
@@ -459,7 +550,7 @@ class AutoMixDJ {
       fade.interval = null;
     }
 
-    const { outgoingAudio, incomingAudio, inFilter, initialUserVol, useDeckGains, audioEngine } = fade;
+    const { outgoingAudio, incomingAudio, inFilter, outFilter, initialUserVol, useDeckGains, audioEngine } = fade;
 
     try {
       if (useDeckGains && audioEngine && typeof audioEngine.setDeckGains === 'function') {
@@ -486,6 +577,9 @@ class AutoMixDJ {
 
       if (inFilter && inFilter.context) {
         inFilter.frequency.setValueAtTime(20, inFilter.context.currentTime);
+      }
+      if (outFilter && outFilter.context) {
+        outFilter.frequency.setValueAtTime(20000, outFilter.context.currentTime);
       }
     } catch (_) {}
 
@@ -524,9 +618,12 @@ class AutoMixDJ {
           : this.computeTempoRatio(options.outgoingBpm || this.bpm, options.incomingBpm || this.bpm))
       : 1.0;
 
-    // Optional WebAudio DJ-Style Filter sweep (HPF 1400Hz -> 20Hz on incoming)
-    // Reuse existing auxiliary DSP source from AudioEngine; NEVER create a duplicate MediaElementAudioSourceNode
+    // Optional WebAudio DJ-Style Filter sweep:
+    // - Incoming HPF: 1400Hz -> 20Hz on Deck B
+    // - Outgoing LPF: 18000Hz -> 400Hz on Deck A
+    // Reuse existing DSP sources from AudioEngine; NEVER create a duplicate MediaElementAudioSourceNode
     let inFilter = null;
+    let outFilter = null;
     if (this.djFilter && typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext)) {
       try {
         const ctx = (audioEngine && audioEngine.ctx) || null;
@@ -552,9 +649,29 @@ class AutoMixDJ {
           // AudioEngine does not own an initialized auxiliary source yet — disable DJ filter cleanly rather than creating a duplicate MediaElementSource
           inFilter = null;
         }
+
+        if (ctx && audioEngine.source && audioEngine.deckAGain) {
+          if (!outgoingAudio._eclipseOutMixFilter) {
+            outgoingAudio._eclipseOutMixFilter = ctx.createBiquadFilter();
+            outgoingAudio._eclipseOutMixFilter.type = 'lowpass';
+            outgoingAudio._eclipseOutMixFilter.Q.value = 0.7;
+          }
+          outFilter = outgoingAudio._eclipseOutMixFilter;
+          outFilter.frequency.setValueAtTime(18000, ctx.currentTime);
+          try {
+            audioEngine.source.disconnect();
+            audioEngine.source.connect(outFilter);
+            outFilter.connect(audioEngine.deckAGain);
+          } catch (outRouteErr) {
+            console.warn('[AutoMixDJ] Failed to route outgoing LPF filter, restoring direct Deck A connection:', outRouteErr?.message || outRouteErr);
+            try { audioEngine.source.connect(audioEngine.deckAGain); } catch (_) {}
+            outFilter = null;
+          }
+        }
       } catch (filterErr) {
         console.warn('[AutoMixDJ] DJ filter setup disabled:', filterErr?.message || filterErr);
         inFilter = null;
+        outFilter = null;
       }
     }
 
@@ -581,7 +698,13 @@ class AutoMixDJ {
       if (typeof window !== 'undefined') {
         setTimeout(() => { window._autoMixSuppressVolumeSync = false; }, 50);
       }
-      // Rollback gains immediately to prevent fading outgoing into silence
+      // Rollback gains and filters immediately to prevent fading outgoing into silence or muffled LPF
+      if (outFilter && outFilter.context) {
+        try { outFilter.frequency.setValueAtTime(20000, outFilter.context.currentTime); } catch (_) {}
+      }
+      if (inFilter && inFilter.context) {
+        try { inFilter.frequency.setValueAtTime(20, inFilter.context.currentTime); } catch (_) {}
+      }
       if (useDeckGains) {
         audioEngine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 20 });
       } else if (useFadeGainNode) {
@@ -599,6 +722,7 @@ class AutoMixDJ {
         outgoingAudio,
         incomingAudio,
         inFilter,
+        outFilter,
         initialUserVol,
         useDeckGains,
         useFadeGainNode,
@@ -635,6 +759,9 @@ class AutoMixDJ {
             if (inFilter && inFilter.context) {
               inFilter.frequency.setValueAtTime(20, inFilter.context.currentTime);
             }
+            if (outFilter && outFilter.context) {
+              outFilter.frequency.setValueAtTime(20000, outFilter.context.currentTime);
+            }
           } catch (_) {}
           resolve(true);
           return;
@@ -645,6 +772,11 @@ class AutoMixDJ {
           // Logarithmic HPF sweep from 1400Hz down to 20Hz
           const freq = 1400 * Math.pow(20 / 1400, Math.min(1, progress));
           inFilter.frequency.setValueAtTime(Math.max(20, freq), inFilter.context.currentTime);
+        }
+        if (outFilter && outFilter.context) {
+          // Logarithmic LPF sweep from 18000Hz down to 400Hz
+          const outFreq = 18000 * Math.pow(400 / 18000, Math.min(1, progress));
+          outFilter.frequency.setValueAtTime(Math.max(400, outFreq), outFilter.context.currentTime);
         }
         try {
           if (useDeckGains) {

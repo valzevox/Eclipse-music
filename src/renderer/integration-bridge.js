@@ -225,22 +225,50 @@
           telemetry: automixTelemetry
         }) : null;
         const audioGraph = typeof window.AudioGraphManager !== 'undefined' ? new window.AudioGraphManager(window.audioEngine) : null;
+        const analysisCoordinator = typeof window.EclipseAnalysisCoordinator !== 'undefined' ? new window.EclipseAnalysisCoordinator({
+          analyzer: trackAnalyzer,
+          concurrency: 2,
+          onStatusChange: (status) => {
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('eclipse:analysis-status', { detail: status }));
+            }
+          }
+        }) : null;
 
         window._preloadManagerInstance = preloadManager;
         window._playbackHandoverInstance = playbackHandover;
         window._trackAnalyzerInstance = trackAnalyzer;
         window._transitionPlannerInstance = transitionPlanner;
         window._audioGraphInstance = audioGraph;
+        window._analysisCoordinatorInstance = analysisCoordinator;
 
-        // Live BPM sampler for Tempo Synced mode (lightweight 150ms tick only when playing)
+        // Trigger non-blocking background collection scan when track/queue changes in Tempo Synced / DJ Mix mode
+        const triggerCollectionScan = () => {
+          if (!analysisCoordinator || !window.autoMixDjInstance || !window.autoMixDjInstance.enabled) return;
+          const mode = window.autoMixDjInstance.mode;
+          if (mode !== 'tempo_synced' && mode !== 'dj_mix') return;
+          const st = getCoreState();
+          if (!st || !Array.isArray(st.queue) || st.queue.length === 0) return;
+          const contextId = `${st.queue.length}_${(st.queue[0] && (st.queue[0].id || st.queue[0].videoId)) || 'q'}`;
+          analysisCoordinator.scanCollection(st.queue, contextId, { currentIndex: st.queueIndex || 0 }).catch(() => {});
+        };
+        window.addEventListener('trackchanged', triggerCollectionScan);
+
+        // Live BPM sampler for Tempo Synced / DJ Mix mode (lightweight 150ms tick only when playing)
         setInterval(() => {
-          if (!window.autoMixDjInstance || !window.autoMixDjInstance.enabled || window.autoMixDjInstance.mode !== 'tempo_synced') return;
+          if (!window.autoMixDjInstance || !window.autoMixDjInstance.enabled) return;
+          const mode = window.autoMixDjInstance.mode;
+          if (mode !== 'tempo_synced' && mode !== 'dj_mix' && mode !== 'smart') return;
           if (!nativeAudio || nativeAudio.paused || window.autoMixDjInstance.isCrossfading) return;
           const analyser = window.audioEngine && window.audioEngine.analyserNode;
           if (analyser && typeof window.autoMixDjInstance.sampleLiveBpm === 'function') {
-            const bpm = window.autoMixDjInstance.sampleLiveBpm(analyser);
+            const sample = window.autoMixDjInstance.sampleLiveBpm(analyser);
             const st = getCoreState();
-            if (st && st.currentTrack) st.currentTrack._detectedBpm = bpm;
+            if (st && st.currentTrack && sample && typeof sample.bpm === 'number' && sample.bpm > 0 && sample.confidence >= 0.4) {
+              st.currentTrack._detectedBpm = sample.bpm;
+              st.currentTrack._bpmConfidence = sample.confidence;
+              st.currentTrack._bpmSource = sample.source || 'live-analysis';
+            }
           }
         }, 150);
 
@@ -328,12 +356,13 @@
             let currentTrackBpm = trackAnalyzer ? trackAnalyzer.getEffectiveBpm(currentTrack) : ((currentTrack && currentTrack._detectedBpm) || null);
             let pickedCandidate = null;
 
-            if (window.autoMixDjInstance.mode === 'tempo_synced' && typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function') {
+            if ((window.autoMixDjInstance.mode === 'tempo_synced' || window.autoMixDjInstance.mode === 'dj_mix') && typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function') {
               pickedCandidate = window.autoMixDjInstance.pickTempoSyncedNext(
                 st.queue,
                 st.queueIndex,
                 st.autoMixPlayedIds,
-                currentTrackBpm
+                currentTrackBpm,
+                { analyzer: trackAnalyzer }
               );
               if (pickedCandidate && pickedCandidate.track) {
                 targetNextTrack = pickedCandidate.track;
@@ -400,10 +429,10 @@
               nextTrack = targetNextTrack;
               nextIdx = targetNextIdx;
 
-              const keepAlbumsContinuous = localStorage.getItem('eclipse_automix_skip_album') !== '0';
+              const keepAlbumsContinuous = localStorage.getItem('eclipse_automix_skip_album') !== '0' || window.autoMixDjInstance.mode === 'gapless_album';
               const skipCheck = typeof window.autoMixDjInstance.shouldSkipCrossfade === 'function'
                 ? window.autoMixDjInstance.shouldSkipCrossfade(currentTrack, nextTrack, {
-                    gaplessSameAlbum: keepAlbumsContinuous && window.autoMixDjInstance.mode !== 'tempo_synced',
+                    gaplessSameAlbum: keepAlbumsContinuous,
                     isVideoMode: !!(window.eclipseMvPlayer && window.eclipseMvPlayer.isVideoMode),
                     isRepeatOne: !!(st.isRepeat || st.repeatMode === 1 || st.repeatMode === 'one'),
                     inSyncRoom: !!(window.syncRoomInstance && typeof window.syncRoomInstance.isActiveRoom === 'function' && window.syncRoomInstance.isActiveRoom())
