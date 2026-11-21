@@ -269,7 +269,13 @@
               : (window.autoMixDjInstance.durationSec || 6.0);
             const threshold = Math.max(2, Math.min(15, autoDur));
 
-            if (dur > 20 && remaining <= threshold && remaining > 0.8) {
+            // Smart Outro & Intro Transition Planning (Outro energy-drop / Chorus end -> Intro beat-start)
+            const offsets = typeof window.autoMixDjInstance.getSmartTransitionOffsets === 'function'
+              ? window.autoMixDjInstance.getSmartTransitionOffsets(currentTrack, null, nextTrack?.introSec || null)
+              : { fadeOutStart: Math.max(0, dur - threshold), fadeInSkip: 0 };
+            const effectiveThreshold = Math.max(threshold, dur - offsets.fadeOutStart);
+
+            if (dur > 20 && (remaining <= effectiveThreshold || cur >= offsets.fadeOutStart) && remaining > 0.8) {
               if (st.isRepeat || st.repeatMode === 1 || st.repeatMode === 'one') return;
               let targetBpm = window.autoMixDjInstance.bpm || 120;
 
@@ -318,7 +324,8 @@
               if (auxAudio.src !== nextStreamUrl) {
                 auxAudio.src = nextStreamUrl;
               }
-              auxAudio.currentTime = 0;
+              const smartIntroSkip = Math.max(0, Math.min(15, Number(offsets.fadeInSkip) || 0));
+              auxAudio.currentTime = smartIntroSkip;
 
               // Graceful fallback: verify auxAudio readiness (readyState >= 2) before attempting crossfade
               const waitForAuxReady = () => {
