@@ -442,12 +442,16 @@ class AutoMixDJ {
     const analyzer = options.analyzer || null;
     const currentTrack = queue[currentIndex] || null;
     const currentRecord = (analyzer && currentTrack && typeof analyzer.getCachedRecord === 'function') ? analyzer.getCachedRecord(currentTrack) : null;
-    const currentCamelot = options.currentCamelot || (currentRecord && currentRecord.camelot) || (currentTrack && currentTrack._camelot) || null;
+    const currentCamelot = options.currentCamelot || (currentRecord && currentRecord.key && currentRecord.key.camelot) || (currentTrack && currentTrack._camelot) || null;
 
     let best = null;
     let bestScore = -Infinity;
 
-    const validCurrentBpm = (typeof currentBpm === 'number' && currentBpm > 0) ? currentBpm : null;
+    const validCurrentBpm = (typeof currentBpm === 'number' && currentBpm > 0)
+      ? currentBpm
+      : ((currentRecord && currentRecord.tempo && typeof currentRecord.tempo.bpm === 'number' && currentRecord.tempo.bpm > 0 && (currentRecord.tempo.confidence || 0) >= 0.4)
+        ? currentRecord.tempo.bpm
+        : null);
 
     if (validCurrentBpm) {
       for (let i = 0; i < queue.length; i++) {
@@ -459,10 +463,13 @@ class AutoMixDJ {
 
         const rec = (analyzer && typeof analyzer.getCachedRecord === 'function') ? analyzer.getCachedRecord(t) : null;
 
-        // Only trust verified detected BPM, analyzer record, or metadata BPM (>0); do NOT fake BPM from duration
-        const tBpm = (rec && typeof rec.bpm === 'number' && rec.bpm > 0 && (rec.bpmConfidence || 0) >= 0.4)
-          ? rec.bpm
-          : ((typeof t._detectedBpm === 'number' && t._detectedBpm > 0)
+        // Read BPM strictly from TrackAnalyzer record.tempo.bpm (with confidence >= 0.4),
+        // verified live _detectedBpm, or explicit track.bpm metadata. Never fabricate BPM.
+        const recBpm = (rec && rec.tempo && typeof rec.tempo.bpm === 'number' && rec.tempo.bpm > 0 && (rec.tempo.confidence || 0) >= 0.4)
+          ? rec.tempo.bpm
+          : null;
+        const tBpm = recBpm
+          || ((typeof t._detectedBpm === 'number' && t._detectedBpm > 0)
             ? t._detectedBpm
             : ((typeof t.bpm === 'number' && t.bpm > 0) ? t.bpm : null));
 
@@ -477,8 +484,8 @@ class AutoMixDJ {
             // BPM proximity score: 1.0 at exact match, 0.0 at 6% edge
             const bpmScore = 1.0 - (diffRatio / 0.06);
 
-            // Harmonic compatibility score when Camelot keys exist on both tracks
-            const candCamelot = (rec && rec.camelot) || t._camelot || null;
+            // Harmonic compatibility score when Camelot keys exist on both tracks (record.key.camelot)
+            const candCamelot = (rec && rec.key && rec.key.camelot) || t._camelot || null;
             let harmonic = { score: 0.5, relationship: 'unknown' };
             if (currentCamelot && candCamelot && analyzer && typeof analyzer.scoreHarmonicCompatibility === 'function') {
               harmonic = analyzer.scoreHarmonicCompatibility(currentCamelot, candCamelot);
@@ -612,7 +619,8 @@ class AutoMixDJ {
     const useDeckGains = !!(audioEngine && typeof audioEngine.setDeckGains === 'function');
     const useFadeGainNode = !useDeckGains && !!(audioEngine && audioEngine.fadeGain && audioEngine.ctx);
 
-    const startInRate = (this.mode === 'tempo_synced' && options.tempoSynced !== false)
+    const isTempoMode = (this.mode === 'tempo_synced' || this.mode === 'dj_mix');
+    const startInRate = (isTempoMode && options.tempoSynced !== false)
       ? (typeof options.tempoRatio === 'number' && Number.isFinite(options.tempoRatio)
           ? options.tempoRatio
           : this.computeTempoRatio(options.outgoingBpm || this.bpm, options.incomingBpm || this.bpm))
@@ -793,7 +801,7 @@ class AutoMixDJ {
             incomingAudio.volume = Math.max(0, Math.min(initialUserVol, gains.fadeInGain * initialUserVol));
           }
 
-          if (this.mode === 'tempo_synced' && options.tempoSynced !== false && startInRate !== 1.0) {
+          if (isTempoMode && options.tempoSynced !== false && startInRate !== 1.0) {
             incomingAudio.playbackRate = 1.0 + (startInRate - 1.0) * (1.0 - progress);
           }
         } catch (_) {}

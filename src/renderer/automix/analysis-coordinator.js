@@ -6,7 +6,9 @@
  * with bounded concurrency, priority ordering (current + next tracks first),
  * cancellation on context/mode switch, and isolated per-track error handling.
  *
- * Does NOT block playback. Integrates with TrackAnalyzer cache.
+ * Distinguishes strictly between PCM audio analysis, cached audio analysis,
+ * metadata-only fallback, and analysis failures. Never reports `ready` when
+ * only metadata was processed.
  */
 (function (root) {
     'use strict';
@@ -20,10 +22,12 @@
 
             this._activeJob = null;
             this._status = {
-                state: 'idle', // idle | scanning | partial | ready | cancelled | error
+                state: 'idle', // idle | scanning | metadata_only | partial | ready | cancelled | error
                 contextId: null,
                 total: 0,
                 completed: 0,
+                pcmAnalyzed: 0,
+                metadataOnly: 0,
                 cached: 0,
                 failed: 0,
                 activeWorkers: 0,
@@ -72,6 +76,8 @@
                     contextId: contextId || null,
                     total: 0,
                     completed: 0,
+                    pcmAnalyzed: 0,
+                    metadataOnly: 0,
                     cached: 0,
                     failed: 0,
                     activeWorkers: 0,
@@ -83,7 +89,8 @@
             // Cancel previous scan if a different context or restart is requested
             this.cancel();
 
-            const maxTracks = Math.min(tracks.length, Number(options.maxTracks) || 50);
+            // Bounded lookahead window so we never unconditionally download an entire huge playlist
+            const maxTracks = Math.min(tracks.length, Number(options.maxTracks) || 8);
             const currentIndex = Math.max(0, Number(options.currentIndex) || 0);
 
             // Priority order: current track, next tracks after current, then preceding tracks
@@ -119,6 +126,8 @@
                 contextId: contextId || null,
                 total: ordered.length,
                 completed: 0,
+                pcmAnalyzed: 0,
+                metadataOnly: 0,
                 cached: 0,
                 failed: 0,
                 activeWorkers: 0,
@@ -135,11 +144,11 @@
 
                     this._status.activeWorkers++;
                     try {
-                        // Skip if already cached with audio-analysis
+                        // Cache hit: strictly match TrackAnalyzer schema (source === 'audio-analysis' && status === 'analyzed')
                         const existing = (this.analyzer && typeof this.analyzer.getCachedRecord === 'function')
                             ? this.analyzer.getCachedRecord(track)
                             : null;
-                        if (existing && existing.bpmSource === 'audio-analysis' && existing.keySource === 'audio-analysis') {
+                        if (existing && existing.source === 'audio-analysis' && existing.status === 'analyzed') {
                             this._status.cached++;
                             this._status.completed++;
                             this._emitStatus();
@@ -149,14 +158,21 @@
                         if (this.decodeAudio && this.analyzer) {
                             const pcm = await this.decodeAudio(track, abortController ? abortController.signal : undefined);
                             if (job.cancelled) break;
-                            if (pcm && pcm.samples && pcm.sampleRate) {
-                                this.analyzer.analyzeTrack(track, pcm.samples, pcm.sampleRate);
+                            if (pcm && pcm.samples && pcm.samples.length > 0 && pcm.sampleRate > 0) {
+                                const rec = this.analyzer.analyzeTrack(track, pcm.samples, pcm.sampleRate);
+                                if (rec && rec.source === 'audio-analysis') {
+                                    this._status.pcmAnalyzed++;
+                                } else {
+                                    this._status.metadataOnly++;
+                                }
                             } else {
-                                // Still record metadata-only analysis without fabricating BPM/key
+                                // Metadata-only fallback without fabricating BPM/key
                                 this.analyzer.analyzeTrack(track, null, null);
+                                this._status.metadataOnly++;
                             }
                         } else if (this.analyzer) {
                             this.analyzer.analyzeTrack(track, null, null);
+                            this._status.metadataOnly++;
                         }
 
                         if (!job.cancelled) {
@@ -184,9 +200,12 @@
             await Promise.all(workers);
 
             if (!job.cancelled && this._activeJob === job) {
+                const audioReadyCount = this._status.pcmAnalyzed + this._status.cached;
                 if (this._status.failed > 0 && this._status.failed === this._status.total) {
                     this._status.state = 'error';
-                } else if (this._status.failed > 0) {
+                } else if (audioReadyCount === 0 && this._status.metadataOnly > 0) {
+                    this._status.state = 'metadata_only';
+                } else if (this._status.failed > 0 || audioReadyCount < this._status.total) {
                     this._status.state = 'partial';
                 } else {
                     this._status.state = 'ready';

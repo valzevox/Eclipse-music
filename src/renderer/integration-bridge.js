@@ -106,7 +106,7 @@
           ? Math.max(1, Math.min(15, storedCrossfade))
           : 6.0;
         const storedMode = localStorage.getItem('eclipse_automix_mode');
-        const initialMode = (storedMode === 'equal_power' || storedMode === 'tempo_synced')
+        const initialMode = (storedMode === 'equal_power' || storedMode === 'tempo_synced' || storedMode === 'dj_mix')
           ? storedMode
           : 'equal_power';
 
@@ -115,8 +115,7 @@
           durationSec: initialDurationSec,
           mode: initialMode,
           djFilter: localStorage.getItem('eclipse_automix_dj_filter') !== '0',
-          autoDuration: localStorage.getItem('eclipse_automix_auto') === '1',
-          bpm: 120
+          autoDuration: localStorage.getItem('eclipse_automix_auto') === '1'
         });
 
         window.syncAutoMixSettings = function (opts = {}) {
@@ -143,9 +142,12 @@
               try { localStorage.setItem('eclipse_automix', '0'); } catch (_) {}
             }
           }
-          if (opts.mode === 'equal_power' || opts.mode === 'tempo_synced') {
+          if (opts.mode === 'equal_power' || opts.mode === 'tempo_synced' || opts.mode === 'dj_mix') {
             cfg.mode = opts.mode;
             try { localStorage.setItem('eclipse_automix_mode', opts.mode); } catch (_) {}
+            if (window._analysisCoordinatorInstance && opts.mode === 'equal_power') {
+              window._analysisCoordinatorInstance.cancel();
+            }
           }
           if (window.autoMixDjInstance && typeof window.autoMixDjInstance.configure === 'function') {
             window.autoMixDjInstance.configure(cfg);
@@ -225,8 +227,51 @@
           telemetry: automixTelemetry
         }) : null;
         const audioGraph = typeof window.AudioGraphManager !== 'undefined' ? new window.AudioGraphManager(window.audioEngine) : null;
+        const decodeTrackPcmBounded = async (track, signal) => {
+          if (!track || (signal && signal.aborted)) return null;
+          const AudioCtx = (typeof window !== 'undefined') && (window.AudioContext || window.webkitAudioContext);
+          if (!AudioCtx) return null;
+
+          // Resolve local path, direct stream URL, or internal proxy URL safely
+          let url = track.localPath || track.fileUrl || track.streamUrl || null;
+          if (!url && track.id) {
+            const apiBase = getInternalApiBase();
+            const token = getInternalApiToken();
+            if (apiBase) {
+              url = `${apiBase}/api/stream/${encodeURIComponent(track.id)}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+            }
+          }
+          if (!url) return null;
+
+          const headers = { Range: 'bytes=0-524287' }; // Bounded 512KB window (~15-30s of compressed audio)
+          const resp = await fetch(url, { headers, signal });
+          if (!resp.ok || (signal && signal.aborted)) return null;
+          const arrayBuf = await resp.arrayBuffer();
+          if (!arrayBuf || arrayBuf.byteLength < 4096 || (signal && signal.aborted)) return null;
+
+          const ctx = (window.audioEngine && window.audioEngine.ctx) ? window.audioEngine.ctx : new AudioCtx();
+          const ownedCtx = !(window.audioEngine && window.audioEngine.ctx);
+          try {
+            const decoded = await ctx.decodeAudioData(arrayBuf.slice(0));
+            if (!decoded || decoded.length === 0) return null;
+            const ch0 = decoded.getChannelData(0);
+            let samples = ch0;
+            if (decoded.numberOfChannels > 1) {
+              const ch1 = decoded.getChannelData(1);
+              samples = new Float32Array(decoded.length);
+              for (let i = 0; i < decoded.length; i++) samples[i] = (ch0[i] + ch1[i]) * 0.5;
+            }
+            return { samples, sampleRate: decoded.sampleRate };
+          } finally {
+            if (ownedCtx && typeof ctx.close === 'function') {
+              ctx.close().catch(() => {});
+            }
+          }
+        };
+
         const analysisCoordinator = typeof window.EclipseAnalysisCoordinator !== 'undefined' ? new window.EclipseAnalysisCoordinator({
           analyzer: trackAnalyzer,
+          decodeAudio: decodeTrackPcmBounded,
           concurrency: 2,
           onStatusChange: (status) => {
             if (typeof window !== 'undefined') {
@@ -250,7 +295,7 @@
           const st = getCoreState();
           if (!st || !Array.isArray(st.queue) || st.queue.length === 0) return;
           const contextId = `${st.queue.length}_${(st.queue[0] && (st.queue[0].id || st.queue[0].videoId)) || 'q'}`;
-          analysisCoordinator.scanCollection(st.queue, contextId, { currentIndex: st.queueIndex || 0 }).catch(() => {});
+          analysisCoordinator.scanCollection(st.queue, contextId, { currentIndex: st.queueIndex || 0, maxTracks: 6 }).catch(() => {});
         };
         window.addEventListener('trackchanged', triggerCollectionScan);
 

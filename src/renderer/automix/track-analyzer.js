@@ -64,6 +64,12 @@ class TrackAnalyzer {
     return rec;
   }
 
+  invalidateTrack(track) {
+    const id = this.getStableTrackId(track);
+    if (!id) return false;
+    return this.cache.delete(id);
+  }
+
   setCachedRecord(track, record) {
     const id = this.getStableTrackId(track);
     if (!id || !record) return;

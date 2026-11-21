@@ -174,7 +174,7 @@ describe('Phase B — AnalysisCoordinator Concurrency, Cancellation & Error Isol
     assert.equal(finalStatus.total, 4);
     assert.equal(finalStatus.completed, 4);
     assert.equal(finalStatus.failed, 1);
-    assert.ok(analyzer.getCachedRecord(tracks[0]).bpm !== null);
+    assert.ok(analyzer.getCachedRecord(tracks[0]).tempo.bpm !== null);
   });
 
   it('cancels active scan cleanly when cancel() is called', async () => {
@@ -200,7 +200,7 @@ describe('Phase B — AnalysisCoordinator Concurrency, Cancellation & Error Isol
   });
 });
 
-describe('Phase D — Harmonic-Aware Candidate Ranking', () => {
+describe('Phase D — Harmonic-Aware Candidate Ranking & End-to-End PCM Schema', () => {
   it('prefers harmonically compatible track when BPM is equal', () => {
     const analyzer = new TrackAnalyzer();
     const dj = new AutoMixDJ({ enabled: true, mode: 'tempo_synced' });
@@ -214,5 +214,185 @@ describe('Phase D — Harmonic-Aware Candidate Ranking', () => {
     assert.equal(picked.track.id, 'harm');
     assert.equal(picked.compatible, true);
     assert.equal(picked.harmonicReason, 'adjacent_camelot');
+  });
+
+  it('end-to-end: analyzeTrack() from synthetic PCM drives pickTempoSyncedNext() via record.tempo.bpm and record.key.camelot', () => {
+    const analyzer = new TrackAnalyzer();
+    const dj = new AutoMixDJ({ enabled: true, mode: 'dj_mix' });
+
+    // Mix 120 BPM click + chord PCM so each track has authentic analyzed BPM & Key
+    const mixPcm = (bpm, freqs) => {
+      const clicks = makeClickTrackPcm(bpm, 6, 22050);
+      const chord = makeChordPcm(freqs, 6, 22050);
+      const out = new Float32Array(clicks.length);
+      for (let i = 0; i < out.length; i++) out[i] = clicks[i] * 0.7 + chord[i] * 0.3;
+      return out;
+    };
+
+    // Tracks have NO metadata bpm or _camelot — picker MUST read analyzer record.tempo.bpm & record.key.camelot
+    const tCurr = { id: 'pcm-curr', title: 'Current C Maj 120' };
+    const tClash = { id: 'pcm-clash', title: 'Clash F# Maj 120' };
+    const tMatch = { id: 'pcm-match', title: 'Match G Maj 120' };
+
+    const rCurr = analyzer.analyzeTrack(tCurr, mixPcm(120, [261.63, 329.63, 392.0, 523.25]), 22050); // C Maj -> 8B
+    const rClash = analyzer.analyzeTrack(tClash, mixPcm(120, [185.0, 233.08, 277.18, 369.99]), 22050); // F# Maj -> 2B
+    const rMatch = analyzer.analyzeTrack(tMatch, mixPcm(120, [196.0, 246.94, 293.66, 392.0]), 22050); // G Maj -> 9B
+
+    assert.equal(rCurr.source, 'audio-analysis');
+    assert.equal(rCurr.key.camelot, '8B');
+    assert.equal(rClash.key.camelot, '2B');
+    assert.equal(rMatch.key.camelot, '9B');
+
+    const picked = dj.pickTempoSyncedNext([tCurr, tClash, tMatch], 0, new Set(), null, { analyzer });
+    assert.ok(picked !== null, 'Expected picker to select a candidate from PCM-analyzed records');
+    assert.equal(picked.track.id, 'pcm-match');
+    assert.equal(picked.camelot, '9B');
+    assert.equal(picked.harmonicReason, 'adjacent_camelot');
+  });
+
+  it('FFT 2048 at 44.1kHz isolates 40-180Hz bass band and ignores >2kHz treble spikes', () => {
+    const dj = new AutoMixDJ({ enabled: true, mode: 'dj_mix' });
+    const makeAnalyser = (fillFn) => ({
+      frequencyBinCount: 1024,
+      fftSize: 2048,
+      context: { sampleRate: 44100 },
+      getByteFrequencyData(buf) {
+        buf.fill(0);
+        fillFn(buf);
+      }
+    });
+
+    // High-frequency spike at bins 100..200 (~2153Hz..4306Hz) must NOT trigger bass onset
+    dj.sampleLiveBpm(makeAnalyser((buf) => {
+      for (let i = 100; i <= 200; i++) buf[i] = 250;
+    }));
+    assert.equal(dj._onsetTimes.length, 0, 'Treble energy must not trigger bass onset');
+
+    // Bass spike at bins 2..8 (~43Hz..172Hz) MUST trigger bass onset
+    dj.sampleLiveBpm(makeAnalyser((buf) => {
+      for (let i = 2; i <= 8; i++) buf[i] = 220;
+    }));
+    assert.equal(dj._onsetTimes.length, 1, '40-180Hz bass energy at FFT 2048 must trigger onset');
+  });
+
+  it('AnalysisCoordinator reports metadata_only (never ready) without PCM, and hits cache + invalidation cleanly', async () => {
+    const analyzer = new TrackAnalyzer();
+
+    // 1. Without decodeAudio -> metadata_only (NOT ready)
+    const metaCoord = new AnalysisCoordinator({ analyzer, decodeAudio: null, concurrency: 2 });
+    const metaStatus = await metaCoord.scanCollection([{ id: 'm1', bpm: 120 }, { id: 'm2' }], 'meta-ctx');
+    assert.equal(metaStatus.state, 'metadata_only');
+    assert.equal(metaStatus.pcmAnalyzed, 0);
+    assert.equal(metaStatus.metadataOnly, 2);
+
+    // 2. With decodeAudio -> ready on first pass, cached on second pass, re-analyzed after invalidateTrack
+    let decodeCalls = 0;
+    const pcmCoord = new AnalysisCoordinator({
+      analyzer,
+      concurrency: 2,
+      decodeAudio: async () => {
+        decodeCalls++;
+        return { samples: makeClickTrackPcm(120, 4, 22050), sampleRate: 22050 };
+      }
+    });
+
+    const t1 = { id: 'cache-t1' };
+    const first = await pcmCoord.scanCollection([t1], 'ctx-1');
+    assert.equal(first.state, 'ready');
+    assert.equal(first.pcmAnalyzed, 1);
+    assert.equal(decodeCalls, 1);
+
+    const second = await pcmCoord.scanCollection([t1], 'ctx-1');
+    assert.equal(second.state, 'ready');
+    assert.equal(second.cached, 1);
+    assert.equal(decodeCalls, 1, 'Second scan must hit cache without re-decoding');
+
+    assert.equal(analyzer.invalidateTrack(t1), true);
+    const third = await pcmCoord.scanCollection([t1], 'ctx-1');
+    assert.equal(third.pcmAnalyzed, 1);
+    assert.equal(decodeCalls, 2, 'Invalidated track must be re-decoded');
+  });
+
+  it('DJ filter frequency history sweeps incoming HPF & outgoing LPF and cleans up on success, abort, and play() reject', async () => {
+    const prevWindow = global.window;
+    const createMockFilter = () => {
+      const history = [];
+      return {
+        type: '',
+        Q: { value: 0 },
+        context: { currentTime: 0 },
+        frequency: {
+          setValueAtTime(val) { history.push(val); }
+        },
+        connect() {},
+        disconnect() {},
+        history
+      };
+    };
+
+    const filters = [];
+    const mockAudioEngine = {
+      ctx: {
+        state: 'running',
+        currentTime: 0,
+        createBiquadFilter() {
+          const f = createMockFilter();
+          filters.push(f);
+          return f;
+        }
+      },
+      source: { disconnect() {}, connect() {} },
+      auxMediaSource: { disconnect() {}, connect() {} },
+      deckAGain: {},
+      deckBGain: {},
+      lastGains: null,
+      setDeckGains(g) { this.lastGains = g; }
+    };
+
+    global.window = {
+      AudioContext: function () {},
+      audioEngine: mockAudioEngine,
+      dispatchEvent() {}
+    };
+
+    try {
+      // 1. Success path in dj_mix mode (also verifies tempoRatio applied in dj_mix)
+      const dj = new AutoMixDJ({ enabled: true, mode: 'dj_mix', djFilter: true });
+      const outA = { volume: 1, playbackRate: 1, pause() {} };
+      const inA = { volume: 1, playbackRate: 1, play: async () => {} };
+
+      const ok = await dj.executeCrossfade(outA, inA, 0.22, { tempoRatio: 1.04, tempoSynced: true });
+      assert.equal(ok, true);
+      const inFilter = inA._eclipseMixFilter;
+      const outFilter = outA._eclipseOutMixFilter;
+      assert.equal(inFilter.type, 'highpass');
+      assert.equal(outFilter.type, 'lowpass');
+      assert.equal(inFilter.history[0], 1400);
+      assert.equal(inFilter.history[inFilter.history.length - 1], 20);
+      assert.equal(outFilter.history[0], 18000);
+      assert.equal(outFilter.history[outFilter.history.length - 1], 20000);
+      assert.deepEqual({ a: mockAudioEngine.lastGains.deckA, b: mockAudioEngine.lastGains.deckB }, { a: 0, b: 1 });
+
+      // 2. Abort mid-fade resets both filters
+      const outB = { volume: 1, playbackRate: 1, pause() {} };
+      const inB = { volume: 1, playbackRate: 1, play: async () => {}, pause() {} };
+      const fadePromise = dj.executeCrossfade(outB, inB, 1.0, { tempoRatio: 1.0 });
+      await new Promise(r => setTimeout(r, 70));
+      dj.abortCrossfade('skip');
+      await assert.rejects(fadePromise, /aborted/);
+      assert.equal(inB._eclipseMixFilter.history.at(-1), 20);
+      assert.equal(outB._eclipseOutMixFilter.history.at(-1), 20000);
+
+      // 3. incomingAudio.play() rejection resets filters and restores Deck A=1, Deck B=0
+      const outC = { volume: 1, playbackRate: 1, pause() {} };
+      const inC = { volume: 1, playbackRate: 1, play: async () => { throw new Error('NotAllowedError'); } };
+      await assert.rejects(dj.executeCrossfade(outC, inC, 0.3), /Incoming audio play failed/);
+      assert.equal(inC._eclipseMixFilter.history.at(-1), 20);
+      assert.equal(outC._eclipseOutMixFilter.history.at(-1), 20000);
+      assert.deepEqual({ a: mockAudioEngine.lastGains.deckA, b: mockAudioEngine.lastGains.deckB }, { a: 1, b: 0 });
+    } finally {
+      await new Promise(r => setTimeout(r, 100));
+      global.window = prevWindow;
+    }
   });
 });

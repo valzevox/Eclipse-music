@@ -243,7 +243,7 @@
 
           this.masterGain = this.ctx.createGain();
           this.analyserNode = this.ctx.createAnalyser();
-          this.analyserNode.fftSize = 128;
+          this.analyserNode.fftSize = 2048;
           this.analyserNode.smoothingTimeConstant = 0.8;
 
           this.normGain = this.ctx.createGain();
@@ -890,7 +890,7 @@
 
     setHidden(hidden) {
       if (this.analyserNode) {
-        this.analyserNode.fftSize = hidden ? 32 : 128;
+        this.analyserNode.fftSize = hidden ? 512 : 2048;
       }
       if (hidden) this.setAnalyserEnabled(false);
     }
