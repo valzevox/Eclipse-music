@@ -8,7 +8,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const { extractBoundedPcm, parseContentRange, decodeWithFfmpeg } = require('../src/server/pcm-extractor.js');
+const { extractBoundedPcm, parseContentRange, decodeWithFfmpeg, DEFAULT_MAX_INPUT_BYTES, DEFAULT_MAX_AGGREGATE_INPUT_BYTES } = require('../src/server/pcm-extractor.js');
+const { validateMediaTargetUrl } = require('../src/server/ssrf-guard.js');
 const { TrackAnalyzer } = require('../src/renderer/automix/track-analyzer.js');
 const { AnalysisCoordinator } = require('../src/renderer/automix/analysis-coordinator.js');
 const { resolveTrackSourceUrl, computeQueueContextId } = require('../src/renderer/automix/source-resolver.js');
@@ -85,30 +86,37 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
   let mp3Buf = null;
   let m4aFastBuf = null;
   let m4aMoovEndBuf = null;
+  let m4aLargeMoovEndBuf = null;
+  let largeM4aBytesServed = 0;
   let hasFfmpeg = false;
 
   before(async () => {
     wav22k = buildWavFixtureBuffer(120, 6, 22050);
     wav44k = buildWavFixtureBuffer(120, 6, 44100);
 
-    // Generate real MP3, faststart M4A, and moov-at-end M4A fixtures via ffmpeg if available
+    // Generate real MP3, faststart M4A, moov-at-end M4A, and >512KB moov-at-end M4A fixtures via ffmpeg
     const probe = spawnSync('ffmpeg', ['-version'], { windowsHide: true });
     hasFfmpeg = probe.status === 0;
     if (hasFfmpeg) {
       tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-pcm-test-'));
       const wavPath = path.join(tmpDir, 'src.wav');
+      const wavLongPath = path.join(tmpDir, 'src-long.wav');
       const mp3Path = path.join(tmpDir, 'fixture.mp3');
       const m4aFastPath = path.join(tmpDir, 'fixture-fast.m4a');
       const m4aEndPath = path.join(tmpDir, 'fixture-moov-end.m4a');
+      const m4aLargeEndPath = path.join(tmpDir, 'fixture-large-moov-end.m4a');
       fs.writeFileSync(wavPath, wav44k);
+      fs.writeFileSync(wavLongPath, buildWavFixtureBuffer(120, 38, 44100));
 
       spawnSync('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', wavPath, '-c:a', 'libmp3lame', '-b:a', '128k', mp3Path], { windowsHide: true });
       spawnSync('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', wavPath, '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', m4aFastPath], { windowsHide: true });
       spawnSync('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', wavPath, '-c:a', 'aac', '-b:a', '128k', m4aEndPath], { windowsHide: true });
+      spawnSync('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', wavLongPath, '-c:a', 'aac', '-b:a', '128k', m4aLargeEndPath], { windowsHide: true });
 
       if (fs.existsSync(mp3Path)) mp3Buf = fs.readFileSync(mp3Path);
       if (fs.existsSync(m4aFastPath)) m4aFastBuf = fs.readFileSync(m4aFastPath);
       if (fs.existsSync(m4aEndPath)) m4aMoovEndBuf = fs.readFileSync(m4aEndPath);
+      if (fs.existsSync(m4aLargeEndPath)) m4aLargeMoovEndBuf = fs.readFileSync(m4aLargeEndPath);
     }
 
     server = http.createServer((req, res) => {
@@ -117,6 +125,14 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
       if (req.url === '/fixture.mp3' && mp3Buf) return serveBufferWithRange(req, res, mp3Buf, 'audio/mpeg');
       if (req.url === '/fixture-fast.m4a' && m4aFastBuf) return serveBufferWithRange(req, res, m4aFastBuf, 'audio/mp4');
       if (req.url === '/fixture-moov-end.m4a' && m4aMoovEndBuf) return serveBufferWithRange(req, res, m4aMoovEndBuf, 'audio/mp4');
+      if (req.url === '/fixture-large-moov-end.m4a' && m4aLargeMoovEndBuf) {
+        const origEnd = res.end.bind(res);
+        res.end = (chunk, ...rest) => {
+          if (chunk) largeM4aBytesServed += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
+          return origEnd(chunk, ...rest);
+        };
+        return serveBufferWithRange(req, res, m4aLargeMoovEndBuf, 'audio/mp4');
+      }
 
       if (req.url === '/missing') { res.writeHead(404); return res.end('Not Found'); }
       if (req.url === '/live.m3u8' || req.url === '/hls-header') {
@@ -273,28 +289,43 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
     assert.ok(Math.abs(recMp3.tempo.bpm - 120) <= 3, `MP3 BPM mismatch: ${recMp3.tempo.bpm}`);
     assert.equal(recMp3.key.camelot, '8B');
 
-    // 3. Faststart M4A
-    const httpM4aFast = await extractBoundedPcm(`${baseUrl}/fixture-fast.m4a`, { maxInputBytes: 524288 });
+    // 3. Faststart M4A + TrackAnalyzer BPM/Key verification
+    const httpM4aFast = await extractBoundedPcm(`${baseUrl}/fixture-fast.m4a`, {
+      maxInputBytes: DEFAULT_MAX_INPUT_BYTES,
+      maxAggregateInputBytes: DEFAULT_MAX_AGGREGATE_INPUT_BYTES
+    });
     assert.equal(httpM4aFast.sampleRate, 22050);
     assert.ok(httpM4aFast.samples.length > 22050 * 4);
+    const recM4aFast = analyzer.analyzeTrack({ id: 'm4a-fast' }, httpM4aFast.samples, httpM4aFast.sampleRate);
+    assert.ok(Math.abs(recM4aFast.tempo.bpm - 120) <= 3, `Faststart M4A BPM mismatch: ${recM4aFast.tempo.bpm}`);
+    assert.equal(recM4aFast.key.camelot, '8B');
+    assert.ok(recM4aFast.tempo.confidence >= 0.4, `Faststart M4A low tempo confidence: ${recM4aFast.tempo.confidence}`);
 
-    // 4. moov-at-end M4A: small initial prefix forces ffmpeg-seek fallback; verify aggregate bytesRead <= budget
-    const budget = 300000;
-    const httpM4aEnd = await extractBoundedPcm(`${baseUrl}/fixture-moov-end.m4a`, {
-      maxInputBytes: 16384,
-      maxAggregateInputBytes: budget
+    // 4. Production-equivalent moov-at-EOF M4A (> 512 KB) with EXACT /api/analyze-pcm production options
+    assert.ok(m4aLargeMoovEndBuf && m4aLargeMoovEndBuf.length > DEFAULT_MAX_INPUT_BYTES, 'Large moov-at-EOF M4A fixture must exceed 512 KB');
+    largeM4aBytesServed = 0;
+    const httpM4aLarge = await extractBoundedPcm(`${baseUrl}/fixture-large-moov-end.m4a`, {
+      maxInputBytes: DEFAULT_MAX_INPUT_BYTES,
+      maxAggregateInputBytes: DEFAULT_MAX_AGGREGATE_INPUT_BYTES
     });
-    assert.equal(httpM4aEnd.decoder, 'ffmpeg-seek');
-    assert.equal(httpM4aEnd.sampleRate, 22050);
-    assert.ok(httpM4aEnd.samples.length > 22050 * 4);
-    assert.ok(httpM4aEnd.bytesRead > 16384, 'Aggregate bytesRead must include seek requests, not only initial probe');
-    assert.ok(httpM4aEnd.bytesRead <= budget, `Aggregate bytesRead ${httpM4aEnd.bytesRead} exceeded budget ${budget}`);
+    assert.equal(httpM4aLarge.decoder, 'ffmpeg-seek');
+    assert.equal(httpM4aLarge.sampleRate, 22050);
+    assert.ok(httpM4aLarge.samples.length > 22050 * 4);
+    assert.ok(httpM4aLarge.bytesRead > DEFAULT_MAX_INPUT_BYTES, 'Aggregate bytesRead must include seek requests beyond 512 KB initial probe');
+    assert.ok(httpM4aLarge.bytesRead <= DEFAULT_MAX_AGGREGATE_INPUT_BYTES, `Aggregate bytesRead ${httpM4aLarge.bytesRead} exceeded production budget`);
+    assert.ok(largeM4aBytesServed > DEFAULT_MAX_INPUT_BYTES, 'Independent fixture server byte counter must confirm seek requests');
+    assert.ok(largeM4aBytesServed <= DEFAULT_MAX_AGGREGATE_INPUT_BYTES + 65536, `Independent server bytes served (${largeM4aBytesServed}) exceeded bounded budget`);
 
-    // 5. moov-at-end M4A with overly tight aggregate budget MUST fail explicitly without exceeding budget
+    const recM4aLarge = analyzer.analyzeTrack({ id: 'm4a-moov-end' }, httpM4aLarge.samples, httpM4aLarge.sampleRate);
+    assert.ok(Math.abs(recM4aLarge.tempo.bpm - 120) <= 3, `moov-at-EOF M4A BPM mismatch: ${recM4aLarge.tempo.bpm}`);
+    assert.equal(recM4aLarge.key.camelot, '8B');
+    assert.ok(recM4aLarge.tempo.confidence >= 0.4, `moov-at-EOF M4A low tempo confidence: ${recM4aLarge.tempo.confidence}`);
+
+    // 5. Production-equivalent moov-at-EOF M4A with deliberately too-small aggregate budget MUST fail cleanly
     await assert.rejects(
-      extractBoundedPcm(`${baseUrl}/fixture-moov-end.m4a`, {
-        maxInputBytes: 16384,
-        maxAggregateInputBytes: 24576
+      extractBoundedPcm(`${baseUrl}/fixture-large-moov-end.m4a`, {
+        maxInputBytes: DEFAULT_MAX_INPUT_BYTES,
+        maxAggregateInputBytes: 540000
       }),
       /Aggregate input byte budget exceeded/
     );
@@ -328,8 +359,24 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
     await assert.rejects(p, /Aborted/);
   });
 
-  it('Actual server routes /api/analyze-pcm & /api/audio-proxy: enforces auth & SSRF protection against private/loopback URLs', async () => {
+  it('Actual server routes /api/analyze-pcm & /api/audio-proxy: enforces auth, shared SSRF guard (nested proxy/IPv6/DNS) & positive local media analysis', async () => {
+    // 0. Unit checks on shared validateMediaTargetUrl (IPv6 ULA, link-local, IPv4-mapped IPv6, DNS-to-private)
+    assert.equal((await validateMediaTargetUrl('http://[fc00::1]/a.mp3', { allowSelfMedia: false })).ok, false);
+    assert.equal((await validateMediaTargetUrl('http://[fe80::1]/a.mp3', { allowSelfMedia: false })).ok, false);
+    assert.equal((await validateMediaTargetUrl('http://[::ffff:127.0.0.1]/a.mp3', { allowSelfMedia: false })).ok, false);
+    assert.equal((await validateMediaTargetUrl('http://100.64.0.1/a.mp3', { allowSelfMedia: false })).ok, false);
+    const dnsPrivate = await validateMediaTargetUrl('http://internal.example.test/a.mp3', {
+      allowSelfMedia: false,
+      lookupImpl: async () => [{ address: '10.1.2.3', family: 4 }]
+    });
+    assert.equal(dnsPrivate.ok, false);
+
     const port = await startServer(0);
+    const { resolveDownloadDir } = require('../src/shared/platform.js');
+    const dlDir = resolveDownloadDir() || path.join(os.homedir(), 'Downloads');
+    const tmpName = `__eclipse_test_pcm_${Date.now()}.wav`;
+    const tmpPath = path.join(dlDir, tmpName);
+    let createdTmp = false;
     try {
       const apiBase = `http://127.0.0.1:${port}`;
       const token = getServerToken();
@@ -338,19 +385,45 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
       const unauth = await fetch(`${apiBase}/api/analyze-pcm?url=${encodeURIComponent(`${baseUrl}/fixture-22k.wav`)}`);
       assert.ok(unauth.status === 401 || unauth.status === 403, `Expected 401/403, got ${unauth.status}`);
 
-      // 2. Arbitrary loopback & link-local SSRF targets MUST be rejected with 403
+      // 2. Arbitrary loopback, link-local & nested /api/audio-proxy -> private IP MUST be rejected with 403
       const ssrfLoopback = await fetch(`${apiBase}/api/analyze-pcm?url=${encodeURIComponent(`${baseUrl}/fixture-22k.wav`)}&token=${encodeURIComponent(token)}`);
       assert.equal(ssrfLoopback.status, 403);
 
       const ssrfMetadata = await fetch(`${apiBase}/api/analyze-pcm?url=${encodeURIComponent('http://169.254.169.254/latest/meta-data/')}&token=${encodeURIComponent(token)}`);
       assert.equal(ssrfMetadata.status, 403);
 
-      // 3. /api/audio-proxy enforces SSRF protection (403 on 127.0.0.1 loopback)
+      const nestedProxyPrivate = `${apiBase}/api/audio-proxy?url=${encodeURIComponent('http://10.0.0.1/secret.mp3')}&token=${encodeURIComponent(token)}`;
+      const ssrfNested = await fetch(`${apiBase}/api/analyze-pcm?url=${encodeURIComponent(nestedProxyPrivate)}&token=${encodeURIComponent(token)}`);
+      assert.equal(ssrfNested.status, 403);
+
+      // 3. /api/audio-proxy enforces SSRF protection (403 on loopback & RFC1918 & IPv6 ULA)
       const proxyResp = await fetch(`${apiBase}/api/audio-proxy?url=${encodeURIComponent(`${baseUrl}/fixture-22k.wav`)}&token=${encodeURIComponent(token)}`, {
         headers: { Range: 'bytes=0-4095' }
       });
       assert.equal(proxyResp.status, 403);
+
+      const proxyIpv6 = await fetch(`${apiBase}/api/audio-proxy?url=${encodeURIComponent('http://[fc00::1]/secret.mp3')}&token=${encodeURIComponent(token)}`);
+      assert.equal(proxyIpv6.status, 403);
+
+      // 4. Positive end-to-end check: approved local Eclipse media route (/api/downloaded-track) -> /api/analyze-pcm
+      fs.mkdirSync(dlDir, { recursive: true });
+      fs.writeFileSync(tmpPath, wav22k);
+      createdTmp = true;
+
+      const dlUrl = `${apiBase}/api/downloaded-track?name=${encodeURIComponent(tmpName)}&token=${encodeURIComponent(token)}`;
+      const rangeResp = await fetch(dlUrl, { headers: { Range: 'bytes=0-1023' } });
+      assert.equal(rangeResp.status, 206);
+
+      const pcmResp = await fetch(`${apiBase}/api/analyze-pcm?url=${encodeURIComponent(dlUrl)}&token=${encodeURIComponent(token)}`);
+      assert.equal(pcmResp.status, 200);
+      assert.equal(Number(pcmResp.headers.get('x-pcm-sample-rate')), 22050);
+      assert.equal(pcmResp.headers.get('x-pcm-decoder'), 'wav');
+      const pcmBuf = await pcmResp.arrayBuffer();
+      assert.ok(pcmBuf.byteLength > 22050 * 4 * 4, 'Positive /api/analyze-pcm must return real Float32Array PCM payload');
     } finally {
+      if (createdTmp) {
+        try { fs.unlinkSync(tmpPath); } catch (_) {}
+      }
       await stopServer();
     }
   });

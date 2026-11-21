@@ -11,7 +11,8 @@ const { spawn } = require('child_process');
 
 const DEFAULT_TARGET_SAMPLE_RATE = 22050;
 const DEFAULT_MAX_DURATION_SEC = 20;
-const DEFAULT_MAX_INPUT_BYTES = 524288; // 512 KB cap
+const DEFAULT_MAX_INPUT_BYTES = 524288; // 512 KB initial probe cap
+const DEFAULT_MAX_AGGREGATE_INPUT_BYTES = 2097152; // 2 MB aggregate cap for seek fallback (moov-at-EOF M4A)
 const DEFAULT_TIMEOUT_MS = 12000;
 
 /**
@@ -415,16 +416,15 @@ async function decodeUrlWithFfmpeg(sourceUrl, options = {}) {
           res.destroy();
           return;
         }
-        const remaining = maxAggregateBytes - aggregateBytesRead;
-        if (chunk.length > remaining) {
-          aggregateBytesRead += Math.max(0, remaining);
+        // Always count the full received upstream chunk (never under-report)
+        aggregateBytesRead += chunk.length;
+        if (aggregateBytesRead > maxAggregateBytes) {
           budgetExceeded = true;
           upRes.destroy();
           res.destroy();
           internalAc.abort();
           return;
         }
-        aggregateBytesRead += chunk.length;
         if (!res.writableEnded) res.write(chunk);
       });
 
@@ -520,10 +520,12 @@ async function extractBoundedPcm(sourceUrl, options = {}) {
     // 3. M4A/MP4 with moov atom at EOF: use bounded seek-capable FFmpeg HTTP Range proxy
     //    accounting for EVERY byte across initial probe + all seek requests.
     if (isIsoBmffContainer(fetched.buffer, fetched.contentType) && fetched.rangeSupported) {
+      const seekBudget = Number(options.maxAggregateInputBytes)
+        || Math.max(DEFAULT_MAX_AGGREGATE_INPUT_BYTES, (Number(options.maxInputBytes) || DEFAULT_MAX_INPUT_BYTES) * 2);
       const seekDecoded = await decodeUrlWithFfmpeg(sourceUrl, {
         ...options,
         initialBytesRead: fetched.bytesRead,
-        maxAggregateInputBytes: options.maxAggregateInputBytes || Math.max(DEFAULT_MAX_INPUT_BYTES, Number(options.maxInputBytes) || DEFAULT_MAX_INPUT_BYTES)
+        maxAggregateInputBytes: seekBudget
       });
       return {
         samples: seekDecoded.samples,
@@ -549,5 +551,6 @@ module.exports = {
   DEFAULT_TARGET_SAMPLE_RATE,
   DEFAULT_MAX_DURATION_SEC,
   DEFAULT_MAX_INPUT_BYTES,
+  DEFAULT_MAX_AGGREGATE_INPUT_BYTES,
   DEFAULT_TIMEOUT_MS
 };

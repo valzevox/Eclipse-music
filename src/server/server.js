@@ -3884,10 +3884,11 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
       res.writeHead(400);
       return res.end('Unsupported protocol');
     }
-    const hostLower = (parsed.hostname || '').toLowerCase();
-    if (hostLower === 'localhost' || hostLower === '127.0.0.1' || hostLower === '::1') {
+    const { validateMediaTargetUrl } = require('./ssrf-guard');
+    const ssrfCheck = await validateMediaTargetUrl(targetUrl, { allowSelfMedia: false });
+    if (!ssrfCheck.ok) {
       res.writeHead(403);
-      return res.end('Blocked target');
+      return res.end(ssrfCheck.reason || 'Blocked target');
     }
 
     const client = parsed.protocol === 'https:' ? https : http;
@@ -10647,75 +10648,55 @@ if (parsedUrl.pathname === '/api/ytm/login-url') {
       return res.end(JSON.stringify({ error: 'Missing url parameter' }));
     }
 
-    // SSRF guard: allow only approved local Eclipse media endpoints on active port, or public HTTP(S) URLs
-    let targetParsed;
-    try {
-      targetParsed = new URL(sourceUrl);
-    } catch (_) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ error: 'Invalid url parameter' }));
-    }
-    if (targetParsed.protocol !== 'http:' && targetParsed.protocol !== 'https:') {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ error: 'Unsupported URL protocol' }));
-    }
-    const host = targetParsed.hostname.toLowerCase();
-    const activePort = String(getActiveServerPort());
-    const allowedLocalPaths = new Set(['/api/local-track', '/api/library-file', '/api/downloaded-track', '/api/audio-proxy']);
-    const isApprovedSelfMedia = (host === '127.0.0.1' && targetParsed.port === activePort && allowedLocalPaths.has(targetParsed.pathname));
-    const isPrivateOrLoopback = (
-      host === 'localhost' ||
-      host === '::1' ||
-      host === '[::1]' ||
-      /^127\./.test(host) ||
-      /^10\./.test(host) ||
-      /^192\.168\./.test(host) ||
-      /^169\.254\./.test(host) ||
-      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
-      host === '0.0.0.0'
-    );
-    if (isPrivateOrLoopback && !isApprovedSelfMedia) {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ error: 'Blocked private/loopback target URL' }));
-    }
+    const { validateMediaTargetUrl } = require('./ssrf-guard');
+    return validateMediaTargetUrl(sourceUrl, {
+      activePort: getActiveServerPort(),
+      allowSelfMedia: true
+    }).then((check) => {
+      if (!check.ok) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: check.reason || 'Blocked target URL' }));
+      }
 
-    if (!global._eclipsePcmActiveDecodes) global._eclipsePcmActiveDecodes = 0;
-    if (global._eclipsePcmActiveDecodes >= 2) {
-      res.writeHead(429, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ error: 'PCM analyzer concurrency limit reached' }));
-    }
+      if (!global._eclipsePcmActiveDecodes) global._eclipsePcmActiveDecodes = 0;
+      if (global._eclipsePcmActiveDecodes >= 2) {
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'PCM analyzer concurrency limit reached' }));
+      }
 
-    const { extractBoundedPcm } = require('./pcm-extractor');
-    const ffmpegBin = typeof resolveBinary === 'function' ? (resolveBinary('ffmpeg') || 'ffmpeg') : 'ffmpeg';
-    const ac = new AbortController();
-    req.on('close', () => { try { ac.abort(); } catch (_) {} });
+      const { extractBoundedPcm, DEFAULT_MAX_INPUT_BYTES, DEFAULT_MAX_AGGREGATE_INPUT_BYTES } = require('./pcm-extractor');
+      const ffmpegBin = typeof resolveBinary === 'function' ? (resolveBinary('ffmpeg') || 'ffmpeg') : 'ffmpeg';
+      const ac = new AbortController();
+      req.on('close', () => { try { ac.abort(); } catch (_) {} });
 
-    global._eclipsePcmActiveDecodes++;
-    return extractBoundedPcm(sourceUrl, {
-      ffmpegBin,
-      signal: ac.signal,
-      maxDurationSec: 20,
-      maxInputBytes: 524288,
-      timeoutMs: 12000
-    }).then((result) => {
-      if (res.writableEnded || ac.signal.aborted) return;
-      const pcmBuf = Buffer.from(result.samples.buffer, result.samples.byteOffset, result.samples.byteLength);
-      res.writeHead(200, {
-        'Content-Type': 'application/octet-stream',
-        'Content-Length': String(pcmBuf.length),
-        'X-PCM-Sample-Rate': String(result.sampleRate),
-        'X-PCM-Bytes-Read': String(result.bytesRead),
-        'X-PCM-Range-Supported': result.rangeSupported ? '1' : '0',
-        'X-PCM-Decoder': result.decoder
+      global._eclipsePcmActiveDecodes++;
+      return extractBoundedPcm(sourceUrl, {
+        ffmpegBin,
+        signal: ac.signal,
+        maxDurationSec: 20,
+        maxInputBytes: DEFAULT_MAX_INPUT_BYTES,
+        maxAggregateInputBytes: DEFAULT_MAX_AGGREGATE_INPUT_BYTES,
+        timeoutMs: 12000
+      }).then((result) => {
+        if (res.writableEnded || ac.signal.aborted) return;
+        const pcmBuf = Buffer.from(result.samples.buffer, result.samples.byteOffset, result.samples.byteLength);
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(pcmBuf.length),
+          'X-PCM-Sample-Rate': String(result.sampleRate),
+          'X-PCM-Bytes-Read': String(result.bytesRead),
+          'X-PCM-Range-Supported': result.rangeSupported ? '1' : '0',
+          'X-PCM-Decoder': result.decoder
+        });
+        res.end(pcmBuf);
+      }).catch((err) => {
+        if (res.writableEnded) return;
+        const status = /Aborted/i.test(err.message) ? 499 : 422;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message || 'PCM extraction failed' }));
+      }).finally(() => {
+        global._eclipsePcmActiveDecodes = Math.max(0, (global._eclipsePcmActiveDecodes || 1) - 1);
       });
-      res.end(pcmBuf);
-    }).catch((err) => {
-      if (res.writableEnded) return;
-      const status = /Aborted/i.test(err.message) ? 499 : 422;
-      res.writeHead(status, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: err.message || 'PCM extraction failed' }));
-    }).finally(() => {
-      global._eclipsePcmActiveDecodes = Math.max(0, (global._eclipsePcmActiveDecodes || 1) - 1);
     });
   }
 
