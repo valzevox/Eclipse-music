@@ -4658,15 +4658,24 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     initAudioContext();
     el.nativeAudio.preload = 'auto';
 
-    try {
-      el.nativeAudio.pause();
-      el.nativeAudio.removeAttribute('src');
-      el.nativeAudio.load();
-    } catch (e) {}
+    // Zero-Gap Handover Guard: do not clear Deck A audio prematurely if autoMix handover is active
+    const isHandoverTarget = !!(state._autoMixHandover && (
+      track.id === state._autoMixHandover.trackId ||
+      (track.videoId && track.videoId === state._autoMixHandover.trackId) ||
+      (track._matchedYtId && track._matchedYtId === state._autoMixHandover.trackId)
+    ));
 
-    if (hlsInstance) {
-      try { hlsInstance.destroy(); } catch (e) {}
-      hlsInstance = null;
+    if (!isHandoverTarget) {
+      try {
+        el.nativeAudio.pause();
+        el.nativeAudio.removeAttribute('src');
+        el.nativeAudio.load();
+      } catch (e) {}
+
+      if (hlsInstance) {
+        try { hlsInstance.destroy(); } catch (e) {}
+        hlsInstance = null;
+      }
     }
 
     state.isPlaying = false;
@@ -8596,6 +8605,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       getQueue: () => Array.isArray(state.queue) ? state.queue : [],
       getQueueIndex: () => typeof state.queueIndex === 'number' ? state.queueIndex : -1,
       getNextTrack: () => (Array.isArray(state.queue) && state.queueIndex + 1 < state.queue.length) ? state.queue[state.queueIndex + 1] : null,
+      getCurrentSponsorSegments: () => Array.isArray(currentTrackSponsorSegments) ? currentTrackSponsorSegments : [],
       playNext: () => playNext()
     };
   }
@@ -8753,6 +8763,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       getQueue: () => Array.isArray(state.queue) ? state.queue : [],
       getQueueIndex: () => typeof state.queueIndex === 'number' ? state.queueIndex : -1,
       getNextTrack: () => (Array.isArray(state.queue) && state.queueIndex + 1 < state.queue.length) ? state.queue[state.queueIndex + 1] : null,
+      getCurrentSponsorSegments: () => Array.isArray(currentTrackSponsorSegments) ? currentTrackSponsorSegments : [],
       playNext: () => playNext()
     };
   }

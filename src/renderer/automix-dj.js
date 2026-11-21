@@ -15,6 +15,9 @@ class AutoMixDJ {
     this.targetLufs = options.targetLufs || -14.0;
     this.isCrossfading = false;
     this._currentFade = null;
+    this._energyHistory = [];
+    this._silenceDetectedSec = null;
+    this._lastEnergyCheckMs = 0;
   }
 
   configure(config = {}) {
@@ -37,6 +40,65 @@ class AutoMixDJ {
       targetLufs: this.targetLufs,
       isCrossfading: this.isCrossfading
     };
+  }
+
+  resetTrackEnergy() {
+    this._energyHistory = [];
+    this._silenceDetectedSec = null;
+    this._lastEnergyCheckMs = 0;
+  }
+
+  /**
+   * Real-time audio energy & outro silence detector via AnalyserNode
+   * Samples RMS energy and detects natural fade-out or dead air in the last 30s.
+   * Applies the 50% Outro Rule: if silence/drop starts at T_drop, transition fires at midpoint.
+   */
+  detectOutroEnergyDrop(analyserNode, currentTime, duration) {
+    if (!analyserNode || !currentTime || !duration || duration < 25) return null;
+    if (currentTime < duration - 30) {
+      if (this._energyHistory.length > 0 && currentTime < 10) this.resetTrackEnergy();
+      return null;
+    }
+
+    const now = Date.now();
+    if (now - this._lastEnergyCheckMs < 150) return this._silenceDetectedSec;
+    this._lastEnergyCheckMs = now;
+
+    if (!this._energyTimeBuf || this._energyTimeBuf.length !== analyserNode.frequencyBinCount) {
+      this._energyTimeBuf = new Uint8Array(analyserNode.frequencyBinCount);
+    }
+    analyserNode.getByteTimeDomainData(this._energyTimeBuf);
+
+    let sumSquares = 0;
+    const len = this._energyTimeBuf.length;
+    for (let i = 0; i < len; i++) {
+      const norm = (this._energyTimeBuf[i] - 128) / 128;
+      sumSquares += norm * norm;
+    }
+    const currentRms = Math.sqrt(sumSquares / len);
+
+    this._energyHistory.push(currentRms);
+    if (this._energyHistory.length > 60) this._energyHistory.shift();
+
+    if (this._energyHistory.length < 8) return null;
+
+    let totalRms = 0;
+    for (let i = 0; i < this._energyHistory.length; i++) totalRms += this._energyHistory[i];
+    const avgRms = totalRms / this._energyHistory.length;
+
+    // Outro silence threshold: RMS < 0.018 (silence) or sustained drop below 22% of song average
+    const isQuiet = currentRms < 0.018 || (avgRms > 0.06 && currentRms < avgRms * 0.22);
+    if (isQuiet) {
+      if (this._silenceDetectedSec === null) {
+        // Compute 50% point of remaining duration
+        const outroTailSec = Math.max(2.0, duration - currentTime);
+        this._silenceDetectedSec = currentTime + (outroTailSec / 2);
+      }
+    } else {
+      // Audio is still actively rocking
+      this._silenceDetectedSec = null;
+    }
+    return this._silenceDetectedSec;
   }
 
   /**
@@ -91,8 +153,10 @@ class AutoMixDJ {
     let duration = 0;
     let pcmEnvelope = null;
     let chorusOutroSec = null;
+    let currentTrackObj = null;
 
     if (typeof durationOrTrack === 'object' && durationOrTrack !== null) {
+      currentTrackObj = durationOrTrack;
       duration = Number(durationOrTrack.duration) || 0;
       pcmEnvelope = (Array.isArray(pcmEnergyEnvelopeOrChorus) || ArrayBuffer.isView(pcmEnergyEnvelopeOrChorus)) ? pcmEnergyEnvelopeOrChorus : null;
     } else {
@@ -106,9 +170,31 @@ class AutoMixDJ {
 
     let introEndSec = 0;
     let lastChorusEndSec = null;
-    let outroStartSec = null;
+    let rawOutroStartSec = null;
 
-    if (pcmEnvelope && (Array.isArray(pcmEnvelope) || ArrayBuffer.isView(pcmEnvelope)) && pcmEnvelope.length >= 8) {
+    // 0. Detect Outro via SponsorBlock segments (music_offtopic, outro, filler)
+    const sponsorSegs = (currentTrackObj && Array.isArray(currentTrackObj.sponsorSegments))
+      ? currentTrackObj.sponsorSegments
+      : (Array.isArray(pcmEnergyEnvelopeOrChorus) && pcmEnergyEnvelopeOrChorus.length > 0 && typeof pcmEnergyEnvelopeOrChorus[0] === 'object' && 'category' in pcmEnergyEnvelopeOrChorus[0]
+        ? pcmEnergyEnvelopeOrChorus
+        : (typeof window !== 'undefined' && window.EclipseCore && typeof window.EclipseCore.getCurrentSponsorSegments === 'function'
+          ? window.EclipseCore.getCurrentSponsorSegments()
+          : null));
+
+    if (Array.isArray(sponsorSegs) && sponsorSegs.length > 0) {
+      const outroSeg = sponsorSegs.find(s => {
+        if (!s || typeof s.start !== 'number' || s.start <= 0) return false;
+        const cat = String(s.category || '').toLowerCase();
+        const isOutroCat = cat === 'outro' || cat === 'music_offtopic' || cat === 'filler' || cat === 'preview';
+        return isOutroCat && (duration <= 0 || s.start >= duration * 0.45);
+      });
+      if (outroSeg) {
+        rawOutroStartSec = Math.round(outroSeg.start * 10) / 10;
+        lastChorusEndSec = rawOutroStartSec;
+      }
+    }
+
+    if (!rawOutroStartSec && pcmEnvelope && (Array.isArray(pcmEnvelope) || ArrayBuffer.isView(pcmEnvelope)) && pcmEnvelope.length >= 8) {
       const len = pcmEnvelope.length;
       const secPerPoint = duration > 0 ? duration / len : 1.0;
       let maxEnergy = 0;
@@ -133,36 +219,84 @@ class AutoMixDJ {
       const tailStartIndex = Math.floor(len * 0.65);
       for (let i = len - 2; i >= tailStartIndex; i--) {
         if ((pcmEnvelope[i] || 0) >= energyThresh) {
-          outroStartSec = Math.round((i + 1) * secPerPoint * 10) / 10;
-          lastChorusEndSec = outroStartSec;
+          rawOutroStartSec = Math.round((i + 1) * secPerPoint * 10) / 10;
+          lastChorusEndSec = rawOutroStartSec;
           break;
         }
       }
     }
 
-    if (!outroStartSec && typeof chorusOutroSec === 'number' && chorusOutroSec > 0) {
-      outroStartSec = chorusOutroSec;
+    if (!rawOutroStartSec && typeof chorusOutroSec === 'number' && chorusOutroSec > 0) {
+      rawOutroStartSec = chorusOutroSec;
       lastChorusEndSec = chorusOutroSec;
     }
 
-    // Fallback heuristic if no envelope or drop detected
-    if (!outroStartSec) {
-      outroStartSec = Math.max(0, duration - this.durationSec);
-    }
-    if (typeof nextIntroSec === 'number' && nextIntroSec > 0) {
-      introEndSec = nextIntroSec;
+    // 3. Detect Outro from synced lyrics timing: last vocal phrase end + natural 2.5s tail
+    if (!rawOutroStartSec) {
+      const lyrics = currentTrackObj?.syncedLyrics || (typeof window !== 'undefined' && window.EclipseCore?.state?.syncedLyrics);
+      if (Array.isArray(lyrics) && lyrics.length > 0) {
+        const timedLines = lyrics.filter(l => typeof l.time === 'number' && l.time > 0);
+        const lastLine = timedLines[timedLines.length - 1];
+        if (lastLine && lastLine.time > duration * 0.65 && lastLine.time < duration - 2) {
+          rawOutroStartSec = Math.min(duration - 2, Math.max(duration * 0.7, lastLine.time + 2.5));
+          lastChorusEndSec = rawOutroStartSec;
+        }
+      }
     }
 
-    const fadeOutStart = outroStartSec;
-    const fadeInSkip = Math.min(introEndSec, 15);
+    // 4. Default natural outro fallback (if no envelope or lyrics: last 12s-16s of a full song)
+    if (!rawOutroStartSec) {
+      const naturalOutroLength = duration > 60 ? Math.min(24, Math.max(12, duration * 0.08)) : this.durationSec;
+      rawOutroStartSec = Math.max(0, duration - naturalOutroLength);
+    }
+
+    // 50% Outro Rule: Let the first 50% of the outro play naturally, then start crossfade on the remaining 50%
+    const outroDuration = Math.max(3.0, duration - rawOutroStartSec);
+    const halfOutroDuration = outroDuration / 2;
+    const fadeOutStart = Math.round((rawOutroStartSec + halfOutroDuration) * 10) / 10;
+
+    // Detect Intro of next song: check SponsorBlock intro segment first, then synced lyrics / metadata
+    let nextIntroDuration = 0;
+    if (typeof nextIntroSec === 'number' && nextIntroSec > 0) {
+      nextIntroDuration = nextIntroSec;
+    } else if (typeof nextIntroSec === 'object' && nextIntroSec !== null) {
+      const nextSbSegs = Array.isArray(nextIntroSec.sponsorSegments) ? nextIntroSec.sponsorSegments : null;
+      if (nextSbSegs && nextSbSegs.length > 0) {
+        const introSeg = nextSbSegs.find(s => {
+          if (!s || typeof s.end !== 'number' || s.end <= 0) return false;
+          const cat = String(s.category || '').toLowerCase();
+          return (cat === 'intro' || cat === 'music_offtopic') && s.start <= 2 && s.end < 45;
+        });
+        if (introSeg) {
+          nextIntroDuration = Math.round(introSeg.end * 10) / 10;
+        }
+      }
+      if (!nextIntroDuration && typeof nextIntroSec.introSec === 'number' && nextIntroSec.introSec > 0) {
+        nextIntroDuration = nextIntroSec.introSec;
+      }
+      if (!nextIntroDuration) {
+        const nextLyrics = nextIntroSec.syncedLyrics;
+        if (Array.isArray(nextLyrics) && nextLyrics.length > 0) {
+          const firstTimed = nextLyrics.find(l => typeof l.time === 'number' && l.time > 0);
+          if (firstTimed && firstTimed.time > 2 && firstTimed.time < 35) {
+            nextIntroDuration = firstTimed.time;
+          }
+        }
+      }
+    }
+    // 50% Intro Rule: Start the incoming track at the midpoint of its intro (skip dead intro silence/intro build-up)
+    const fadeInSkip = nextIntroDuration > 3 ? Math.round((nextIntroDuration / 2) * 10) / 10 : 0;
+    const effectiveCrossfadeSec = Math.max(2.0, Math.min(15.0, halfOutroDuration));
 
     return {
       fadeOutStart,
       fadeInSkip,
-      introEndSec,
-      lastChorusEndSec: lastChorusEndSec || fadeOutStart,
-      outroStartSec,
-      crossfadeDuration: this.durationSec
+      introEndSec: nextIntroDuration,
+      lastChorusEndSec: lastChorusEndSec || rawOutroStartSec,
+      outroStartSec: rawOutroStartSec,
+      outroDuration,
+      halfOutroDuration,
+      crossfadeDuration: this.autoDuration ? effectiveCrossfadeSec : this.durationSec
     };
   }
 

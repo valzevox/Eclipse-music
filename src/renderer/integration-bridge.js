@@ -204,8 +204,9 @@
         window.addEventListener('trackchanged', () => {
           automixTriggeredForTrack = false;
           earlyPreloadStartedForTrack = false;
-          if (window.autoMixDjInstance && typeof window.autoMixDjInstance.resetLiveBpm === 'function') {
-            window.autoMixDjInstance.resetLiveBpm();
+          if (window.autoMixDjInstance) {
+            if (typeof window.autoMixDjInstance.resetLiveBpm === 'function') window.autoMixDjInstance.resetLiveBpm();
+            if (typeof window.autoMixDjInstance.resetTrackEnergy === 'function') window.autoMixDjInstance.resetTrackEnergy();
           }
         });
 
@@ -226,14 +227,33 @@
           if (nextTrack._preloadedStreamUrl) return nextTrack._preloadedStreamUrl;
           const qFallback = encodeURIComponent(nextTrack.searchQuery || ((nextTrack.artist ? nextTrack.artist + ' - ' : '') + (nextTrack.title || '')));
           const tkn = getInternalApiToken();
-          const url = `${getInternalApiBase()}/api/stream-info?id=${encodeURIComponent(nextTrack.id || '')}&url=${encodeURIComponent(nextTrack.url || '')}&platform=${encodeURIComponent(nextTrack.platform || 'ytmusic')}&title=${encodeURIComponent(nextTrack.title || '')}&artist=${encodeURIComponent(nextTrack.artist || '')}&duration=${encodeURIComponent(nextTrack.duration || 0)}&q=${qFallback}&token=${encodeURIComponent(tkn)}&t=${encodeURIComponent(tkn)}`;
+          const curQuality = (typeof localStorage !== 'undefined' && localStorage.getItem('eclipse_audio_quality')) || 'medium';
+          const url = `${getInternalApiBase()}/api/stream-info?id=${encodeURIComponent(nextTrack.id || '')}&url=${encodeURIComponent(nextTrack.url || '')}&platform=${encodeURIComponent(nextTrack.platform || 'ytmusic')}&title=${encodeURIComponent(nextTrack.title || '')}&artist=${encodeURIComponent(nextTrack.artist || '')}&duration=${encodeURIComponent(nextTrack.duration || 0)}&q=${qFallback}&quality=${encodeURIComponent(curQuality)}&token=${encodeURIComponent(tkn)}&t=${encodeURIComponent(tkn)}`;
           const res = await fetch(url, { headers: { 'X-Eclipse-Token': tkn, 'X-Muriel-Token': tkn } });
           const data = await res.json();
           if (data && data.success && (data.proxyUrl || data.streamUrl)) {
             nextTrack._preloadedStreamUrl = data.proxyUrl || data.streamUrl;
+            // Warm up initial audio chunk for instant readyState >= 2
+            if (typeof fetch === 'function' && typeof nextTrack._preloadedStreamUrl === 'string' && !nextTrack._preloadedStreamUrl.includes('.m3u8')) {
+              fetch(nextTrack._preloadedStreamUrl, { headers: { 'Range': 'bytes=0-262143' } }).catch(() => {});
+            }
             return nextTrack._preloadedStreamUrl;
           }
           return '';
+        }
+
+        async function prefetchSponsorSegmentsForTrack(track) {
+          if (!track || Array.isArray(track.sponsorSegments)) return;
+          const vid = track.id || track.videoId || '';
+          if (typeof vid !== 'string' || vid.length !== 11) return;
+          try {
+            const tkn = getInternalApiToken();
+            const res = await fetch(`${getInternalApiBase()}/api/sponsorblock?videoId=${encodeURIComponent(vid)}&token=${encodeURIComponent(tkn)}`);
+            const data = await res.json();
+            if (data && data.success && Array.isArray(data.segments)) {
+              track.sponsorSegments = data.segments;
+            }
+          } catch (_) {}
         }
 
         if (nativeAudio && auxAudio) {
@@ -249,16 +269,22 @@
             let nextIdx = st.queueIndex + 1;
             let nextTrack = nextIdx < st.queue.length ? st.queue[nextIdx] : null;
 
-            // 1. Early Stream Preloading at 25-30s before track ends
+            // 1. Early Stream Preloading & SponsorBlock Pre-fetching at 25-30s before track ends
             if (dur > 35 && remaining <= 28 && remaining > 16 && !earlyPreloadStartedForTrack) {
               earlyPreloadStartedForTrack = true;
-              if (nextTrack && !nextTrack._preloadedStreamUrl) {
-                resolveNextTrackStreamUrl(nextTrack).then(url => {
-                  if (url && auxAudio && !window.autoMixDjInstance?.isCrossfading && auxAudio.paused) {
-                    auxAudio.preload = 'auto';
-                    auxAudio.src = url;
-                  }
-                }).catch(() => {});
+              if (nextTrack) {
+                if (!nextTrack._preloadedStreamUrl) {
+                  resolveNextTrackStreamUrl(nextTrack).then(url => {
+                    if (url && auxAudio && !window.autoMixDjInstance?.isCrossfading && auxAudio.paused) {
+                      auxAudio.preload = 'auto';
+                      auxAudio.src = url;
+                    }
+                  }).catch(() => {});
+                }
+                prefetchSponsorSegmentsForTrack(nextTrack).catch(() => {});
+              }
+              if (currentTrack) {
+                prefetchSponsorSegmentsForTrack(currentTrack).catch(() => {});
               }
             }
 
@@ -269,13 +295,33 @@
               : (window.autoMixDjInstance.durationSec || 6.0);
             const threshold = Math.max(2, Math.min(15, autoDur));
 
-            // Smart Outro & Intro Transition Planning (Outro energy-drop / Chorus end -> Intro beat-start)
-            const offsets = typeof window.autoMixDjInstance.getSmartTransitionOffsets === 'function'
-              ? window.autoMixDjInstance.getSmartTransitionOffsets(currentTrack, null, nextTrack?.introSec || null)
-              : { fadeOutStart: Math.max(0, dur - threshold), fadeInSkip: 0 };
-            const effectiveThreshold = Math.max(threshold, dur - offsets.fadeOutStart);
+            // Smart Outro & Intro Transition Planning (50% Outro Rule & 50% Intro Rule via SponsorBlock / Synced Lyrics / Outro energy-drop)
+            const curSbSegments = (currentTrack && Array.isArray(currentTrack.sponsorSegments))
+              ? currentTrack.sponsorSegments
+              : (typeof window.EclipseCore?.getCurrentSponsorSegments === 'function'
+                ? window.EclipseCore.getCurrentSponsorSegments()
+                : null);
 
-            if (dur > 20 && (remaining <= effectiveThreshold || cur >= offsets.fadeOutStart) && remaining > 0.8) {
+            const offsets = typeof window.autoMixDjInstance.getSmartTransitionOffsets === 'function'
+              ? window.autoMixDjInstance.getSmartTransitionOffsets(currentTrack, curSbSegments, nextTrack || nextTrack?.introSec || null)
+              : { fadeOutStart: Math.max(0, dur - threshold), fadeInSkip: 0, crossfadeDuration: threshold };
+            let effectiveThreshold = Math.max(threshold, dur - offsets.fadeOutStart);
+            const plannedFadeDuration = Math.max(2.0, Math.min(15.0, offsets.crossfadeDuration || threshold));
+
+            // Real-time Analyser energy drop / outro silence check in final 30 seconds
+            let realTimeSilenceSec = null;
+            const analyser = window.audioEngine && window.audioEngine.analyserNode;
+            if (analyser && typeof window.autoMixDjInstance.detectOutroEnergyDrop === 'function') {
+              realTimeSilenceSec = window.autoMixDjInstance.detectOutroEnergyDrop(analyser, cur, dur);
+            }
+
+            const shouldTriggerTransition = (dur > 20 && remaining > 0.8) && (
+              remaining <= effectiveThreshold ||
+              cur >= offsets.fadeOutStart ||
+              (realTimeSilenceSec !== null && cur >= realTimeSilenceSec)
+            );
+
+            if (shouldTriggerTransition) {
               if (st.isRepeat || st.repeatMode === 1 || st.repeatMode === 'one') return;
               let targetBpm = window.autoMixDjInstance.bpm || 120;
 
@@ -368,12 +414,12 @@
               }
 
               window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
-                detail: { active: true, nextTrack, durationSec: threshold, mode: window.autoMixDjInstance.mode, bpm: window.autoMixDjInstance.bpm }
+                detail: { active: true, nextTrack, durationSec: plannedFadeDuration, mode: window.autoMixDjInstance.mode, bpm: window.autoMixDjInstance.bpm }
               }));
 
-              console.log(`[EclipseBridge] AutoMix (${window.autoMixDjInstance.mode}) crossfade (${remaining.toFixed(1)}s remaining, BPM ${window.autoMixDjInstance.bpm} -> ${targetBpm})...`);
+              console.log(`[EclipseBridge] AutoMix (${window.autoMixDjInstance.mode}) crossfade (${remaining.toFixed(1)}s remaining, fade: ${plannedFadeDuration.toFixed(1)}s, BPM ${window.autoMixDjInstance.bpm} -> ${targetBpm})...`);
               try {
-                await window.autoMixDjInstance.executeCrossfade(nativeAudio, auxAudio, Math.min(threshold, remaining - 0.25), {
+                await window.autoMixDjInstance.executeCrossfade(nativeAudio, auxAudio, Math.min(plannedFadeDuration, remaining - 0.25), {
                   outgoingBpm: (currentTrack && currentTrack._detectedBpm) || window.autoMixDjInstance.bpm || 120,
                   incomingBpm: targetBpm
                 });
