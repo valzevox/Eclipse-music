@@ -758,3 +758,52 @@ test('AutoMixDJ & PlaybackHandover - unified VolumeSyncSuppression ownership (Ca
   }
 });
 
+test('Architecture Boundary - only suppression-controller.js may mutate window._autoMixSuppress* globals', () => {
+  const fs = require('fs');
+  const path = require('path');
+
+  const srcDir = path.resolve(__dirname, '../src');
+  const filesToScan = [];
+
+  function walk(dir) {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        walk(full);
+      } else if (ent.isFile() && (full.endsWith('.js') || full.endsWith('.html'))) {
+        filesToScan.push(full);
+      }
+    }
+  }
+
+  walk(srcDir);
+
+  const assignmentRegex = /window\._autoMixSuppress(VolumeSync|OwnerToken|Owner)\s*=/g;
+  const violations = [];
+
+  for (const file of filesToScan) {
+    const rel = path.relative(path.resolve(__dirname, '..'), file).replace(/\\/g, '/');
+    if (rel === 'src/renderer/automix/suppression-controller.js') {
+      continue; // Exclusively allowed file
+    }
+    const content = fs.readFileSync(file, 'utf8');
+    const lines = content.split('\n');
+    lines.forEach((line, idx) => {
+      // Ignore comment lines
+      const trimmed = line.trim();
+      if (trimmed.startsWith('//') || trimmed.startsWith('*')) return;
+      if (assignmentRegex.test(line)) {
+        violations.push(`${rel}:${idx + 1} -> ${line.trim()}`);
+      }
+    });
+  }
+
+  assert.deepStrictEqual(
+    violations,
+    [],
+    `Architectural violation: direct mutation of window._autoMixSuppress* found outside suppression-controller.js:\n${violations.join('\n')}`
+  );
+});
+
+

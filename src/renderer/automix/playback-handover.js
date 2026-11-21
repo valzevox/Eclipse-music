@@ -67,9 +67,6 @@ class PlaybackHandover {
     const releaseSuppression = () => {
       if (suppressionMgr && suppressToken !== null) {
         suppressionMgr.release(suppressToken);
-      } else if (typeof window !== 'undefined' && !suppressionMgr) {
-        window._autoMixSuppressVolumeSync = false;
-        window._autoMixSuppressOwnerToken = null;
       }
     };
 

@@ -664,8 +664,6 @@ class AutoMixDJ {
       setTimeout(() => {
         if (suppressionMgr && suppressToken !== null) {
           suppressionMgr.release(suppressToken);
-        } else if (typeof window !== 'undefined' && !suppressionMgr) {
-          window._autoMixSuppressVolumeSync = false;
         }
       }, 80);
       window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
@@ -693,9 +691,6 @@ class AutoMixDJ {
     const suppressionMgr = _getDJSuppressionManager();
     const suppressToken = suppressionMgr ? suppressionMgr.acquire('AutoMixDJ') : null;
     this._crossfadeSuppressToken = suppressToken;
-    if (typeof window !== 'undefined' && !suppressionMgr) {
-      window._autoMixSuppressVolumeSync = true;
-    }
     const startTime = Date.now();
     const durationMs = Math.max(200, duration * 1000);
     const initialUserVol = Number.isFinite(outgoingAudio.volume) ? Math.max(0, Math.min(1, outgoingAudio.volume)) : 1.0;
@@ -793,8 +788,6 @@ class AutoMixDJ {
         setTimeout(() => {
           if (suppressionMgr && suppressToken !== null) {
             suppressionMgr.release(suppressToken);
-          } else if (typeof window !== 'undefined' && !suppressionMgr) {
-            window._autoMixSuppressVolumeSync = false;
           }
         }, 50);
       } else if (suppressionMgr && suppressToken !== null) {
