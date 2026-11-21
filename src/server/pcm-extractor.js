@@ -1,8 +1,9 @@
 // src/server/pcm-extractor.js
 // Server-side bounded PCM extraction for Smart AutoMix DJ.
-// Fetches a strictly bounded byte window with HTTP Range (206) enforcement,
-// rejects HLS/404/oversized streams, and decodes to mono Float32Array PCM
-// via native WAV parser or bounded FFmpeg pipe with full AbortSignal + timeout kill.
+// Fetches a strictly bounded byte window with HTTP Range (206) & Content-Range validation,
+// rejects HLS/404/oversized/inconsistent responses, and decodes to mono Float32Array PCM
+// via native WAV parser (preserving source sample rate) or bounded FFmpeg pipe/URL seek
+// (supporting MP3, faststart M4A, and moov-at-end M4A) with full AbortSignal + timeout kill.
 
 const http = require('http');
 const https = require('https');
@@ -14,7 +15,26 @@ const DEFAULT_MAX_INPUT_BYTES = 524288; // 512 KB cap
 const DEFAULT_TIMEOUT_MS = 12000;
 
 /**
+ * Parse and strictly validate an HTTP Content-Range header.
+ * Must be `bytes <start>-<end>/<total|*>` with start === 0, end >= start, and valid total.
+ * Returns { start, end, total, expectedLength } or null if invalid.
+ */
+function parseContentRange(header) {
+  if (!header || typeof header !== 'string') return null;
+  const m = /^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i.exec(header.trim());
+  if (!m) return null;
+  const start = Number(m[1]);
+  const end = Number(m[2]);
+  const total = m[3] === '*' ? null : Number(m[3]);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) return null;
+  if (total !== null && (!Number.isFinite(total) || total <= 0 || end >= total)) return null;
+  return { start, end, total, expectedLength: end - start + 1 };
+}
+
+/**
  * Parse a standard RIFF/WAVE PCM buffer (16-bit int or 32-bit float) into mono Float32Array.
+ * Note: Preserves the WAV source sample rate (e.g. 22050 Hz or 44100 Hz); TrackAnalyzer
+ * handles arbitrary sample rates directly without resampling distortion.
  * Returns null if buffer is not a valid WAV header.
  */
 function tryParseWavToMonoFloat32(buf, maxDurationSec = DEFAULT_MAX_DURATION_SEC) {
@@ -82,8 +102,8 @@ function tryParseWavToMonoFloat32(buf, maxDurationSec = DEFAULT_MAX_DURATION_SEC
 
 /**
  * Fetch a strictly bounded byte window from an HTTP/HTTPS URL.
- * Enforces Range: bytes=0-(maxInputBytes-1), rejects HLS/404/oversized 200 OK,
- * and aborts immediately on signal or timeout.
+ * Enforces Range: bytes=0-(maxInputBytes-1), strictly validates 206 Content-Range & Content-Length,
+ * rejects HLS/404/oversized 200 OK/truncated payloads, and aborts immediately on signal or timeout.
  */
 function fetchBoundedAudioBytes(sourceUrl, options = {}) {
   const maxInputBytes = Math.max(4096, Number(options.maxInputBytes) || DEFAULT_MAX_INPUT_BYTES);
@@ -140,8 +160,9 @@ function fetchBoundedAudioBytes(sourceUrl, options = {}) {
     }, (res) => {
       const status = res.statusCode || 0;
       const contentType = String(res.headers['content-type'] || '').toLowerCase();
-      const contentLength = Number(res.headers['content-length'] || 0);
-      const contentRange = String(res.headers['content-range'] || '');
+      const rawContentLength = res.headers['content-length'];
+      const contentLength = rawContentLength !== undefined ? Number(rawContentLength) : null;
+      const contentRangeHeader = String(res.headers['content-range'] || '');
 
       if (contentType.includes('mpegurl') || contentType.includes('application/vnd.apple')) {
         res.destroy();
@@ -153,10 +174,27 @@ function fetchBoundedAudioBytes(sourceUrl, options = {}) {
         return finish(new Error(`Upstream HTTP ${status}`));
       }
 
-      // If server ignored Range and returned 200 with a huge file (> 4x cap), refuse to download unbounded
-      if (status === 200 && contentLength > maxInputBytes * 4) {
-        res.destroy();
-        return finish(new Error(`Server ignored Range (HTTP 200, Content-Length ${contentLength} exceeds safe bound)`));
+      let rangeInfo = null;
+      if (status === 206) {
+        rangeInfo = parseContentRange(contentRangeHeader);
+        if (!rangeInfo) {
+          res.destroy();
+          return finish(new Error(`Invalid or missing Content-Range on HTTP 206: "${contentRangeHeader}"`));
+        }
+        if (rangeInfo.start !== 0) {
+          res.destroy();
+          return finish(new Error(`Unexpected Content-Range start offset: ${rangeInfo.start} (expected 0)`));
+        }
+        if (contentLength !== null && Number.isFinite(contentLength) && contentLength !== rangeInfo.expectedLength) {
+          res.destroy();
+          return finish(new Error(`Inconsistent Content-Length (${contentLength}) vs Content-Range (${rangeInfo.expectedLength})`));
+        }
+      } else if (status === 200) {
+        // If server ignored Range and returned 200 with a huge file (> 4x cap), refuse to download unbounded
+        if (contentLength !== null && Number.isFinite(contentLength) && contentLength > maxInputBytes * 4) {
+          res.destroy();
+          return finish(new Error(`Server ignored Range (HTTP 200, Content-Length ${contentLength} exceeds safe bound)`));
+        }
       }
 
       const chunks = [];
@@ -173,7 +211,7 @@ function fetchBoundedAudioBytes(sourceUrl, options = {}) {
         chunks.push(slice);
         totalRead += slice.length;
 
-        // Hard stop once byte cap is reached
+        // Hard stop once byte cap is reached (protects against 200 OK without Content-Length)
         if (totalRead >= maxInputBytes) {
           res.destroy();
           const buffer = Buffer.concat(chunks, totalRead);
@@ -181,7 +219,9 @@ function fetchBoundedAudioBytes(sourceUrl, options = {}) {
             buffer,
             bytesRead: totalRead,
             statusCode: status,
-            rangeSupported: status === 206 && contentRange.length > 0,
+            rangeSupported: status === 206 && rangeInfo !== null,
+            partial: true,
+            totalSize: rangeInfo ? rangeInfo.total : contentLength,
             contentType
           });
         }
@@ -193,11 +233,18 @@ function fetchBoundedAudioBytes(sourceUrl, options = {}) {
         if (totalRead < 1024) {
           return finish(new Error(`Truncated audio response (${totalRead} bytes)`));
         }
+        // Detect mid-stream truncation when declared Content-Length/Content-Range was not satisfied
+        const expected = rangeInfo ? Math.min(rangeInfo.expectedLength, maxInputBytes) : (contentLength ? Math.min(contentLength, maxInputBytes) : null);
+        if (expected !== null && totalRead < expected) {
+          return finish(new Error(`Truncated audio payload: received ${totalRead} of ${expected} bytes`));
+        }
         finish(null, {
           buffer,
           bytesRead: totalRead,
           statusCode: status,
-          rangeSupported: status === 206 && contentRange.length > 0,
+          rangeSupported: status === 206 && rangeInfo !== null,
+          partial: rangeInfo !== null && rangeInfo.total !== null && totalRead < rangeInfo.total,
+          totalSize: rangeInfo ? rangeInfo.total : contentLength,
           contentType
         });
       });
@@ -209,11 +256,7 @@ function fetchBoundedAudioBytes(sourceUrl, options = {}) {
   });
 }
 
-/**
- * Decode compressed audio bytes (MP3/M4A/Opus/Ogg) to mono Float32Array PCM via FFmpeg pipe.
- */
-function decodeWithFfmpeg(audioBuffer, options = {}) {
-  const ffmpegBin = options.ffmpegBin || 'ffmpeg';
+function runFfmpegDecode(ffmpegBin, args, inputBuffer, options = {}) {
   const targetSampleRate = Number(options.targetSampleRate) || DEFAULT_TARGET_SAMPLE_RATE;
   const maxDurationSec = Number(options.maxDurationSec) || DEFAULT_MAX_DURATION_SEC;
   const timeoutMs = Math.max(1000, Number(options.timeoutMs) || DEFAULT_TIMEOUT_MS);
@@ -223,20 +266,9 @@ function decodeWithFfmpeg(audioBuffer, options = {}) {
   return new Promise((resolve, reject) => {
     if (signal && signal.aborted) return reject(new Error('Aborted before ffmpeg'));
 
-    const args = [
-      '-hide_banner',
-      '-loglevel', 'error',
-      '-i', 'pipe:0',
-      '-t', String(maxDurationSec),
-      '-ac', '1',
-      '-ar', String(targetSampleRate),
-      '-f', 'f32le',
-      'pipe:1'
-    ];
-
     let proc;
     try {
-      proc = spawn(ffmpegBin, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      proc = spawn(ffmpegBin, args, { stdio: [inputBuffer ? 'pipe' : 'ignore', 'pipe', 'pipe'], windowsHide: true });
     } catch (err) {
       return reject(err);
     }
@@ -300,9 +332,58 @@ function decodeWithFfmpeg(audioBuffer, options = {}) {
       finish(null, { samples, sampleRate: targetSampleRate });
     });
 
-    proc.stdin.on('error', () => {});
-    proc.stdin.end(audioBuffer);
+    if (inputBuffer && proc.stdin) {
+      proc.stdin.on('error', () => {});
+      proc.stdin.end(inputBuffer);
+    }
   });
+}
+
+/**
+ * Decode compressed audio bytes (MP3/faststart M4A/Opus/Ogg) to mono Float32Array PCM via FFmpeg pipe.
+ */
+function decodeWithFfmpeg(audioBuffer, options = {}) {
+  const ffmpegBin = options.ffmpegBin || 'ffmpeg';
+  const targetSampleRate = Number(options.targetSampleRate) || DEFAULT_TARGET_SAMPLE_RATE;
+  const maxDurationSec = Number(options.maxDurationSec) || DEFAULT_MAX_DURATION_SEC;
+  const args = [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-i', 'pipe:0',
+    '-t', String(maxDurationSec),
+    '-ac', '1',
+    '-ar', String(targetSampleRate),
+    '-f', 'f32le',
+    'pipe:1'
+  ];
+  return runFfmpegDecode(ffmpegBin, args, audioBuffer, options);
+}
+
+/**
+ * Bounded seek-capable FFmpeg URL decode for M4A/MP4 containers whose moov atom is at EOF.
+ * Strictly capped by -t <maxDurationSec>, maxPcmBytes, timeoutMs, and AbortSignal SIGKILL.
+ */
+function decodeUrlWithFfmpeg(sourceUrl, options = {}) {
+  const ffmpegBin = options.ffmpegBin || 'ffmpeg';
+  const targetSampleRate = Number(options.targetSampleRate) || DEFAULT_TARGET_SAMPLE_RATE;
+  const maxDurationSec = Number(options.maxDurationSec) || DEFAULT_MAX_DURATION_SEC;
+  const args = [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-i', sourceUrl,
+    '-t', String(maxDurationSec),
+    '-ac', '1',
+    '-ar', String(targetSampleRate),
+    '-f', 'f32le',
+    'pipe:1'
+  ];
+  return runFfmpegDecode(ffmpegBin, args, null, options);
+}
+
+function isIsoBmffContainer(buf, contentType) {
+  if (contentType && (contentType.includes('mp4') || contentType.includes('m4a'))) return true;
+  if (buf && buf.length >= 12 && buf.toString('ascii', 4, 8) === 'ftyp') return true;
+  return false;
 }
 
 /**
@@ -312,7 +393,7 @@ async function extractBoundedPcm(sourceUrl, options = {}) {
   const fetched = await fetchBoundedAudioBytes(sourceUrl, options);
   const maxDurationSec = Number(options.maxDurationSec) || DEFAULT_MAX_DURATION_SEC;
 
-  // 1. Fast path: native WAV parser (zero subprocess overhead, works on all platforms)
+  // 1. Fast path: native WAV parser (preserves source sample rate; zero subprocess overhead)
   const wav = tryParseWavToMonoFloat32(fetched.buffer, maxDurationSec);
   if (wav && wav.samples.length > 0) {
     return {
@@ -321,27 +402,48 @@ async function extractBoundedPcm(sourceUrl, options = {}) {
       bytesRead: fetched.bytesRead,
       statusCode: fetched.statusCode,
       rangeSupported: fetched.rangeSupported,
+      partial: fetched.partial,
       decoder: 'wav'
     };
   }
 
   // 2. Compressed containers (MP3/M4A/Opus/Ogg): server-side bounded FFmpeg pipe
-  const decoded = await decodeWithFfmpeg(fetched.buffer, options);
-  return {
-    samples: decoded.samples,
-    sampleRate: decoded.sampleRate,
-    bytesRead: fetched.bytesRead,
-    statusCode: fetched.statusCode,
-    rangeSupported: fetched.rangeSupported,
-    decoder: 'ffmpeg'
-  };
+  try {
+    const decoded = await decodeWithFfmpeg(fetched.buffer, options);
+    return {
+      samples: decoded.samples,
+      sampleRate: decoded.sampleRate,
+      bytesRead: fetched.bytesRead,
+      statusCode: fetched.statusCode,
+      rangeSupported: fetched.rangeSupported,
+      partial: fetched.partial,
+      decoder: 'ffmpeg'
+    };
+  } catch (pipeErr) {
+    // 3. M4A/MP4 with moov atom at EOF: use bounded seek-capable FFmpeg HTTP Range input
+    if (isIsoBmffContainer(fetched.buffer, fetched.contentType) && fetched.rangeSupported) {
+      const seekDecoded = await decodeUrlWithFfmpeg(sourceUrl, options);
+      return {
+        samples: seekDecoded.samples,
+        sampleRate: seekDecoded.sampleRate,
+        bytesRead: fetched.bytesRead,
+        statusCode: fetched.statusCode,
+        rangeSupported: fetched.rangeSupported,
+        partial: true,
+        decoder: 'ffmpeg-seek'
+      };
+    }
+    throw pipeErr;
+  }
 }
 
 module.exports = {
   extractBoundedPcm,
   fetchBoundedAudioBytes,
+  parseContentRange,
   tryParseWavToMonoFloat32,
   decodeWithFfmpeg,
+  decodeUrlWithFfmpeg,
   DEFAULT_TARGET_SAMPLE_RATE,
   DEFAULT_MAX_DURATION_SEC,
   DEFAULT_MAX_INPUT_BYTES,

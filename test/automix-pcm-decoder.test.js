@@ -1,29 +1,31 @@
 // test/automix-pcm-decoder.test.js
-// Real HTTP + WAV fixture integration tests for bounded server-side PCM extraction.
+// Real HTTP + WAV (22.05kHz & 44.1kHz) + MP3/M4A (faststart & moov-at-end) FFmpeg + Server Route integration tests.
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
-const { extractBoundedPcm } = require('../src/server/pcm-extractor.js');
+const { extractBoundedPcm, parseContentRange, decodeWithFfmpeg } = require('../src/server/pcm-extractor.js');
 const { TrackAnalyzer } = require('../src/renderer/automix/track-analyzer.js');
 const { AnalysisCoordinator } = require('../src/renderer/automix/analysis-coordinator.js');
+const { resolveTrackSourceUrl, computeQueueContextId } = require('../src/renderer/automix/source-resolver.js');
+const { startServer, stopServer, getServerToken } = require('../src/server/server.js');
 
-/**
- * Build a real 16-bit mono RIFF/WAVE binary buffer containing a 120 BPM kick + C Major chord.
- */
 function buildWavFixtureBuffer(bpm = 120, durationSec = 6, sampleRate = 22050) {
   const numSamples = Math.floor(durationSec * sampleRate);
   const dataBytes = numSamples * 2;
   const buf = Buffer.alloc(44 + dataBytes);
 
-  // RIFF/WAVE header
   buf.write('RIFF', 0, 'ascii');
   buf.writeUInt32LE(36 + dataBytes, 4);
   buf.write('WAVE', 8, 'ascii');
   buf.write('fmt ', 12, 'ascii');
-  buf.writeUInt32LE(16, 16); // PCM chunk size
-  buf.writeUInt16LE(1, 20);  // PCM int16
-  buf.writeUInt16LE(1, 22);  // Mono
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20);
+  buf.writeUInt16LE(1, 22);
   buf.writeUInt32LE(sampleRate, 24);
   buf.writeUInt32LE(sampleRate * 2, 28);
   buf.writeUInt16LE(2, 32);
@@ -54,71 +56,112 @@ function buildWavFixtureBuffer(bpm = 120, durationSec = 6, sampleRate = 22050) {
   return buf;
 }
 
-describe('P1.3 — Real Audio Fixture & Bounded HTTP Range PCM Decoder', () => {
+function serveBufferWithRange(req, res, buf, contentType) {
+  const total = buf.length;
+  const range = req.headers.range;
+  if (range) {
+    const m = /bytes=(\d+)-(\d*)/.exec(range);
+    const start = m ? Number(m[1]) : 0;
+    const end = m && m[2] ? Math.min(Number(m[2]), total - 1) : total - 1;
+    const slice = buf.subarray(start, end + 1);
+    res.writeHead(206, {
+      'Content-Type': contentType,
+      'Accept-Ranges': 'bytes',
+      'Content-Range': `bytes ${start}-${end}/${total}`,
+      'Content-Length': String(slice.length)
+    });
+    return res.end(slice);
+  }
+  res.writeHead(200, { 'Content-Type': contentType, 'Content-Length': String(total) });
+  return res.end(buf);
+}
+
+describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A & Server Routes', () => {
   let server;
   let baseUrl;
-  let wavFixture;
+  let tmpDir;
+  let wav22k;
+  let wav44k;
+  let mp3Buf = null;
+  let m4aFastBuf = null;
+  let m4aMoovEndBuf = null;
+  let hasFfmpeg = false;
 
   before(async () => {
-    wavFixture = buildWavFixtureBuffer(120, 6, 22050); // ~264 KB real WAV
+    wav22k = buildWavFixtureBuffer(120, 6, 22050);
+    wav44k = buildWavFixtureBuffer(120, 6, 44100);
+
+    // Generate real MP3, faststart M4A, and moov-at-end M4A fixtures via ffmpeg if available
+    const probe = spawnSync('ffmpeg', ['-version'], { windowsHide: true });
+    hasFfmpeg = probe.status === 0;
+    if (hasFfmpeg) {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-pcm-test-'));
+      const wavPath = path.join(tmpDir, 'src.wav');
+      const mp3Path = path.join(tmpDir, 'fixture.mp3');
+      const m4aFastPath = path.join(tmpDir, 'fixture-fast.m4a');
+      const m4aEndPath = path.join(tmpDir, 'fixture-moov-end.m4a');
+      fs.writeFileSync(wavPath, wav44k);
+
+      spawnSync('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', wavPath, '-c:a', 'libmp3lame', '-b:a', '128k', mp3Path], { windowsHide: true });
+      spawnSync('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', wavPath, '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', m4aFastPath], { windowsHide: true });
+      spawnSync('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-i', wavPath, '-c:a', 'aac', '-b:a', '128k', m4aEndPath], { windowsHide: true });
+
+      if (fs.existsSync(mp3Path)) mp3Buf = fs.readFileSync(mp3Path);
+      if (fs.existsSync(m4aFastPath)) m4aFastBuf = fs.readFileSync(m4aFastPath);
+      if (fs.existsSync(m4aEndPath)) m4aMoovEndBuf = fs.readFileSync(m4aEndPath);
+    }
 
     server = http.createServer((req, res) => {
-      if (req.url === '/fixture.wav') {
-        const total = wavFixture.length;
-        const range = req.headers.range;
-        if (range) {
-          const m = /bytes=(\d+)-(\d*)/.exec(range);
-          const start = m ? Number(m[1]) : 0;
-          const end = m && m[2] ? Math.min(Number(m[2]), total - 1) : total - 1;
-          const slice = wavFixture.subarray(start, end + 1);
-          res.writeHead(206, {
-            'Content-Type': 'audio/wav',
-            'Accept-Ranges': 'bytes',
-            'Content-Range': `bytes ${start}-${end}/${total}`,
-            'Content-Length': String(slice.length)
-          });
-          return res.end(slice);
-        }
-        res.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': String(total) });
-        return res.end(wavFixture);
-      }
+      if (req.url === '/fixture-22k.wav') return serveBufferWithRange(req, res, wav22k, 'audio/wav');
+      if (req.url === '/fixture-44k.wav') return serveBufferWithRange(req, res, wav44k, 'audio/wav');
+      if (req.url === '/fixture.mp3' && mp3Buf) return serveBufferWithRange(req, res, mp3Buf, 'audio/mpeg');
+      if (req.url === '/fixture-fast.m4a' && m4aFastBuf) return serveBufferWithRange(req, res, m4aFastBuf, 'audio/mp4');
+      if (req.url === '/fixture-moov-end.m4a' && m4aMoovEndBuf) return serveBufferWithRange(req, res, m4aMoovEndBuf, 'audio/mp4');
 
-      if (req.url === '/missing') {
-        res.writeHead(404);
-        return res.end('Not Found');
-      }
-
+      if (req.url === '/missing') { res.writeHead(404); return res.end('Not Found'); }
       if (req.url === '/live.m3u8' || req.url === '/hls-header') {
         res.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl' });
         return res.end('#EXTM3U\n#EXT-X-VERSION:3\n');
       }
-
-      if (req.url === '/truncated') {
-        res.writeHead(206, {
-          'Content-Type': 'audio/wav',
-          'Content-Range': 'bytes 0-127/128',
-          'Content-Length': '128'
-        });
+      if (req.url === '/truncated-small') {
+        res.writeHead(206, { 'Content-Type': 'audio/wav', 'Content-Range': 'bytes 0-127/128', 'Content-Length': '128' });
         return res.end(Buffer.alloc(128));
       }
-
+      if (req.url === '/truncated-mid') {
+        // Declares 8000 bytes but aborts connection after 2048 bytes (> 1 KB)
+        res.writeHead(206, { 'Content-Type': 'audio/wav', 'Content-Range': 'bytes 0-7999/16000', 'Content-Length': '8000' });
+        res.write(Buffer.alloc(2048));
+        res.destroy();
+        return;
+      }
+      if (req.url === '/bad-range-missing') {
+        res.writeHead(206, { 'Content-Type': 'audio/wav', 'Content-Length': '4096' });
+        return res.end(Buffer.alloc(4096));
+      }
+      if (req.url === '/bad-range-offset') {
+        res.writeHead(206, { 'Content-Type': 'audio/wav', 'Content-Range': 'bytes 100-4195/10000', 'Content-Length': '4096' });
+        return res.end(Buffer.alloc(4096));
+      }
+      if (req.url === '/bad-range-length') {
+        res.writeHead(206, { 'Content-Type': 'audio/wav', 'Content-Range': 'bytes 0-4095/10000', 'Content-Length': '2048' });
+        return res.end(Buffer.alloc(2048));
+      }
       if (req.url === '/oversized-200') {
-        // Server ignores Range and advertises a 50 MB file
-        res.writeHead(200, {
-          'Content-Type': 'audio/mpeg',
-          'Content-Length': String(50 * 1024 * 1024)
-        });
+        res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': String(50 * 1024 * 1024) });
         return res.end();
       }
-
+      if (req.url === '/no-cl-200') {
+        // 200 OK without Content-Length streaming wav22k -> must still respect hard byte cap
+        res.writeHead(200, { 'Content-Type': 'audio/wav' });
+        return res.end(wav22k);
+      }
       if (req.url === '/slow') {
         res.writeHead(206, {
           'Content-Type': 'audio/wav',
-          'Content-Range': `bytes 0-${wavFixture.length - 1}/${wavFixture.length}`,
-          'Content-Length': String(wavFixture.length)
+          'Content-Range': `bytes 0-${wav22k.length - 1}/${wav22k.length}`,
+          'Content-Length': String(wav22k.length)
         });
-        res.write(wavFixture.subarray(0, 2048));
-        // Hold connection open until aborted
+        res.write(wav22k.subarray(0, 2048));
         return;
       }
 
@@ -132,43 +175,150 @@ describe('P1.3 — Real Audio Fixture & Bounded HTTP Range PCM Decoder', () => {
 
   after(async () => {
     if (server) await new Promise((resolve) => server.close(resolve));
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('extracts mono Float32Array PCM via HTTP Range 206 within byte bound and detects 120 BPM + C Major (8B)', async () => {
-    const maxInputBytes = 300000;
-    const res = await extractBoundedPcm(`${baseUrl}/fixture.wav`, { maxInputBytes });
+  it('P1 Routing: /api/library shape routes to /api/library-file, downloaded track uses ?name=, cache uses /api/local-track', async () => {
+    const apiBase = 'http://127.0.0.1:3000';
+    const token = 'tok123';
 
-    assert.equal(res.statusCode, 206);
-    assert.equal(res.rangeSupported, true);
-    assert.equal(res.decoder, 'wav');
-    assert.equal(res.sampleRate, 22050);
-    assert.ok(res.bytesRead <= maxInputBytes, `bytesRead ${res.bytesRead} exceeded cap ${maxInputBytes}`);
-    assert.ok(res.samples instanceof Float32Array && res.samples.length > 22050 * 4);
+    // Exact /api/library object shape: id + platform: 'local', NO libraryFileId
+    const libTrack = { id: 'lib-abc', platform: 'local', title: 'Local Song' };
+    const libUrl = await resolveTrackSourceUrl(libTrack, { apiBase, token });
+    assert.equal(libUrl, `${apiBase}/api/library-file?id=lib-abc&token=tok123`);
 
+    // Downloaded track shape -> MUST use ?name= with safe basename, NOT ?id=
+    const dlTrack = { id: 'dl-99', isDownloaded: true, filename: 'C:\\Music\\My Track.mp3' };
+    const dlUrl = await resolveTrackSourceUrl(dlTrack, { apiBase, token });
+    assert.equal(dlUrl, `${apiBase}/api/downloaded-track?name=My%20Track.mp3&token=tok123`);
+
+    // Offline cache shape (/api/offline-library) -> /api/local-track?id=<cleanId>
+    const cacheTrack = { id: 'yt-1', cleanId: 'yt_1_clean', platform: 'youtube' };
+    const cacheUrl = await resolveTrackSourceUrl(cacheTrack, { apiBase, token });
+    assert.equal(cacheUrl, `${apiBase}/api/local-track?id=yt_1_clean&token=tok123`);
+
+    // PreloadManager URL takes top priority
+    const preloaded = { id: 'yt-2', _preloadedStreamUrl: `${apiBase}/api/audio-proxy?url=abc` };
+    assert.equal(await resolveTrackSourceUrl(preloaded, { apiBase, token }), preloaded._preloadedStreamUrl);
+  });
+
+  it('P2 Queue Invalidation: replacing 2nd queue item changes contextId even with same length, 1st item, and index', () => {
+    const q1 = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+    const q2 = [{ id: 'a' }, { id: 'x' }, { id: 'c' }];
+    const ctx1 = computeQueueContextId(q1, 0);
+    const ctx2 = computeQueueContextId(q2, 0);
+    assert.notEqual(ctx1, ctx2);
+  });
+
+  it('WAV Fixtures (22.05kHz & 44.1kHz): extracts bounded PCM via HTTP 206 and detects 120 BPM + C Major (8B)', async () => {
     const analyzer = new TrackAnalyzer();
-    const record = analyzer.analyzeTrack({ id: 'wav-1' }, res.samples, res.sampleRate);
-    assert.equal(record.source, 'audio-analysis');
-    assert.equal(record.status, 'analyzed');
-    assert.ok(Math.abs(record.tempo.bpm - 120) <= 3, `Expected ~120 BPM, got ${record.tempo.bpm}`);
-    assert.equal(record.key.camelot, '8B');
+
+    const r22 = await extractBoundedPcm(`${baseUrl}/fixture-22k.wav`, { maxInputBytes: 300000 });
+    assert.equal(r22.statusCode, 206);
+    assert.equal(r22.rangeSupported, true);
+    assert.equal(r22.sampleRate, 22050);
+    assert.equal(r22.decoder, 'wav');
+    const rec22 = analyzer.analyzeTrack({ id: 'w22' }, r22.samples, r22.sampleRate);
+    assert.ok(Math.abs(rec22.tempo.bpm - 120) <= 3);
+    assert.equal(rec22.key.camelot, '8B');
+
+    const r44 = await extractBoundedPcm(`${baseUrl}/fixture-44k.wav`, { maxInputBytes: 524288 });
+    assert.equal(r44.sampleRate, 44100);
+    assert.equal(r44.decoder, 'wav');
+    const rec44 = analyzer.analyzeTrack({ id: 'w44' }, r44.samples, r44.sampleRate);
+    assert.ok(Math.abs(rec44.tempo.bpm - 120) <= 3);
+    assert.equal(rec44.key.camelot, '8B');
   });
 
-  it('rejects HTTP 404, HLS (.m3u8 & header), truncated payload, and oversized 200 OK', async () => {
+  it('Real FFmpeg MP3 & M4A (faststart + moov-at-end): decodes mono Float32Array @ 22050Hz and detects BPM/Key', async (t) => {
+    if (!hasFfmpeg || !mp3Buf || !m4aFastBuf || !m4aMoovEndBuf) {
+      t.skip('ffmpeg not available in this environment');
+      return;
+    }
+    const analyzer = new TrackAnalyzer();
+
+    // 1. Direct decodeWithFfmpeg() on MP3
+    const directMp3 = await decodeWithFfmpeg(mp3Buf, { targetSampleRate: 22050, maxDurationSec: 6 });
+    assert.equal(directMp3.sampleRate, 22050);
+    assert.ok(directMp3.samples instanceof Float32Array && directMp3.samples.length > 22050 * 4);
+
+    // 2. Full HTTP Range extractBoundedPcm on MP3
+    const httpMp3 = await extractBoundedPcm(`${baseUrl}/fixture.mp3`, { maxInputBytes: 524288 });
+    assert.equal(httpMp3.decoder, 'ffmpeg');
+    assert.equal(httpMp3.sampleRate, 22050);
+    const recMp3 = analyzer.analyzeTrack({ id: 'mp3-1' }, httpMp3.samples, httpMp3.sampleRate);
+    assert.ok(Math.abs(recMp3.tempo.bpm - 120) <= 3, `MP3 BPM mismatch: ${recMp3.tempo.bpm}`);
+    assert.equal(recMp3.key.camelot, '8B');
+
+    // 3. Faststart M4A
+    const httpM4aFast = await extractBoundedPcm(`${baseUrl}/fixture-fast.m4a`, { maxInputBytes: 524288 });
+    assert.equal(httpM4aFast.sampleRate, 22050);
+    assert.ok(httpM4aFast.samples.length > 22050 * 4);
+
+    // 4. moov-at-end M4A (with tiny prefix cap so pipe fails and seek-capable fallback runs)
+    const httpM4aEnd = await extractBoundedPcm(`${baseUrl}/fixture-moov-end.m4a`, { maxInputBytes: 16384 });
+    assert.equal(httpM4aEnd.sampleRate, 22050);
+    assert.ok(httpM4aEnd.samples.length > 22050 * 4);
+  });
+
+  it('P2 Content-Range validation & edge cases: rejects invalid/missing/offset/length/truncated/HLS/404 and caps 200 OK', async () => {
+    assert.equal(parseContentRange('bytes 0-1023/2048').expectedLength, 1024);
+    assert.equal(parseContentRange('invalid'), null);
+    assert.equal(parseContentRange('bytes 500-100/2048'), null);
+
     await assert.rejects(extractBoundedPcm(`${baseUrl}/missing`), /HTTP 404/);
     await assert.rejects(extractBoundedPcm(`${baseUrl}/live.m3u8`), /HLS/);
     await assert.rejects(extractBoundedPcm(`${baseUrl}/hls-header`), /HLS/);
-    await assert.rejects(extractBoundedPcm(`${baseUrl}/truncated`), /Truncated/);
+    await assert.rejects(extractBoundedPcm(`${baseUrl}/truncated-small`), /Truncated/);
+    await assert.rejects(extractBoundedPcm(`${baseUrl}/truncated-mid`), /Truncated|aborted|hang up|ECONNRESET/i);
+    await assert.rejects(extractBoundedPcm(`${baseUrl}/bad-range-missing`), /Invalid or missing Content-Range/);
+    await assert.rejects(extractBoundedPcm(`${baseUrl}/bad-range-offset`), /start offset/);
+    await assert.rejects(extractBoundedPcm(`${baseUrl}/bad-range-length`), /Inconsistent Content-Length/);
     await assert.rejects(extractBoundedPcm(`${baseUrl}/oversized-200`, { maxInputBytes: 65536 }), /exceeds safe bound/);
+
+    // 200 OK without Content-Length is still hard-capped at maxInputBytes
+    const capped = await extractBoundedPcm(`${baseUrl}/no-cl-200`, { maxInputBytes: 65536 });
+    assert.equal(capped.bytesRead, 65536);
+    assert.equal(capped.rangeSupported, false);
   });
 
-  it('aborts in-flight fetch cleanly via AbortController', async () => {
+  it('AbortController cancels in-flight fetch cleanly', async () => {
     const ac = new AbortController();
     const p = extractBoundedPcm(`${baseUrl}/slow`, { signal: ac.signal, timeoutMs: 5000 });
     setTimeout(() => ac.abort(), 30);
     await assert.rejects(p, /Aborted/);
   });
 
-  it('AnalysisCoordinator reports accurate partial/error/ready counts with real HTTP WAV decoder', async () => {
+  it('Actual server routes /api/analyze-pcm & /api/audio-proxy: enforces auth, returns PCM headers & forwards Range 206', async () => {
+    const port = await startServer(0);
+    try {
+      const apiBase = `http://127.0.0.1:${port}`;
+      const token = getServerToken();
+
+      // 1. Unauthenticated /api/analyze-pcm must be rejected (401/403)
+      const unauth = await fetch(`${apiBase}/api/analyze-pcm?url=${encodeURIComponent(`${baseUrl}/fixture-22k.wav`)}`);
+      assert.ok(unauth.status === 401 || unauth.status === 403, `Expected 401/403, got ${unauth.status}`);
+
+      // 2. Authenticated /api/analyze-pcm returns 200 + PCM headers + binary Float32Array
+      const authUrl = `${apiBase}/api/analyze-pcm?url=${encodeURIComponent(`${baseUrl}/fixture-22k.wav`)}&token=${encodeURIComponent(token)}`;
+      const resp = await fetch(authUrl);
+      assert.equal(resp.status, 200);
+      assert.equal(resp.headers.get('x-pcm-sample-rate'), '22050');
+      assert.equal(resp.headers.get('x-pcm-decoder'), 'wav');
+      const buf = await resp.arrayBuffer();
+      assert.ok(buf.byteLength > 22050 * 4 * 4);
+
+      // 3. /api/audio-proxy enforces SSRF protection (403 on 127.0.0.1 loopback)
+      const proxyResp = await fetch(`${apiBase}/api/audio-proxy?url=${encodeURIComponent(`${baseUrl}/fixture-22k.wav`)}&token=${encodeURIComponent(token)}`, {
+        headers: { Range: 'bytes=0-4095' }
+      });
+      assert.equal(proxyResp.status, 403);
+    } finally {
+      await stopServer();
+    }
+  });
+
+  it('AnalysisCoordinator reports accurate partial counts with real HTTP WAV decoder', async () => {
     const analyzer = new TrackAnalyzer();
     const coordinator = new AnalysisCoordinator({
       analyzer,
@@ -177,7 +327,7 @@ describe('P1.3 — Real Audio Fixture & Bounded HTTP Range PCM Decoder', () => {
     });
 
     const mixedStatus = await coordinator.scanCollection([
-      { id: 'ok-wav', url: `${baseUrl}/fixture.wav` },
+      { id: 'ok-wav', url: `${baseUrl}/fixture-22k.wav` },
       { id: 'bad-404', url: `${baseUrl}/missing` }
     ], 'mixed-pl');
 

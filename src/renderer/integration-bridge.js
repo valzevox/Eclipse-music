@@ -230,58 +230,19 @@
           telemetry: automixTelemetry
         }) : null;
         const audioGraph = typeof window.AudioGraphManager !== 'undefined' ? new window.AudioGraphManager(window.audioEngine) : null;
-        const resolveTrackSourceUrl = async (track, signal) => {
-          if (!track || (signal && signal.aborted)) return null;
-          const apiBase = getInternalApiBase();
-          const token = getInternalApiToken();
-          const tokQ = token ? `&token=${encodeURIComponent(token)}` : '';
-
-          // 1. Prefer already-resolved PreloadManager URL
-          if (track._preloadedStreamUrl && typeof track._preloadedStreamUrl === 'string') {
-            return track._preloadedStreamUrl;
-          }
-
-          // 2. Local / library / downloaded tracks -> real server endpoints
-          if (apiBase) {
-            if (track.isLocal || track.platform === 'local' || track.source === 'local') {
-              if (track.id) return `${apiBase}/api/local-track?id=${encodeURIComponent(track.id)}${tokQ}`;
-            }
-            if (track.isDownloaded || track.offline) {
-              if (track.id) return `${apiBase}/api/downloaded-track?id=${encodeURIComponent(track.id)}${tokQ}`;
-            }
-            if (track.libraryFileId) {
-              return `${apiBase}/api/library-file?id=${encodeURIComponent(track.libraryFileId)}${tokQ}`;
-            }
-          }
-
-          // 3. Streaming tracks (YouTube / YTM / SoundCloud) -> resolve via /api/stream-info to obtain proxyUrl
-          const trackId = track.id || track.videoId;
-          if (apiBase && trackId) {
-            const platform = encodeURIComponent(track.platform || track.source || 'youtube');
-            const infoUrl = `${apiBase}/api/stream-info?id=${encodeURIComponent(trackId)}&platform=${platform}${tokQ}`;
-            const resp = await fetch(infoUrl, { signal });
-            if (!resp.ok || (signal && signal.aborted)) return null;
-            const data = await resp.json();
-            if (data && typeof data.proxyUrl === 'string' && data.proxyUrl) {
-              return data.proxyUrl;
-            }
-            if (data && typeof data.streamUrl === 'string' && data.streamUrl && !/googlevideo\.com/i.test(data.streamUrl)) {
-              return data.streamUrl;
-            }
-          }
-          return null;
-        };
-
         // Server-side bounded PCM extraction via /api/analyze-pcm (never passes partial Range fragments to decodeAudioData)
         const decodeTrackPcmBounded = async (track, signal) => {
           if (!track || (signal && signal.aborted)) return null;
           const apiBase = getInternalApiBase();
           if (!apiBase) return null;
 
-          const sourceUrl = await resolveTrackSourceUrl(track, signal);
-          if (!sourceUrl || (signal && signal.aborted)) return null;
+          const resolver = window.EclipseAutoMixSourceResolver;
+          if (!resolver || typeof resolver.resolveTrackSourceUrl !== 'function') return null;
 
           const token = getInternalApiToken();
+          const sourceUrl = await resolver.resolveTrackSourceUrl(track, { apiBase, token, signal });
+          if (!sourceUrl || (signal && signal.aborted)) return null;
+
           const analyzeUrl = `${apiBase}/api/analyze-pcm?url=${encodeURIComponent(sourceUrl)}${token ? `&token=${encodeURIComponent(token)}` : ''}`;
           const resp = await fetch(analyzeUrl, { signal });
           if (!resp.ok || (signal && signal.aborted)) return null;
@@ -321,7 +282,10 @@
           if (mode !== 'tempo_synced' && mode !== 'dj_mix') return;
           const st = getCoreState();
           if (!st || !Array.isArray(st.queue) || st.queue.length === 0) return;
-          const contextId = `${st.queue.length}_${(st.queue[0] && (st.queue[0].id || st.queue[0].videoId)) || 'q'}_${st.queueIndex || 0}`;
+          const resolver = window.EclipseAutoMixSourceResolver;
+          const contextId = (resolver && typeof resolver.computeQueueContextId === 'function')
+            ? resolver.computeQueueContextId(st.queue, st.queueIndex || 0)
+            : `${st.queue.length}_${st.queueIndex || 0}`;
           const curStatus = analysisCoordinator.getStatus();
           if (!force && contextId === lastScannedContextId && (curStatus.state === 'scanning' || curStatus.state === 'ready')) {
             return;
@@ -331,6 +295,8 @@
         };
         window._triggerAutoMixCollectionScan = triggerCollectionScan;
         window.addEventListener('trackchanged', () => triggerCollectionScan(false));
+        window.addEventListener('queuechanged', () => triggerCollectionScan(false));
+        window.addEventListener('queueupdated', () => triggerCollectionScan(false));
 
         // Live BPM sampler for Tempo Synced / DJ Mix mode (lightweight 150ms tick only when playing)
         setInterval(() => {
