@@ -26,3 +26,6 @@ jobs:
 
       - name: Run Architecture & Integration Verification
         run: node test-integration-verification.js
+
+      - name: Run Full Unit & Regression Test Suite
+        run: npm test

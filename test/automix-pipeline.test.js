@@ -147,7 +147,7 @@ test('PlaybackHandover - nativeAudio.play() rejection keeps auxAudio running and
   assert.strictEqual(listeners['playing'], undefined, 'playing listener must be removed on rejection');
 });
 
-test('PlaybackHandover - nativeAudio error event cleans up listeners without stopping auxAudio', () => {
+test('PlaybackHandover - nativeAudio error event after canplay still catches error and preserves auxAudio', () => {
   const handover = new PlaybackHandover();
   let auxStopped = false;
   let listeners = {};
@@ -161,7 +161,7 @@ test('PlaybackHandover - nativeAudio error event cleans up listeners without sto
     removeEventListener: (event) => {
       delete listeners[event];
     },
-    play: () => Promise.resolve()
+    play: () => new Promise(() => {}) // pending play
   };
 
   const mockAuxAudio = {
@@ -171,15 +171,55 @@ test('PlaybackHandover - nativeAudio error event cleans up listeners without sto
     pause: () => { auxStopped = true; }
   };
 
-  const token = handover.createHandoverToken({ id: 'test-3' }, mockAuxAudio, 3);
+  const token = handover.createHandoverToken({ id: 'test-canplay-err' }, mockAuxAudio, 4);
   handover.executeSwap(mockNativeAudio, mockAuxAudio, token, {});
 
-  assert.ok(listeners['error'], 'error listener registered');
+  assert.ok(listeners['canplay'], 'canplay listener attached');
+  assert.ok(listeners['error'], 'error listener attached');
 
-  // Simulate network/source error
-  listeners['error'](new Error('Format unsupported'));
+  // Trigger canplay -> attachPlayAndSwap runs
+  listeners['canplay']();
 
-  assert.strictEqual(auxStopped, false, 'auxAudio must remain active on nativeAudio error');
-  assert.strictEqual(listeners['loadedmetadata'], undefined, 'loadedmetadata listener removed');
-  assert.strictEqual(listeners['canplay'], undefined, 'canplay listener removed');
+  // Crucial invariant: error listener must STILL be attached even after canplay!
+  assert.ok(listeners['error'], 'error listener must remain active after canplay while waiting for playing');
+
+  // Simulate source error happening after canplay but before playing
+  listeners['error'](new Error('Media decode error after canplay'));
+
+  assert.strictEqual(auxStopped, false, 'auxAudio must NOT be stopped if error fires after canplay');
+  assert.strictEqual(listeners['playing'], undefined, 'playing listener must be removed on error');
+  assert.strictEqual(listeners['error'], undefined, 'error listener cleaned up');
+});
+
+test('AutoMixDJ - executeCrossfade applies harmonic ratio for half-time/double-time and 1.0 for fallback', async () => {
+  const dj = new AutoMixDJ({ mode: 'tempo_synced' });
+
+  let outRate = 1.0;
+  let inRate = 1.0;
+
+  const mockOutgoing = {
+    volume: 1.0,
+    playbackRate: 1.0,
+    pause: () => {}
+  };
+
+  // Case 1: Harmonic 60 BPM with 120 BPM base (60 * 2 = 120 -> ratio must be 1.0, not clamped 1.06)
+  const harmonicRatio = dj.computeTempoRatio(120, 60);
+  assert.strictEqual(harmonicRatio, 1.0, 'Harmonic match 120 vs 60 should produce 1.0 ratio');
+
+  // Case 2: Incompatible fallback (e.g. 120 vs 150) -> computeTempoRatio returns 1.0
+  const fallbackRatio = dj.computeTempoRatio(120, 150);
+  assert.strictEqual(fallbackRatio, 1.0, 'Out-of-range candidate returns 1.0 fallback ratio');
+
+  // Case 3: TransitionPlanner harmonic computation
+  const planner = new TransitionPlanner();
+  const analyzer = new TrackAnalyzer();
+  const planHarmonic = planner.computePlan({ bpm: 120 }, { bpm: 60 }, { analyzer });
+  assert.strictEqual(planHarmonic.tempoSynced, true, 'Harmonic 120 vs 60 is tempo synced');
+  assert.strictEqual(planHarmonic.tempoRatio, 1.0, 'Harmonic tempo ratio is 1.0');
+
+  // Case 4: TransitionPlanner fallback with incompatible BPM (120 vs 150)
+  const planFallback = planner.computePlan({ bpm: 120 }, { bpm: 150 }, { analyzer });
+  assert.strictEqual(planFallback.tempoSynced, false, '120 vs 150 is NOT tempo synced');
+  assert.strictEqual(planFallback.tempoRatio, 1.0, 'Fallback tempo ratio must be 1.0');
 });

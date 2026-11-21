@@ -347,6 +347,8 @@
             let fadeOutStart = Math.max(0, dur - 6.0);
             let fadeInSkip = 0;
             let planBpmPair = { outgoingBpm: currentTrackBpm || 120, incomingBpm: 120 };
+            let plannedTempoRatio = 1.0;
+            let plannedTempoSynced = false;
 
             if (transitionPlanner) {
               const plan = transitionPlanner.computePlan(currentTrack, targetNextTrack, { analyzer: trackAnalyzer });
@@ -354,6 +356,8 @@
               fadeInSkip = plan.fadeInSkip;
               plannedFadeDuration = plan.fadeDuration;
               planBpmPair = { outgoingBpm: plan.currentBpm || 120, incomingBpm: plan.nextBpm || 120 };
+              plannedTempoRatio = plan.tempoRatio || 1.0;
+              plannedTempoSynced = !!plan.tempoSynced;
             } else {
               const autoDur = window.autoMixDjInstance.autoDuration && typeof window.autoMixDjInstance.getBeatAlignedDuration === 'function'
                 ? window.autoMixDjInstance.getBeatAlignedDuration()
@@ -441,12 +445,14 @@
                 detail: { active: true, nextTrack, durationSec: plannedFadeDuration, mode: window.autoMixDjInstance.mode, bpm: window.autoMixDjInstance.bpm }
               }));
 
-              console.log(`[EclipseBridge] AutoMix (${window.autoMixDjInstance.mode}) crossfade (${remaining.toFixed(1)}s remaining, fade: ${plannedFadeDuration.toFixed(1)}s, BPM ${window.autoMixDjInstance.bpm} -> ${targetBpm})...`);
+              console.log(`[EclipseBridge] AutoMix (${window.autoMixDjInstance.mode}) crossfade (${remaining.toFixed(1)}s remaining, fade: ${plannedFadeDuration.toFixed(1)}s, BPM ${window.autoMixDjInstance.bpm} -> ${targetBpm}, ratio: ${plannedTempoRatio.toFixed(3)}, synced: ${plannedTempoSynced})...`);
               let crossfadeSucceeded = false;
               try {
                 crossfadeSucceeded = (await window.autoMixDjInstance.executeCrossfade(nativeAudio, auxAudio, Math.min(plannedFadeDuration, remaining - 0.25), {
-                  outgoingBpm: (currentTrack && currentTrack._detectedBpm) || window.autoMixDjInstance.bpm || 120,
-                  incomingBpm: targetBpm
+                  outgoingBpm: currentTrackBpm || window.autoMixDjInstance.bpm || 120,
+                  incomingBpm: targetBpm,
+                  tempoRatio: plannedTempoRatio,
+                  tempoSynced: plannedTempoSynced
                 })) === true;
               } catch (fadeErr) {
                 console.warn('[EclipseBridge] Crossfade interrupted or failed; aborting handover to keep outgoing track playing:', fadeErr?.message || fadeErr);

@@ -425,10 +425,21 @@ class AutoMixDJ {
   /**
    * Compute safe tempo-match playbackRate ratio (clamped to +-6% so pitch stays natural)
    */
-  computeTempoRatio(sourceBpm, targetBpm) {
+  computeTempoRatio(sourceBpm, targetBpm, maxDeviation = 0.06) {
     if (!sourceBpm || !targetBpm || sourceBpm <= 0 || targetBpm <= 0) return 1.0;
-    const ratio = sourceBpm / targetBpm;
-    return Math.max(0.94, Math.min(1.06, ratio));
+    const candidates = [targetBpm, targetBpm * 2, targetBpm * 0.5];
+    let best = targetBpm;
+    let minDiff = Infinity;
+    for (const c of candidates) {
+      const diff = Math.abs(sourceBpm - c) / c;
+      if (diff < minDiff) {
+        minDiff = diff;
+        best = c;
+      }
+    }
+    const ratio = sourceBpm / best;
+    if (Math.abs(ratio - 1.0) > maxDeviation) return 1.0;
+    return Math.max(1.0 - maxDeviation, Math.min(1.0 + maxDeviation, ratio));
   }
 
   /**
@@ -507,8 +518,10 @@ class AutoMixDJ {
     const useDeckGains = !!(audioEngine && typeof audioEngine.setDeckGains === 'function');
     const useFadeGainNode = !useDeckGains && !!(audioEngine && audioEngine.fadeGain && audioEngine.ctx);
 
-    const startInRate = this.mode === 'tempo_synced'
-      ? this.computeTempoRatio(options.outgoingBpm || this.bpm, options.incomingBpm || this.bpm)
+    const startInRate = (this.mode === 'tempo_synced' && options.tempoSynced !== false)
+      ? (typeof options.tempoRatio === 'number' && Number.isFinite(options.tempoRatio)
+          ? options.tempoRatio
+          : this.computeTempoRatio(options.outgoingBpm || this.bpm, options.incomingBpm || this.bpm))
       : 1.0;
 
     // Optional WebAudio DJ-Style Filter sweep (HPF 1400Hz -> 20Hz on incoming)
@@ -636,7 +649,7 @@ class AutoMixDJ {
             incomingAudio.volume = Math.max(0, Math.min(initialUserVol, gains.fadeInGain * initialUserVol));
           }
 
-          if (this.mode === 'tempo_synced' && startInRate !== 1.0) {
+          if (this.mode === 'tempo_synced' && options.tempoSynced !== false && startInRate !== 1.0) {
             incomingAudio.playbackRate = 1.0 + (startInRate - 1.0) * (1.0 - progress);
           }
         } catch (_) {}
