@@ -5,9 +5,10 @@ class AutoMixDJ {
   constructor(options = {}) {
     this.enabled = options.enabled ?? false;
     this.durationSec = options.durationSec || 6.0; // 4 to 12 seconds
-    this.mode = options.mode || 'equal_power'; // 'equal_power' | 'linear' | 'tempo_synced'
+    this.mode = options.mode || 'equal_power'; // 'equal_power' | 'linear' | 'tempo_synced' | 'dj_mix' | 'gapless_album'
     this.djFilter = options.djFilter !== false;
     this.autoDuration = !!options.autoDuration;
+    this.keepAlbumContinuous = options.keepAlbumContinuous ?? true;
     this.bpm = options.bpm || null;
     this._detectedBpm = null;
     this._bpmConfidence = 0;
@@ -28,6 +29,7 @@ class AutoMixDJ {
     if (config.mode) this.mode = config.mode;
     if (typeof config.djFilter === 'boolean') this.djFilter = config.djFilter;
     if (typeof config.autoDuration === 'boolean') this.autoDuration = config.autoDuration;
+    if (typeof config.keepAlbumContinuous === 'boolean') this.keepAlbumContinuous = config.keepAlbumContinuous;
     if (typeof config.bpm === 'number') this.bpm = Math.max(60, Math.min(200, config.bpm));
     if (typeof config.targetLufs === 'number') this.targetLufs = config.targetLufs;
     return this.getConfig();
@@ -513,17 +515,22 @@ class AutoMixDJ {
             }
 
             // Energy continuity score: reward similar energy profiles (+- 30%)
-            let energyScore = 1.0;
             const curEnergy = currentRecord && currentRecord.energy && typeof currentRecord.energy.rms === 'number' ? currentRecord.energy.rms : null;
             const candEnergy = rec && rec.energy && typeof rec.energy.rms === 'number' ? rec.energy.rms : null;
+            let energyScore = null;
             if (curEnergy && candEnergy && curEnergy > 0) {
               const energyDiff = Math.abs(curEnergy - candEnergy) / curEnergy;
               energyScore = Math.max(0, 1.0 - energyDiff);
             }
 
-            const combinedScore = (currentCamelot && candCamelot)
-              ? (bpmScore * 0.55 + harmonic.score * 0.35 + energyScore * 0.10)
-              : (bpmScore * 0.85 + energyScore * 0.15);
+            let combinedScore = bpmScore;
+            if (currentCamelot && candCamelot && energyScore !== null) {
+              combinedScore = bpmScore * 0.55 + harmonic.score * 0.35 + energyScore * 0.10;
+            } else if (currentCamelot && candCamelot) {
+              combinedScore = bpmScore * 0.65 + harmonic.score * 0.35;
+            } else if (energyScore !== null) {
+              combinedScore = bpmScore * 0.85 + energyScore * 0.15;
+            }
 
             if (combinedScore > bestScore) {
               bestScore = combinedScore;
@@ -536,7 +543,7 @@ class AutoMixDJ {
                 harmonicScore: harmonic.score,
                 harmonicReason: harmonic.relationship,
                 camelot: candCamelot,
-                energyScore: Math.round(energyScore * 100) / 100
+                energyScore: energyScore !== null ? Math.round(energyScore * 100) / 100 : null
               };
             }
           }
@@ -600,17 +607,19 @@ class AutoMixDJ {
       if (outgoingAudio) {
         outgoingAudio.volume = initialUserVol;
         outgoingAudio.playbackRate = 1.0;
-        if (reason === 'skip' || reason === 'seek' || reason === 'pause') {
+        if (reason === 'skip' || reason === 'pause' || reason === 'queue_replaced') {
           outgoingAudio.pause();
         }
+        // In 'seek' or 'mode_change': do NOT pause outgoingAudio; keep previous playback intent running smoothly
       }
 
       if (incomingAudio) {
-        incomingAudio.volume = initialUserVol;
+        incomingAudio.volume = 0;
         incomingAudio.playbackRate = 1.0;
-        if (reason === 'pause') {
+        try {
           incomingAudio.pause();
-        }
+          incomingAudio.currentTime = 0;
+        } catch (_) {}
       }
 
       if (inFilter && inFilter.context) {

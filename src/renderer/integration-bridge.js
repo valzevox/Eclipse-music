@@ -142,7 +142,13 @@
               try { localStorage.setItem('eclipse_automix', '0'); } catch (_) {}
             }
           }
-          if (opts.mode === 'equal_power' || opts.mode === 'tempo_synced' || opts.mode === 'dj_mix') {
+          if (typeof opts.keepAlbumContinuous === 'boolean') {
+            cfg.keepAlbumContinuous = opts.keepAlbumContinuous;
+            try { localStorage.setItem('eclipse_automix_skip_album', opts.keepAlbumContinuous ? '1' : '0'); } catch (_) {}
+          } else if (localStorage.getItem('eclipse_automix_skip_album') !== null) {
+            cfg.keepAlbumContinuous = localStorage.getItem('eclipse_automix_skip_album') !== '0';
+          }
+          if (opts.mode === 'equal_power' || opts.mode === 'tempo_synced' || opts.mode === 'dj_mix' || opts.mode === 'quick_crossfade' || opts.mode === 'gapless_album') {
             cfg.mode = opts.mode;
             try { localStorage.setItem('eclipse_automix_mode', opts.mode); } catch (_) {}
           }
@@ -291,7 +297,12 @@
             return;
           }
           lastScannedContextId = contextId;
-          analysisCoordinator.scanCollection(st.queue, contextId, { currentIndex: st.queueIndex || 0, maxTracks: 6 }).catch(() => {});
+          const isFullScanMode = (mode === 'dj_mix' || mode === 'tempo_synced');
+          analysisCoordinator.scanCollection(st.queue, contextId, {
+            currentIndex: st.queueIndex || 0,
+            scanAll: isFullScanMode,
+            maxTracks: isFullScanMode ? st.queue.length : 8
+          }).catch(() => {});
         };
         window._triggerAutoMixCollectionScan = triggerCollectionScan;
         window.addEventListener('trackchanged', () => triggerCollectionScan(false));

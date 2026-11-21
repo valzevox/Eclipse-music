@@ -4730,7 +4730,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     state.currentTrackIndexInContext = startIndex;
 
     if (queueList) {
+      abortAutoMixIfActive('queue_replaced');
       state.queue = [...queueList];
+      try { window.dispatchEvent(new CustomEvent('queuechanged', { detail: { length: state.queue.length } })); } catch (_) {}
       if (startIndex >= 0 && startIndex < state.queue.length && isSameTrack(state.queue[startIndex], track)) {
         state.queueIndex = startIndex;
       } else {
@@ -15156,6 +15158,9 @@ function updateNavIndicator(animate) {
     const syncSkipAlbum = (val) => {
       localStorage.setItem('eclipse_automix_skip_album', val ? '1' : '0');
       toggleAutoMixSkipAlbum.classList.toggle('active', !!val);
+      if (typeof window.syncAutoMixSettings === 'function') {
+        window.syncAutoMixSettings({ keepAlbumContinuous: !!val });
+      }
     };
     syncSkipAlbum(localStorage.getItem('eclipse_automix_skip_album') !== '0');
     toggleAutoMixSkipAlbum.addEventListener('click', () => {

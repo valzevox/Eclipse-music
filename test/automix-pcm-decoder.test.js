@@ -367,9 +367,10 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
     assert.equal((await validateMediaTargetUrl('http://100.64.0.1/a.mp3', { allowSelfMedia: false })).ok, false);
     const dnsPrivate = await validateMediaTargetUrl('http://internal.example.test/a.mp3', {
       allowSelfMedia: false,
-      lookupImpl: async () => [{ address: '10.1.2.3', family: 4 }]
+      lookup: async () => [{ address: '10.1.2.3', family: 4 }]
     });
     assert.equal(dnsPrivate.ok, false);
+    assert.match(dnsPrivate.reason, /DNS resolved to private\/reserved IP: 10\.1\.2\.3/);
 
     const port = await startServer(0);
     const { resolveDownloadDir } = require('../src/shared/platform.js');
@@ -453,8 +454,9 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
 
   it('P0/P1 Full Lifecycle: DJ Filter restoration on abort + keepAlbumContinuous priority in pickTempoSyncedNext', async () => {
     const AutoMixDJ = require('../src/renderer/automix-dj.js');
-    const dj = new AutoMixDJ({ mode: 'dj_mix' });
-    dj.keepAlbumContinuous = true;
+    const dj = new AutoMixDJ();
+    dj.configure({ mode: 'dj_mix', keepAlbumContinuous: true });
+    assert.equal(dj.keepAlbumContinuous, true);
 
     const queue = [
       { id: 'track-1', albumId: 'alb-1', title: 'Intro' },
@@ -472,5 +474,62 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
     const pickNext = dj.pickTempoSyncedNext(queue, 1, new Set(), 120);
     assert.equal(pickNext.track.id, 'track-3');
     assert.equal(pickNext.index, 2);
+
+    // Mock AudioEngine graph and verify abortCrossfade('seek') preserves outgoing playback intent
+    let deckAGainVal = 0.5;
+    let deckBGainVal = 0.5;
+    let primarySourceConnected = false;
+    const mockPrimarySource = {
+      disconnect: () => {},
+      connect: () => { primarySourceConnected = true; }
+    };
+    const mockAuxSource = {
+      disconnect: () => {},
+      connect: () => {}
+    };
+    const mockAudioEngine = {
+      mediaSource: mockPrimarySource,
+      auxMediaSource: mockAuxSource,
+      deckAGain: {},
+      deckBGain: {},
+      setDeckGains: ({ deckA, deckB }) => {
+        deckAGainVal = deckA;
+        deckBGainVal = deckB;
+      }
+    };
+
+    let outgoingPaused = false;
+    let incomingPaused = false;
+    const mockOutgoing = {
+      volume: 0.8,
+      playbackRate: 1.0,
+      pause: () => { outgoingPaused = true; }
+    };
+    const mockIncoming = {
+      volume: 0.8,
+      playbackRate: 1.0,
+      pause: () => { incomingPaused = true; }
+    };
+
+    dj.isCrossfading = true;
+    dj._currentFade = {
+      outgoingAudio: mockOutgoing,
+      incomingAudio: mockIncoming,
+      inFilter: { frequency: { setValueAtTime: () => {} }, context: {} },
+      outFilter: { frequency: { setValueAtTime: () => {} }, context: {} },
+      initialUserVol: 0.8,
+      useDeckGains: true,
+      audioEngine: mockAudioEngine
+    };
+
+    // Seek MUST abort crossfade, reset gains to Deck A=1, B=0, stop incoming, but NOT pause outgoing!
+    const aborted = dj.abortCrossfade('seek');
+    assert.equal(aborted, true);
+    assert.equal(dj.isCrossfading, false);
+    assert.equal(deckAGainVal, 1.0);
+    assert.equal(deckBGainVal, 0.0);
+    assert.equal(outgoingPaused, false, 'Seek must preserve outgoing playback and not pause it');
+    assert.equal(incomingPaused, true, 'Incoming deck must be paused on abort');
+    assert.equal(primarySourceConnected, true, 'Primary source must reconnect to Deck A gain');
   });
 });

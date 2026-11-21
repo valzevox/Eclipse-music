@@ -324,40 +324,41 @@ class TrackAnalyzer {
   }
 
   /**
-   * Compute energy / RMS envelope and beat-grid phase estimate from mono PCM samples.
+   * Compute energy / RMS envelope and dynamic profile across the entire PCM buffer.
    */
-  computeEnergyProfile(samples, sampleRate = 44100, windowMs = 50) {
-    if (!samples || samples.length === 0) return { rms: 0, envelope: [], beatPhaseSec: 0 };
-    const windowSize = Math.max(64, Math.floor((windowMs / 1000) * sampleRate));
-    const numWindows = Math.floor(samples.length / windowSize);
+  computeEnergyProfile(samples, sampleRate = 44100, targetBuckets = 32) {
+    if (!samples || samples.length === 0) return { rms: 0, envelope: [], dynamicRangeDb: 0 };
+    const totalSamples = samples.length;
+    const bucketSize = Math.max(128, Math.floor(totalSamples / targetBuckets));
+    const actualBuckets = Math.floor(totalSamples / bucketSize);
     const envelope = [];
     let totalSq = 0;
-    let maxWinEnergy = 0;
-    let maxWinIdx = 0;
+    let minRms = Infinity;
+    let maxRms = 0;
 
-    for (let w = 0; w < numWindows; w++) {
-      let winSq = 0;
-      const offset = w * windowSize;
-      for (let i = 0; i < windowSize; i++) {
+    for (let b = 0; b < actualBuckets; b++) {
+      let bucketSq = 0;
+      const offset = b * bucketSize;
+      for (let i = 0; i < bucketSize; i++) {
         const s = samples[offset + i];
-        winSq += s * s;
+        bucketSq += s * s;
       }
-      const winRms = Math.sqrt(winSq / windowSize);
-      envelope.push(Math.round(winRms * 1000) / 1000);
-      totalSq += winSq;
-      if (winRms > maxWinEnergy) {
-        maxWinEnergy = winRms;
-        maxWinIdx = w;
-      }
+      const bucketRms = Math.sqrt(bucketSq / bucketSize);
+      envelope.push(Math.round(bucketRms * 1000) / 1000);
+      totalSq += bucketSq;
+      if (bucketRms < minRms) minRms = bucketRms;
+      if (bucketRms > maxRms) maxRms = bucketRms;
     }
 
-    const overallRms = Math.sqrt(totalSq / Math.max(1, samples.length));
-    const beatPhaseSec = (maxWinIdx * windowSize) / sampleRate;
+    const overallRms = Math.sqrt(totalSq / Math.max(1, totalSamples));
+    const dynamicRangeDb = (minRms > 0.0001 && maxRms > 0)
+      ? Math.round(20 * Math.log10(maxRms / minRms) * 10) / 10
+      : 0;
 
     return {
       rms: Math.round(overallRms * 1000) / 1000,
-      envelope: envelope.slice(0, 40), // compact representative envelope
-      beatPhaseSec: Math.round(beatPhaseSec * 1000) / 1000
+      envelope,
+      dynamicRangeDb
     };
   }
 
@@ -390,8 +391,8 @@ class TrackAnalyzer {
       },
       energy: {
         rms: 0,
-        beatPhaseSec: 0,
-        envelope: []
+        envelope: [],
+        dynamicRangeDb: 0
       },
       status: 'unknown'
     };
