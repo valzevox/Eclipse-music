@@ -4659,11 +4659,14 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     el.nativeAudio.preload = 'auto';
 
     // Zero-Gap Handover Guard: do not clear Deck A audio prematurely if autoMix handover is active
-    const isHandoverTarget = !!(state._autoMixHandover && (
-      track.id === state._autoMixHandover.trackId ||
-      (track.videoId && track.videoId === state._autoMixHandover.trackId) ||
-      (track._matchedYtId && track._matchedYtId === state._autoMixHandover.trackId)
-    ));
+    const isHandoverTarget = !!(
+      (typeof window.PlaybackHandover !== 'undefined' && window._playbackHandoverInstance && window._playbackHandoverInstance.isHandoverTarget(state, track)) ||
+      (state._autoMixHandover && (
+        track.id === state._autoMixHandover.trackId ||
+        (track.videoId && track.videoId === state._autoMixHandover.trackId) ||
+        (track._matchedYtId && track._matchedYtId === state._autoMixHandover.trackId)
+      ))
+    );
 
     if (!isHandoverTarget) {
       try {
@@ -4781,12 +4784,36 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     loadCanvasForTrack(track);
 
     // Zero-Gap Dual-Deck Handover: keep auxAudio playing while nativeAudio buffers, then swap cleanly at live millisecond
-    if (state._autoMixHandover && (track.id === state._autoMixHandover.trackId || (track.videoId && track.videoId === state._autoMixHandover.trackId) || (track._matchedYtId && track._matchedYtId === state._autoMixHandover.trackId))) {
-      const handover = state._autoMixHandover;
+    const handoverToken = state._autoMixHandover;
+    const isHandover = !!(
+      (window._playbackHandoverInstance && window._playbackHandoverInstance.isHandoverTarget(state, track)) ||
+      (handoverToken && (
+        track.id === handoverToken.trackId ||
+        (track.videoId && track.videoId === handoverToken.trackId) ||
+        (track._matchedYtId && track._matchedYtId === handoverToken.trackId)
+      ))
+    );
+
+    if (isHandover && handoverToken) {
+      const handover = handoverToken;
       state._autoMixHandover = null;
       if (currentToken === state.loadToken) {
         if (hlsInstance) { try { hlsInstance.destroy(); } catch (_) {} hlsInstance = null; }
         const auxEl = handover.auxAudio || document.getElementById('eclipse-aux-audio');
+
+        if (window._playbackHandoverInstance && typeof window._playbackHandoverInstance.executeSwap === 'function') {
+          window._playbackHandoverInstance.executeSwap(el.nativeAudio, auxEl, handover, {
+            isMuted: state.isMuted,
+            onDeckGainsReset: () => {
+              if (window.audioEngine && typeof window.audioEngine.setDeckGains === 'function') {
+                window.audioEngine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 20 });
+              }
+            },
+            applySettings: () => applyAudioSettings()
+          });
+          return;
+        }
+
         const stopAux = () => {
           try {
             if (auxEl) {

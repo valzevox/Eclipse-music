@@ -210,6 +210,28 @@
           }
         });
 
+        // Smart AutoMix DJ Pipeline Modules Integration
+        const automixTelemetry = typeof window.AutoMixTelemetry !== 'undefined' ? new window.AutoMixTelemetry('AutoMix') : null;
+        const trackAnalyzer = typeof window.TrackAnalyzer !== 'undefined' ? new window.TrackAnalyzer() : null;
+        const transitionPlanner = typeof window.TransitionPlanner !== 'undefined' ? new window.TransitionPlanner({
+          autoDuration: window.autoMixDjInstance.autoDuration,
+          defaultDurationSec: window.autoMixDjInstance.durationSec || 6.0
+        }) : null;
+        const preloadManager = typeof window.PreloadManager !== 'undefined' ? new window.PreloadManager({
+          apiBase: getInternalApiBase(),
+          token: getInternalApiToken()
+        }) : null;
+        const playbackHandover = typeof window.PlaybackHandover !== 'undefined' ? new window.PlaybackHandover({
+          telemetry: automixTelemetry
+        }) : null;
+        const audioGraph = typeof window.AudioGraphManager !== 'undefined' ? new window.AudioGraphManager(window.audioEngine) : null;
+
+        window._preloadManagerInstance = preloadManager;
+        window._playbackHandoverInstance = playbackHandover;
+        window._trackAnalyzerInstance = trackAnalyzer;
+        window._transitionPlannerInstance = transitionPlanner;
+        window._audioGraphInstance = audioGraph;
+
         // Live BPM sampler for Tempo Synced mode (lightweight 150ms tick only when playing)
         setInterval(() => {
           if (!window.autoMixDjInstance || !window.autoMixDjInstance.enabled || window.autoMixDjInstance.mode !== 'tempo_synced') return;
@@ -224,6 +246,10 @@
 
         async function resolveNextTrackStreamUrl(nextTrack) {
           if (!nextTrack) return '';
+          if (preloadManager) {
+            const curQuality = (typeof localStorage !== 'undefined' && localStorage.getItem('eclipse_audio_quality')) || 'medium';
+            return await preloadManager.resolveStreamUrl(nextTrack, curQuality);
+          }
           if (nextTrack._preloadedStreamUrl) return nextTrack._preloadedStreamUrl;
           const qFallback = encodeURIComponent(nextTrack.searchQuery || ((nextTrack.artist ? nextTrack.artist + ' - ' : '') + (nextTrack.title || '')));
           const tkn = getInternalApiToken();
@@ -233,7 +259,6 @@
           const data = await res.json();
           if (data && data.success && (data.proxyUrl || data.streamUrl)) {
             nextTrack._preloadedStreamUrl = data.proxyUrl || data.streamUrl;
-            // Warm up initial audio chunk for instant readyState >= 2
             if (typeof fetch === 'function' && typeof nextTrack._preloadedStreamUrl === 'string' && !nextTrack._preloadedStreamUrl.includes('.m3u8')) {
               fetch(nextTrack._preloadedStreamUrl, { headers: { 'Range': 'bytes=0-262143' } }).catch(() => {});
             }
@@ -244,6 +269,10 @@
 
         async function prefetchSponsorSegmentsForTrack(track) {
           if (!track || Array.isArray(track.sponsorSegments)) return;
+          if (preloadManager) {
+            await preloadManager.fetchSponsorSegments(track);
+            return;
+          }
           const vid = track.id || track.videoId || '';
           if (typeof vid !== 'string' || vid.length !== 11) return;
           try {
@@ -273,7 +302,10 @@
             if (dur > 35 && remaining <= 28 && remaining > 16 && !earlyPreloadStartedForTrack) {
               earlyPreloadStartedForTrack = true;
               if (nextTrack) {
-                if (!nextTrack._preloadedStreamUrl) {
+                if (preloadManager) {
+                  const curQuality = (typeof localStorage !== 'undefined' && localStorage.getItem('eclipse_audio_quality')) || 'medium';
+                  preloadManager.prepareNextTrack(nextTrack, auxAudio, curQuality).catch(() => {});
+                } else if (!nextTrack._preloadedStreamUrl) {
                   resolveNextTrackStreamUrl(nextTrack).then(url => {
                     if (url && auxAudio && !window.autoMixDjInstance?.isCrossfading && auxAudio.paused) {
                       auxAudio.preload = 'auto';
@@ -290,23 +322,37 @@
 
             if (!window.autoMixDjInstance || !window.autoMixDjInstance.enabled || window.autoMixDjInstance.isCrossfading || automixTriggeredForTrack) return;
 
-            const autoDur = window.autoMixDjInstance.autoDuration && typeof window.autoMixDjInstance.getBeatAlignedDuration === 'function'
-              ? window.autoMixDjInstance.getBeatAlignedDuration()
-              : (window.autoMixDjInstance.durationSec || 6.0);
-            const threshold = Math.max(2, Math.min(15, autoDur));
+            // Compute Transition Plan via TransitionPlanner module if available
+            let plannedFadeDuration = 6.0;
+            let fadeOutStart = Math.max(0, dur - 6.0);
+            let fadeInSkip = 0;
+            let planBpmPair = { outgoingBpm: 120, incomingBpm: 120 };
 
-            // Smart Outro & Intro Transition Planning (50% Outro Rule & 50% Intro Rule via SponsorBlock / Synced Lyrics / Outro energy-drop)
-            const curSbSegments = (currentTrack && Array.isArray(currentTrack.sponsorSegments))
-              ? currentTrack.sponsorSegments
-              : (typeof window.EclipseCore?.getCurrentSponsorSegments === 'function'
-                ? window.EclipseCore.getCurrentSponsorSegments()
-                : null);
+            if (transitionPlanner && nextTrack) {
+              const plan = transitionPlanner.computePlan(currentTrack, nextTrack, { analyzer: trackAnalyzer });
+              fadeOutStart = plan.fadeOutStart;
+              fadeInSkip = plan.fadeInSkip;
+              plannedFadeDuration = plan.fadeDuration;
+              planBpmPair = { outgoingBpm: plan.currentBpm, incomingBpm: plan.nextBpm };
+            } else {
+              const autoDur = window.autoMixDjInstance.autoDuration && typeof window.autoMixDjInstance.getBeatAlignedDuration === 'function'
+                ? window.autoMixDjInstance.getBeatAlignedDuration()
+                : (window.autoMixDjInstance.durationSec || 6.0);
+              const threshold = Math.max(2, Math.min(15, autoDur));
+              const curSbSegments = (currentTrack && Array.isArray(currentTrack.sponsorSegments))
+                ? currentTrack.sponsorSegments
+                : (typeof window.EclipseCore?.getCurrentSponsorSegments === 'function'
+                  ? window.EclipseCore.getCurrentSponsorSegments()
+                  : null);
+              const offsets = typeof window.autoMixDjInstance.getSmartTransitionOffsets === 'function'
+                ? window.autoMixDjInstance.getSmartTransitionOffsets(currentTrack, curSbSegments, nextTrack || nextTrack?.introSec || null)
+                : { fadeOutStart: Math.max(0, dur - threshold), fadeInSkip: 0, crossfadeDuration: threshold };
+              fadeOutStart = offsets.fadeOutStart;
+              fadeInSkip = offsets.fadeInSkip;
+              plannedFadeDuration = Math.max(2.0, Math.min(15.0, offsets.crossfadeDuration || threshold));
+            }
 
-            const offsets = typeof window.autoMixDjInstance.getSmartTransitionOffsets === 'function'
-              ? window.autoMixDjInstance.getSmartTransitionOffsets(currentTrack, curSbSegments, nextTrack || nextTrack?.introSec || null)
-              : { fadeOutStart: Math.max(0, dur - threshold), fadeInSkip: 0, crossfadeDuration: threshold };
-            let effectiveThreshold = Math.max(threshold, dur - offsets.fadeOutStart);
-            const plannedFadeDuration = Math.max(2.0, Math.min(15.0, offsets.crossfadeDuration || threshold));
+            let effectiveThreshold = Math.max(plannedFadeDuration, dur - fadeOutStart);
 
             // Real-time Analyser energy drop / outro silence check in final 30 seconds
             let realTimeSilenceSec = null;
@@ -317,13 +363,13 @@
 
             const shouldTriggerTransition = (dur > 20 && remaining > 0.8) && (
               remaining <= effectiveThreshold ||
-              cur >= offsets.fadeOutStart ||
+              cur >= fadeOutStart ||
               (realTimeSilenceSec !== null && cur >= realTimeSilenceSec)
             );
 
             if (shouldTriggerTransition) {
               if (st.isRepeat || st.repeatMode === 1 || st.repeatMode === 'one') return;
-              let targetBpm = window.autoMixDjInstance.bpm || 120;
+              let targetBpm = planBpmPair.incomingBpm || window.autoMixDjInstance.bpm || 120;
 
               if (window.autoMixDjInstance.mode === 'tempo_synced' && typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function') {
                 const picked = window.autoMixDjInstance.pickTempoSyncedNext(
@@ -370,43 +416,14 @@
               if (auxAudio.src !== nextStreamUrl) {
                 auxAudio.src = nextStreamUrl;
               }
-              const smartIntroSkip = Math.max(0, Math.min(15, Number(offsets.fadeInSkip) || 0));
+              const smartIntroSkip = Math.max(0, Math.min(15, Number(fadeInSkip) || 0));
               auxAudio.currentTime = smartIntroSkip;
 
               // Graceful fallback: verify auxAudio readiness (readyState >= 2) before attempting crossfade
-              const waitForAuxReady = () => {
-                if (auxAudio.readyState >= 2) return Promise.resolve(true);
-                return new Promise(resolve => {
-                  let settled = false;
-                  const onCanPlay = () => {
-                    if (settled) return;
-                    settled = true;
-                    cleanup();
-                    resolve(true);
-                  };
-                  const onError = () => {
-                    if (settled) return;
-                    settled = true;
-                    cleanup();
-                    resolve(false);
-                  };
-                  const timer = setTimeout(() => {
-                    if (settled) return;
-                    settled = true;
-                    cleanup();
-                    resolve(auxAudio.readyState >= 2);
-                  }, 1200);
-                  const cleanup = () => {
-                    clearTimeout(timer);
-                    auxAudio.removeEventListener('canplay', onCanPlay);
-                    auxAudio.removeEventListener('error', onError);
-                  };
-                  auxAudio.addEventListener('canplay', onCanPlay);
-                  auxAudio.addEventListener('error', onError);
-                });
-              };
+              const isAuxReady = preloadManager
+                ? await preloadManager.waitForElementReadiness(auxAudio, 2, 2000)
+                : (auxAudio.readyState >= 2);
 
-              const isAuxReady = await waitForAuxReady();
               if (!isAuxReady || auxAudio.readyState < 2) {
                 console.warn('[EclipseBridge] Aux stream not ready (readyState < 2); falling back gracefully to gapless transition.');
                 window._autoMixHandlingEnd = false;
@@ -431,7 +448,7 @@
                 }));
               }
 
-              // Zero-Gap Dual-Deck Handover: keep auxAudio playing continuously until nativeAudio is buffered & playing at live time
+              // Zero-Gap Dual-Deck Handover via PlaybackHandover module
               const handoverSrc = (auxAudio && auxAudio.src) ? auxAudio.src : '';
               const curCoreState = getCoreState();
               if (curCoreState && nextTrack) {
@@ -439,13 +456,17 @@
                   const tid = nextTrack.id || nextTrack.videoId;
                   if (tid) curCoreState.autoMixPlayedIds.add(tid);
                 }
-                curCoreState._autoMixHandover = {
-                  src: handoverSrc,
-                  auxAudio,
-                  currentTime: (auxAudio && !isNaN(auxAudio.currentTime)) ? auxAudio.currentTime : 0,
-                  trackId: nextTrack.id || nextTrack.videoId,
-                  targetIndex: nextIdx
-                };
+                if (playbackHandover) {
+                  curCoreState._autoMixHandover = playbackHandover.createHandoverToken(nextTrack, auxAudio, nextIdx);
+                } else {
+                  curCoreState._autoMixHandover = {
+                    src: handoverSrc,
+                    auxAudio,
+                    currentTime: (auxAudio && !isNaN(auxAudio.currentTime)) ? auxAudio.currentTime : 0,
+                    trackId: nextTrack.id || nextTrack.videoId,
+                    targetIndex: nextIdx
+                  };
+                }
               }
 
               if (typeof window._eclipsePlayNext === 'function') {

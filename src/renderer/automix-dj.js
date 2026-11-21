@@ -531,7 +531,20 @@ class AutoMixDJ {
       }
       incomingAudio.playbackRate = startInRate;
       await incomingAudio.play();
-    } catch (_) {}
+    } catch (playErr) {
+      console.warn('[AutoMixDJ] incomingAudio.play() rejected; aborting crossfade and restoring outgoing volume:', playErr?.message || playErr);
+      // Rollback gains immediately to prevent fading outgoing into silence
+      if (useDeckGains) {
+        audioEngine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 20 });
+      } else if (useFadeGainNode) {
+        audioEngine.fadeGain.gain.setValueAtTime(1.0, audioEngine.ctx.currentTime);
+      } else {
+        outgoingAudio.volume = initialUserVol;
+      }
+      this.isCrossfading = false;
+      this._activeCrossfade = null;
+      throw new Error(`Incoming audio play failed: ${playErr?.message || 'Playback blocked'}`);
+    }
 
     return new Promise((resolve, reject) => {
       const fadeState = {
