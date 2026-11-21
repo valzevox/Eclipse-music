@@ -426,7 +426,7 @@ class AutoMixDJ {
           try {
             outgoingAudio.pause();
             if (useDeckGains) {
-              audioEngine.setDeckGains({ deckA: 0.0, deckB: 1.0, rampMs: 30 });
+              audioEngine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 30 });
             } else if (useFadeGainNode) {
               audioEngine.fadeGain.gain.setValueAtTime(1.0, audioEngine.ctx.currentTime);
             } else {

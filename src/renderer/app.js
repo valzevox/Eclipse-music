@@ -4796,6 +4796,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           swapped = true;
           el.nativeAudio.muted = !!state.isMuted;
           stopAux();
+          if (window.audioEngine && typeof window.audioEngine.setDeckGains === 'function') {
+            window.audioEngine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 20 });
+          }
           setTimeout(() => { window._autoMixSuppressVolumeSync = false; }, 80);
           applyAudioSettings();
         };
