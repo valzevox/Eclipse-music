@@ -1,0 +1,128 @@
+// src/renderer/automix/settings-controller.js
+// JavaScript / settings-controller.js / Web / Eclipse PC & Mobile
+// Centralized settings synchronization controller for Smart AutoMix DJ modes and options.
+
+(function (root) {
+  'use strict';
+
+  const VALID_AUTOMIX_MODES = new Set([
+    'equal_power',
+    'tempo_synced',
+    'dj_mix',
+    'quick_crossfade',
+    'gapless_album'
+  ]);
+
+  /**
+   * Synchronize AutoMix DJ settings into localStorage, dispatch mode change events,
+   * configure the AutoMixDJ instance, and trigger/cancel background collection scans.
+   *
+   * @param {object} opts
+   * @param {boolean} [opts.enabled]
+   * @param {string} [opts.mode]
+   * @param {boolean} [opts.djFilter]
+   * @param {boolean} [opts.autoDuration]
+   * @param {number} [opts.durationSec]
+   * @param {boolean} [opts.keepAlbumContinuous]
+   * @param {object} [context] - Context with window, localStorage, and djInstance overrides
+   * @returns {object} updated config or instance status
+   */
+  function syncAutoMixSettings(opts = {}, context = {}) {
+    const win = context.window || (typeof window !== 'undefined' ? window : null);
+    const storage = context.localStorage || (typeof localStorage !== 'undefined' ? localStorage : null);
+    const dj = context.djInstance || (win ? win.autoMixDjInstance : null);
+
+    const cfg = {};
+    if (typeof opts.enabled === 'boolean') {
+      cfg.enabled = opts.enabled;
+      if (storage) {
+        try { storage.setItem('eclipse_automix', opts.enabled ? '1' : '0'); } catch (_) {}
+      }
+    }
+    if (typeof opts.djFilter === 'boolean') {
+      cfg.djFilter = opts.djFilter;
+      if (storage) {
+        try { storage.setItem('eclipse_automix_dj_filter', opts.djFilter ? '1' : '0'); } catch (_) {}
+      }
+    }
+    if (typeof opts.autoDuration === 'boolean') {
+      cfg.autoDuration = opts.autoDuration;
+      if (storage) {
+        try { storage.setItem('eclipse_automix_auto', opts.autoDuration ? '1' : '0'); } catch (_) {}
+      }
+    }
+    if (typeof opts.durationSec === 'number' && Number.isFinite(opts.durationSec)) {
+      const rawSec = Math.max(0, Math.min(15, opts.durationSec));
+      if (storage) {
+        try { storage.setItem('eclipse_crossfade', String(rawSec)); } catch (_) {}
+      }
+      if (rawSec > 0) {
+        cfg.durationSec = Math.max(1, rawSec);
+      } else if (typeof opts.enabled !== 'boolean') {
+        cfg.enabled = false;
+        if (storage) {
+          try { storage.setItem('eclipse_automix', '0'); } catch (_) {}
+        }
+      }
+    }
+    if (typeof opts.keepAlbumContinuous === 'boolean') {
+      cfg.keepAlbumContinuous = opts.keepAlbumContinuous;
+      if (storage) {
+        try { storage.setItem('eclipse_automix_skip_album', opts.keepAlbumContinuous ? '1' : '0'); } catch (_) {}
+      }
+    } else if (storage && storage.getItem('eclipse_automix_skip_album') !== null) {
+      cfg.keepAlbumContinuous = storage.getItem('eclipse_automix_skip_album') !== '0';
+    }
+
+    if (opts.mode && VALID_AUTOMIX_MODES.has(opts.mode)) {
+      const prevMode = dj ? dj.mode : null;
+      if (prevMode && prevMode !== opts.mode) {
+        if (win && typeof win.dispatchEvent === 'function') {
+          try {
+            const detail = { previousMode: prevMode, newMode: opts.mode };
+            const evt = (typeof CustomEvent !== 'undefined')
+              ? new CustomEvent('eclipse:automix-mode-changed', { detail })
+              : { type: 'eclipse:automix-mode-changed', detail };
+            win.dispatchEvent(evt);
+          } catch (_) {}
+        }
+      }
+      cfg.mode = opts.mode;
+      if (storage) {
+        try { storage.setItem('eclipse_automix_mode', opts.mode); } catch (_) {}
+      }
+    }
+
+    if (dj && typeof dj.configure === 'function') {
+      dj.configure(cfg);
+      const curMode = dj.mode;
+      if (!dj.enabled || curMode === 'equal_power') {
+        if (win && win._analysisCoordinatorInstance && typeof win._analysisCoordinatorInstance.cancel === 'function') {
+          win._analysisCoordinatorInstance.cancel();
+        }
+      } else if ((curMode === 'tempo_synced' || curMode === 'dj_mix') && win && typeof win._triggerAutoMixCollectionScan === 'function') {
+        win._triggerAutoMixCollectionScan(false);
+      }
+      return typeof dj.getStatus === 'function' ? dj.getStatus() : cfg;
+    }
+    return cfg;
+  }
+
+  function resolveInitialAutoMixMode(storedMode) {
+    return VALID_AUTOMIX_MODES.has(storedMode) ? storedMode : 'equal_power';
+  }
+
+  const exportObj = {
+    VALID_AUTOMIX_MODES,
+    syncAutoMixSettings,
+    resolveInitialAutoMixMode
+  };
+
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = exportObj;
+  }
+  if (root) {
+    root.AutoMixSettingsController = exportObj;
+    root.syncAutoMixSettings = syncAutoMixSettings;
+  }
+})(typeof window !== 'undefined' ? window : globalThis);

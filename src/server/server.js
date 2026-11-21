@@ -3866,7 +3866,7 @@ async function handleGoogleVideoChunkedProxy(req, res, targetUrl, initialUrl) {
   }
 }
 
-async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl = null) {
+async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl = null, options = {}) {
   const initialUrl = origUrl || targetUrl;
   if (!targetUrl) {
     res.writeHead(400);
@@ -3885,13 +3885,14 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
       return res.end('Unsupported protocol');
     }
     const { validateMediaTargetUrl } = require('./ssrf-guard');
-    const ssrfCheck = await validateMediaTargetUrl(targetUrl, { allowSelfMedia: false });
+    const ssrfCheck = await validateMediaTargetUrl(targetUrl, { allowSelfMedia: false, lookup: options.lookup });
     if (!ssrfCheck.ok) {
       res.writeHead(403);
       return res.end(ssrfCheck.reason || 'Blocked target');
     }
 
     const client = parsed.protocol === 'https:' ? https : http;
+    const hostLower = parsed.hostname.toLowerCase();
     const forward = { host: parsed.host };
     for (const key of ['range', 'accept', 'accept-language']) {
       if (req.headers[key] !== undefined) forward[key] = req.headers[key];
@@ -3944,7 +3945,7 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
       if ([301, 302, 303, 307, 308].includes(proxyRes.statusCode) && proxyRes.headers.location && redirectsLeft > 0) {
         proxyRes.resume();
         const nextUrl = new URL(proxyRes.headers.location, targetUrl).toString();
-        return handleAudioProxy(req, res, nextUrl, redirectsLeft - 1, initialUrl);
+        return handleAudioProxy(req, res, nextUrl, redirectsLeft - 1, initialUrl, options);
       }
       if (proxyRes.statusCode >= 400) {
         evictStreamCache(initialUrl);
@@ -10878,7 +10879,7 @@ function startServer(port = PORT) {
 
 function stopServer() { return new Promise((resolve) => { if (!server || !server.listening) return resolve(); server.close(() => resolve()); }); }
 
-module.exports = { stopServer, matchAndResolveTrack, handleLyrics, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchSyncLrc, parseKaraokeToWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc, cleanSearchResults };
+module.exports = { stopServer, matchAndResolveTrack, handleLyrics, handleAudioProxy, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchSyncLrc, parseKaraokeToWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc, cleanSearchResults };
 
 if (require.main === module) {
   startServer();

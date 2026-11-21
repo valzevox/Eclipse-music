@@ -292,10 +292,7 @@ test('PlaybackHandover - full production caller integration via playTrack flow',
   assert.strictEqual(handover.isHandoverTarget(appState, nextTrack), true);
   assert.strictEqual(handover.isHandoverTarget(appState, { id: 'other-track' }), false);
 
-  // Step 4: Execute swap as invoked in app.js
-  const handoverToken = appState._autoMixHandover;
-  appState._autoMixHandover = null; // consumed once
-
+  // Step 4: Execute swap via production handlePlayTrackHandover helper
   const options = {
     isMuted: appState.isMuted,
     onDeckGainsReset: () => {
@@ -304,8 +301,28 @@ test('PlaybackHandover - full production caller integration via playTrack flow',
     }
   };
 
-  const swapResult = handover.executeSwap(mockNativeAudio, mockAuxAudio, handoverToken, options);
-  assert.strictEqual(swapResult, true);
+  // Stale token check: old currentToken (999) does not match appState.loadToken (42) -> must return false and NOT consume token
+  const staleHandled = handover.handlePlayTrackHandover({
+    state: appState,
+    track: nextTrack,
+    currentToken: 999, // Stale token!
+    nativeAudio: mockNativeAudio,
+    auxAudio: mockAuxAudio,
+    options
+  });
+  assert.strictEqual(staleHandled, false, 'Stale token must not execute swap');
+  assert.ok(appState._autoMixHandover, 'Handover token preserved across stale play attempt');
+
+  // Active currentToken (42) matches loadToken (42) -> executes swap and consumes token
+  const handled = handover.handlePlayTrackHandover({
+    state: appState,
+    track: nextTrack,
+    currentToken: 42,
+    nativeAudio: mockNativeAudio,
+    auxAudio: mockAuxAudio,
+    options
+  });
+  assert.strictEqual(handled, true, 'Matching loadToken must trigger handover successfully');
   assert.strictEqual(mockNativeAudio.src, 'http://test/next-track.m4a');
   assert.strictEqual(mockNativeAudio.muted, true, 'Native audio must be muted while buffering');
 

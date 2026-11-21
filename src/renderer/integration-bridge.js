@@ -118,6 +118,9 @@
         });
 
         window.syncAutoMixSettings = function (opts = {}) {
+          if (typeof window.AutoMixSettingsController !== 'undefined' && typeof window.AutoMixSettingsController.syncAutoMixSettings === 'function') {
+            return window.AutoMixSettingsController.syncAutoMixSettings(opts, { window });
+          }
           const cfg = {};
           if (typeof opts.enabled === 'boolean') {
             cfg.enabled = opts.enabled;

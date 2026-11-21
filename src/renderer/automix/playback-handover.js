@@ -140,6 +140,44 @@ class PlaybackHandover {
     }
     return true;
   }
+
+  /**
+   * Production helper used by playTrack() to handle zero-gap dual-deck handover.
+   * Consumes state._autoMixHandover token once, validates loadToken, delegates swap,
+   * and prevents premature clearing of nativeAudio source.
+   *
+   * @param {object} params
+   * @param {object} params.state - Player state
+   * @param {object} params.track - Track to be played
+   * @param {number} params.currentToken - Captured loadToken for the current play call
+   * @param {HTMLAudioElement} params.nativeAudio - Native player audio element
+   * @param {HTMLAudioElement} [params.auxAudio] - Optional fallback aux element
+   * @param {object} [params.options] - Swap options (isMuted, onDeckGainsReset, applySettings)
+   * @returns {boolean} true if handover was handled and caller should return early
+   */
+  handlePlayTrackHandover({ state, track, currentToken, nativeAudio, auxAudio, options = {} }) {
+    if (!state || !track) return false;
+    const handoverToken = state._autoMixHandover;
+    const isHandover = !!(
+      this.isHandoverTarget(state, track) ||
+      (handoverToken && (
+        track.id === handoverToken.trackId ||
+        (track.videoId && track.videoId === handoverToken.trackId) ||
+        (track._matchedYtId && track._matchedYtId === handoverToken.trackId)
+      ))
+    );
+
+    if (isHandover && handoverToken) {
+      if (currentToken !== state.loadToken) {
+        // Stale load token: do not consume handover token and do not swap
+        return false;
+      }
+      state._autoMixHandover = null; // Consumed exactly once
+      const auxEl = handoverToken.auxAudio || auxAudio || (typeof document !== 'undefined' ? document.getElementById('eclipse-aux-audio') : null);
+      return this.executeSwap(nativeAudio, auxEl, handoverToken, options);
+    }
+    return false;
+  }
 }
 
 if (typeof module !== 'undefined' && module.exports) {

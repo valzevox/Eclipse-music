@@ -4786,6 +4786,29 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     loadCanvasForTrack(track);
 
     // Zero-Gap Dual-Deck Handover: keep auxAudio playing while nativeAudio buffers, then swap cleanly at live millisecond
+    if (window._playbackHandoverInstance && typeof window._playbackHandoverInstance.handlePlayTrackHandover === 'function') {
+      const handled = window._playbackHandoverInstance.handlePlayTrackHandover({
+        state,
+        track,
+        currentToken,
+        nativeAudio: el.nativeAudio,
+        auxAudio: document.getElementById('eclipse-aux-audio'),
+        options: {
+          isMuted: state.isMuted,
+          onDeckGainsReset: () => {
+            if (window.audioEngine && typeof window.audioEngine.setDeckGains === 'function') {
+              window.audioEngine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 20 });
+            }
+          },
+          applySettings: () => applyAudioSettings()
+        }
+      });
+      if (handled) {
+        if (hlsInstance) { try { hlsInstance.destroy(); } catch (_) {} hlsInstance = null; }
+        return;
+      }
+    }
+
     const handoverToken = state._autoMixHandover;
     const isHandover = !!(
       (window._playbackHandoverInstance && window._playbackHandoverInstance.isHandoverTarget(state, track)) ||
