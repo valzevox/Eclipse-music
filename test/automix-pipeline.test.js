@@ -239,3 +239,105 @@ test('AutoMixDJ - executeCrossfade applies harmonic ratio for half-time/double-t
   await crossfadePromise;
   assert.strictEqual(incomingEl.playbackRate, 1.0, 'Incoming rate remains 1.0 after crossfade completes');
 });
+
+test('PlaybackHandover - full production caller integration via playTrack flow', async () => {
+  const handover = new PlaybackHandover();
+  let auxStopped = false;
+  let nativeDeckGain = 0.0;
+  let auxDeckGain = 1.0;
+  let nativeSourceSet = '';
+  let nativePlayCalls = 0;
+  let nativeListeners = {};
+
+  const mockNativeAudio = {
+    src: 'http://test/old-track.mp3',
+    readyState: 0,
+    muted: false,
+    currentTime: 0,
+    addEventListener: (event, cb) => {
+      nativeListeners[event] = cb;
+    },
+    removeEventListener: (event) => {
+      delete nativeListeners[event];
+    },
+    play: () => {
+      nativePlayCalls++;
+      return Promise.resolve();
+    }
+  };
+
+  const mockAuxAudio = {
+    src: 'http://test/next-track.m4a',
+    paused: false,
+    currentTime: 14.2,
+    pause: () => { auxStopped = true; }
+  };
+
+  const nextTrack = { id: 'next-track-99', title: 'Next Track' };
+
+  // Step 1: Create token from auxAudio at live time
+  const token = handover.createHandoverToken(nextTrack, mockAuxAudio, 3);
+  assert.ok(token, 'Token must be created');
+  assert.strictEqual(token.currentTime, 14.2);
+  assert.strictEqual(token.src, 'http://test/next-track.m4a');
+
+  // Step 2: Setup state representing app.js
+  const appState = {
+    loadToken: 42,
+    _autoMixHandover: token,
+    isMuted: false
+  };
+
+  // Step 3: isHandoverTarget guard prevents premature clearing
+  assert.strictEqual(handover.isHandoverTarget(appState, nextTrack), true);
+  assert.strictEqual(handover.isHandoverTarget(appState, { id: 'other-track' }), false);
+
+  // Step 4: Execute swap as invoked in app.js
+  const handoverToken = appState._autoMixHandover;
+  appState._autoMixHandover = null; // consumed once
+
+  const options = {
+    isMuted: appState.isMuted,
+    onDeckGainsReset: () => {
+      nativeDeckGain = 1.0;
+      auxDeckGain = 0.0;
+    }
+  };
+
+  const swapResult = handover.executeSwap(mockNativeAudio, mockAuxAudio, handoverToken, options);
+  assert.strictEqual(swapResult, true);
+  assert.strictEqual(mockNativeAudio.src, 'http://test/next-track.m4a');
+  assert.strictEqual(mockNativeAudio.muted, true, 'Native audio must be muted while buffering');
+
+  // Step 5: Before loadedmetadata/canplay, Deck B remains active and auxAudio is playing
+  assert.strictEqual(auxStopped, false, 'Aux audio must remain playing before native is ready');
+  assert.strictEqual(nativeDeckGain, 0.0);
+  assert.strictEqual(auxDeckGain, 1.0);
+
+  // Step 6: loadedmetadata / canplay fire -> attachPlayAndSwap begins
+  assert.ok(nativeListeners['loadedmetadata']);
+  nativeListeners['loadedmetadata']();
+  assert.strictEqual(nativePlayCalls, 1, 'play() called once');
+
+  // Race condition: canplay fires after loadedmetadata -> must NOT trigger play() again
+  if (nativeListeners['canplay']) {
+    nativeListeners['canplay']();
+  }
+  assert.strictEqual(nativePlayCalls, 1, 'play() must not be called twice on canplay race');
+
+  // Aux audio still playing while waiting for 'playing' confirmation
+  assert.strictEqual(auxStopped, false, 'Aux must continue playing until native playing event');
+  assert.strictEqual(nativeDeckGain, 0.0);
+
+  // Step 7: playing event fires -> finishSwap completes
+  assert.ok(nativeListeners['playing']);
+  nativeListeners['playing']();
+
+  assert.strictEqual(auxStopped, true, 'Aux audio must stop only after native playing confirmed');
+  assert.strictEqual(nativeDeckGain, 1.0, 'Deck A gain reset to 1.0');
+  assert.strictEqual(auxDeckGain, 0.0, 'Deck B gain reset to 0.0');
+
+  // Step 8: Subsequent stale playTrack calls must not find handover token
+  assert.strictEqual(appState._autoMixHandover, null, 'Handover token was consumed exactly once');
+  assert.strictEqual(handover.isHandoverTarget(appState, nextTrack), false, 'Consumed token cannot match');
+});

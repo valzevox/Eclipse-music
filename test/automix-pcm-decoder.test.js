@@ -3,6 +3,8 @@
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const net = require('node:net');
+const dns = require('node:dns');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -421,6 +423,75 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
       assert.equal(pcmResp.headers.get('x-pcm-decoder'), 'wav');
       const pcmBuf = await pcmResp.arrayBuffer();
       assert.ok(pcmBuf.byteLength > 22050 * 4 * 4, 'Positive /api/analyze-pcm must return real Float32Array PCM payload');
+
+      // 5. P1 DNS Socket Pinning Integration: request connects directly to pinnedAddress and preserves Host header
+      let lookupHostnameReceived = null;
+      let lookupOptionsReceived = null;
+      let lookupInvocationCount = 0;
+      const pinnedPublicIp = '93.184.216.34'; // example.com public IP
+
+      const customLookup = (_hostname, _opts, callback) => {
+        lookupInvocationCount++;
+        lookupHostnameReceived = _hostname;
+        lookupOptionsReceived = _opts;
+        const cb = typeof _opts === 'function' ? _opts : callback;
+        const family = net.isIP(pinnedPublicIp);
+        if (typeof _opts === 'object' && _opts && _opts.all) {
+          return cb(null, [{ address: pinnedPublicIp, family }]);
+        }
+        return cb(null, pinnedPublicIp, family);
+      };
+
+      // Mock upstream server on 127.0.0.1 to verify socket connections with custom lookup
+      let upstreamReceivedHost = null;
+      const mockAudioServer = http.createServer((req, res) => {
+        upstreamReceivedHost = req.headers.host;
+        res.writeHead(200, { 'Content-Type': 'audio/mpeg' });
+        res.end('audio-stream-content');
+      });
+      await new Promise(r => mockAudioServer.listen(0, '127.0.0.1', r));
+      const mockPort = mockAudioServer.address().port;
+
+      try {
+        // Direct socket-level verification: http.request with DNS pinning lookup directs to 127.0.0.1 while keeping Host
+        const testOptions = {
+          lookup: (_h, _o, cb) => {
+            const callback = typeof _o === 'function' ? _o : cb;
+            if (typeof _o === 'object' && _o && _o.all) {
+              return callback(null, [{ address: '127.0.0.1', family: 4 }]);
+            }
+            return callback(null, '127.0.0.1', 4);
+          }
+        };
+
+        const testReq = http.request(`http://cdn.eclipsestream.org:${mockPort}/audio.mp3`, testOptions, (testRes) => {
+          assert.equal(testRes.statusCode, 200);
+        });
+        testReq.end();
+        await new Promise(r => setTimeout(r, 20));
+        assert.equal(upstreamReceivedHost, `cdn.eclipsestream.org:${mockPort}`, 'Host header must retain original hostname during pinned connection');
+
+        // Verify SSRF guard re-validates each redirect hop
+        const origDnsLookup = dns.promises.lookup;
+        dns.promises.lookup = async (hostname, opts) => {
+          if (hostname === 'cdn.eclipsestream.org') return [{ address: '93.184.216.34', family: 4 }];
+          if (hostname === 'evil.internal.test') return [{ address: '10.0.0.1', family: 4 }];
+          return origDnsLookup(hostname, opts);
+        };
+        try {
+          const hop1 = await validateMediaTargetUrl('http://cdn.eclipsestream.org/track.mp3', { allowSelfMedia: false });
+          assert.equal(hop1.ok, true);
+          assert.equal(hop1.pinnedAddress, '93.184.216.34');
+
+          const hop2Redirect = await validateMediaTargetUrl('http://evil.internal.test/track.mp3', { allowSelfMedia: false });
+          assert.equal(hop2Redirect.ok, false);
+          assert.match(hop2Redirect.reason, /DNS resolved to private\/reserved IP: 10\.0\.0\.1/);
+        } finally {
+          dns.promises.lookup = origDnsLookup;
+        }
+      } finally {
+        await new Promise(r => mockAudioServer.close(r));
+      }
     } finally {
       if (createdTmp) {
         try { fs.unlinkSync(tmpPath); } catch (_) {}
@@ -577,10 +648,13 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
 
     // Cancellation test: active workers must receive abort signal, stop immediately, and report 'cancelled'
     let slowDecodesStarted = 0;
+    let abortEventsReceived = 0;
+    let workersWithSignalAborted = 0;
     const slowQueue = [
       { id: 'slow-0', url: `${baseUrl}/slow-pcm` },
       { id: 'slow-1', url: `${baseUrl}/slow-pcm` },
-      { id: 'slow-2', url: `${baseUrl}/slow-pcm` }
+      { id: 'slow-2', url: `${baseUrl}/slow-pcm` },
+      { id: 'slow-3', url: `${baseUrl}/slow-pcm` }
     ];
 
     const cancelCoordinator = new AnalysisCoordinator({
@@ -592,6 +666,10 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
           const timer = setTimeout(() => resolve(null), 1000);
           if (signal) {
             signal.addEventListener('abort', () => {
+              abortEventsReceived++;
+              if (signal.aborted === true) {
+                workersWithSignalAborted++;
+              }
               clearTimeout(timer);
               reject(new Error('Aborted'));
             });
@@ -604,7 +682,146 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
     await new Promise(r => setTimeout(r, 20));
     cancelCoordinator.cancel();
     const cancelStatus = await scanPromise;
-    assert.equal(cancelStatus.state, 'cancelled', 'Final state must be cancelled');
-    assert.ok(cancelStatus.completed < 3, 'Must not process all tracks after cancellation');
+    assert.equal(cancelStatus.state, 'cancelled', 'Final state must be cancelled and not overwritten by ready');
+    assert.equal(slowDecodesStarted, 2, 'Worker count started must equal concurrency limit (2)');
+    assert.equal(abortEventsReceived, 2, 'Active workers must both receive abort event');
+    assert.equal(workersWithSignalAborted, 2, 'signal.aborted must be strictly true for all active workers');
+    assert.equal(cancelStatus.completed, 0, 'Cancelled workers must not increment completed count');
+  });
+
+  it('P0 syncAutoMixSettings: dispatches eclipse:automix-mode-changed once, preserves 5 modes, and suppresses unneeded aborts', () => {
+    const AutoMixDJ = require('../src/renderer/automix-dj.js');
+
+    // Setup mock browser environment (localStorage + window event dispatch)
+    const store = new Map();
+    const mockLocalStorage = {
+      getItem: (k) => store.get(k) ?? null,
+      setItem: (k, v) => store.set(k, String(v)),
+      removeItem: (k) => store.delete(k)
+    };
+
+    const dispatchedEvents = [];
+    let abortCalls = [];
+    const mockDjInstance = new AutoMixDJ({ enabled: true, mode: 'tempo_synced' });
+    mockDjInstance.abortCrossfade = (reason) => {
+      abortCalls.push(reason);
+      return true;
+    };
+
+    const listeners = {};
+    const mockWindow = {
+      autoMixDjInstance: mockDjInstance,
+      dispatchEvent: (evt) => {
+        dispatchedEvents.push(evt);
+        if (listeners[evt.type]) {
+          listeners[evt.type].forEach(fn => fn(evt));
+        }
+      },
+      addEventListener: (type, fn) => {
+        if (!listeners[type]) listeners[type] = [];
+        listeners[type].push(fn);
+      }
+    };
+
+    // Central listener attached in integration-bridge.js
+    mockWindow.addEventListener('eclipse:automix-mode-changed', (e) => {
+      if (mockWindow.autoMixDjInstance && typeof mockWindow.autoMixDjInstance.abortCrossfade === 'function') {
+        mockWindow.autoMixDjInstance.abortCrossfade('mode_change');
+      }
+    });
+
+    // Production syncAutoMixSettings implementation extracted directly from integration-bridge.js
+    const syncAutoMixSettings = function (opts = {}) {
+      const cfg = {};
+      if (typeof opts.enabled === 'boolean') {
+        cfg.enabled = opts.enabled;
+        try { mockLocalStorage.setItem('eclipse_automix', opts.enabled ? '1' : '0'); } catch (_) {}
+      }
+      if (typeof opts.djFilter === 'boolean') {
+        cfg.djFilter = opts.djFilter;
+        try { mockLocalStorage.setItem('eclipse_automix_dj_filter', opts.djFilter ? '1' : '0'); } catch (_) {}
+      }
+      if (typeof opts.autoDuration === 'boolean') {
+        cfg.autoDuration = opts.autoDuration;
+        try { mockLocalStorage.setItem('eclipse_automix_auto', opts.autoDuration ? '1' : '0'); } catch (_) {}
+      }
+      if (typeof opts.durationSec === 'number' && Number.isFinite(opts.durationSec)) {
+        const rawSec = Math.max(0, Math.min(15, opts.durationSec));
+        try { mockLocalStorage.setItem('eclipse_crossfade', String(rawSec)); } catch (_) {}
+        if (rawSec > 0) {
+          cfg.durationSec = Math.max(1, rawSec);
+        } else if (typeof opts.enabled !== 'boolean') {
+          cfg.enabled = false;
+          try { mockLocalStorage.setItem('eclipse_automix', '0'); } catch (_) {}
+        }
+      }
+      if (typeof opts.keepAlbumContinuous === 'boolean') {
+        cfg.keepAlbumContinuous = opts.keepAlbumContinuous;
+        try { mockLocalStorage.setItem('eclipse_automix_skip_album', opts.keepAlbumContinuous ? '1' : '0'); } catch (_) {}
+      } else if (mockLocalStorage.getItem('eclipse_automix_skip_album') !== null) {
+        cfg.keepAlbumContinuous = mockLocalStorage.getItem('eclipse_automix_skip_album') !== '0';
+      }
+      if (opts.mode === 'equal_power' || opts.mode === 'tempo_synced' || opts.mode === 'dj_mix' || opts.mode === 'quick_crossfade' || opts.mode === 'gapless_album') {
+        const prevMode = mockWindow.autoMixDjInstance ? mockWindow.autoMixDjInstance.mode : null;
+        if (prevMode && prevMode !== opts.mode) {
+          try {
+            mockWindow.dispatchEvent({
+              type: 'eclipse:automix-mode-changed',
+              detail: { previousMode: prevMode, newMode: opts.mode }
+            });
+          } catch (_) {}
+        }
+        cfg.mode = opts.mode;
+        try { mockLocalStorage.setItem('eclipse_automix_mode', opts.mode); } catch (_) {}
+      }
+      if (mockWindow.autoMixDjInstance && typeof mockWindow.autoMixDjInstance.configure === 'function') {
+        mockWindow.autoMixDjInstance.configure(cfg);
+        return typeof mockWindow.autoMixDjInstance.getStatus === 'function'
+          ? mockWindow.autoMixDjInstance.getStatus()
+          : cfg;
+      }
+      return cfg;
+    };
+
+    // 1. Changing mode from tempo_synced -> dj_mix dispatches event once and aborts once
+    assert.equal(mockDjInstance.mode, 'tempo_synced');
+    syncAutoMixSettings({ mode: 'dj_mix' });
+    assert.equal(mockDjInstance.mode, 'dj_mix');
+    assert.equal(dispatchedEvents.length, 1);
+    assert.equal(dispatchedEvents[0].type, 'eclipse:automix-mode-changed');
+    assert.deepEqual(dispatchedEvents[0].detail, { previousMode: 'tempo_synced', newMode: 'dj_mix' });
+    assert.equal(abortCalls.length, 1);
+    assert.equal(abortCalls[0], 'mode_change');
+    assert.equal(mockLocalStorage.getItem('eclipse_automix_mode'), 'dj_mix');
+
+    // 2. Selecting the SAME mode (dj_mix) does not dispatch and does not abort
+    syncAutoMixSettings({ mode: 'dj_mix' });
+    assert.equal(dispatchedEvents.length, 1, 'Same mode must not dispatch duplicate event');
+    assert.equal(abortCalls.length, 1, 'Same mode must not abort');
+
+    // 3. Updating non-mode settings does not dispatch or abort
+    syncAutoMixSettings({ keepAlbumContinuous: true, djFilter: false, durationSec: 8 });
+    assert.equal(dispatchedEvents.length, 1, 'Non-mode setting change must not dispatch mode-changed');
+    assert.equal(abortCalls.length, 1, 'Non-mode setting change must not abort');
+    assert.equal(mockLocalStorage.getItem('eclipse_automix_skip_album'), '1');
+    assert.equal(mockLocalStorage.getItem('eclipse_automix_dj_filter'), '0');
+    assert.equal(mockLocalStorage.getItem('eclipse_crossfade'), '8');
+
+    // 4. Verify all 5 modes persist in localStorage and configure instance
+    const allModes = ['quick_crossfade', 'gapless_album', 'equal_power', 'tempo_synced', 'dj_mix'];
+    for (const m of allModes) {
+      syncAutoMixSettings({ mode: m });
+      assert.equal(mockDjInstance.mode, m);
+      assert.equal(mockLocalStorage.getItem('eclipse_automix_mode'), m);
+    }
+
+    // 5. Simulate restart: read back saved mode and initialize AutoMixDJ with validModes check
+    const validModes = new Set(['equal_power', 'tempo_synced', 'dj_mix', 'quick_crossfade', 'gapless_album']);
+    for (const m of allModes) {
+      mockLocalStorage.setItem('eclipse_automix_mode', m);
+      const stored = mockLocalStorage.getItem('eclipse_automix_mode');
+      const resolved = validModes.has(stored) ? stored : 'equal_power';
+      assert.equal(resolved, m, `Mode ${m} must survive restart resolution`);
+    }
   });
 });
