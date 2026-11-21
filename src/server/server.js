@@ -8229,8 +8229,8 @@ const spotifyAuthPath = path.join(DATA_DIR, 'spotify-auth.enc');
 const spotifySafeStorage = process.versions.electron ? require('electron').safeStorage : null;
 
 function canStoreSpotifyAuth() {
-  return spotifySafeStorage?.isEncryptionAvailable() &&
-    (process.platform !== 'linux' || spotifySafeStorage.getSelectedStorageBackend() !== 'basic_text');
+  return !!(spotifySafeStorage?.isEncryptionAvailable() &&
+    (process.platform !== 'linux' || typeof spotifySafeStorage.getSelectedStorageBackend !== 'function' || spotifySafeStorage.getSelectedStorageBackend() !== 'basic_text'));
 }
 
 function loadSpotifyAuth() {

@@ -326,17 +326,18 @@
             let targetNextTrack = nextTrack;
             let targetNextIdx = nextIdx;
             let currentTrackBpm = trackAnalyzer ? trackAnalyzer.getEffectiveBpm(currentTrack) : ((currentTrack && currentTrack._detectedBpm) || null);
+            let pickedCandidate = null;
 
             if (window.autoMixDjInstance.mode === 'tempo_synced' && typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function') {
-              const picked = window.autoMixDjInstance.pickTempoSyncedNext(
+              pickedCandidate = window.autoMixDjInstance.pickTempoSyncedNext(
                 st.queue,
                 st.queueIndex,
                 st.autoMixPlayedIds,
                 currentTrackBpm
               );
-              if (picked && picked.track) {
-                targetNextTrack = picked.track;
-                targetNextIdx = picked.index;
+              if (pickedCandidate && pickedCandidate.track) {
+                targetNextTrack = pickedCandidate.track;
+                targetNextIdx = pickedCandidate.index;
               }
             }
 
@@ -357,7 +358,9 @@
               plannedFadeDuration = plan.fadeDuration;
               planBpmPair = { outgoingBpm: plan.currentBpm || 120, incomingBpm: plan.nextBpm || 120 };
               plannedTempoRatio = plan.tempoRatio || 1.0;
-              plannedTempoSynced = !!plan.tempoSynced;
+              // Both picker and planner must agree on compatibility; fallback sequential track always forced to false
+              plannedTempoSynced = (pickedCandidate ? pickedCandidate.compatible !== false : true) && !!plan.tempoSynced;
+              if (!plannedTempoSynced) plannedTempoRatio = 1.0;
             } else {
               const autoDur = window.autoMixDjInstance.autoDuration && typeof window.autoMixDjInstance.getBeatAlignedDuration === 'function'
                 ? window.autoMixDjInstance.getBeatAlignedDuration()

@@ -222,4 +222,20 @@ test('AutoMixDJ - executeCrossfade applies harmonic ratio for half-time/double-t
   const planFallback = planner.computePlan({ bpm: 120 }, { bpm: 150 }, { analyzer });
   assert.strictEqual(planFallback.tempoSynced, false, '120 vs 150 is NOT tempo synced');
   assert.strictEqual(planFallback.tempoRatio, 1.0, 'Fallback tempo ratio must be 1.0');
+
+  // Case 5: executeCrossfade playbackRate live verification
+  const outgoingEl = { volume: 1.0, playbackRate: 1.0, pause: () => {} };
+  const incomingEl = { volume: 0.0, playbackRate: 1.0, play: () => Promise.resolve(), pause: () => {} };
+
+  // When tempoSynced: false, incomingEl playbackRate must stay strictly at 1.0
+  const crossfadePromise = dj.executeCrossfade(outgoingEl, incomingEl, 0.2, {
+    outgoingBpm: 120,
+    incomingBpm: 150,
+    tempoSynced: false,
+    tempoRatio: 1.0
+  });
+
+  assert.strictEqual(incomingEl.playbackRate, 1.0, 'Incoming rate must remain 1.0 when tempoSynced is false');
+  await crossfadePromise;
+  assert.strictEqual(incomingEl.playbackRate, 1.0, 'Incoming rate remains 1.0 after crossfade completes');
 });
