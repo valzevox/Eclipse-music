@@ -3452,6 +3452,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const dur = getReliableTrackDuration();
         let cur = (el.nativeAudio && Number.isFinite(el.nativeAudio.currentTime)) ? el.nativeAudio.currentTime : 0;
+        if (window._autoMixSuppressVolumeSync) {
+          const auxEl = document.getElementById('eclipse-aux-audio');
+          if (auxEl && !auxEl.paused && Number.isFinite(auxEl.currentTime)) {
+            cur = auxEl.currentTime;
+          }
+        }
         if (isPauseFading) {
           cur = frozenCurTime;
         }
@@ -3554,7 +3560,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             sCtx.lineWidth = 9.5;
             sCtx.lineCap = 'round';
             sCtx.lineJoin = 'round';
-            sCtx.strokeStyle = primaryColor;
+            if (document.body.classList.contains('is-automixing')) {
+              const grad = sCtx.createLinearGradient(waveStart, centerY, waveEnd, centerY);
+              grad.addColorStop(0, '#ff4fa3');
+              grad.addColorStop(0.25, '#8b5cf6');
+              grad.addColorStop(0.5, '#38bdf8');
+              grad.addColorStop(0.75, '#34d399');
+              grad.addColorStop(1, '#fbbf24');
+              sCtx.strokeStyle = grad;
+            } else {
+              sCtx.strokeStyle = primaryColor;
+            }
 
             if (document.body.classList.contains('no-wavy')) {
               sCtx.moveTo(waveStart, centerY);
@@ -3648,7 +3664,17 @@ document.addEventListener('DOMContentLoaded', async () => {
               tCtx.lineWidth = 9.5;
               tCtx.lineCap = 'round';
               tCtx.lineJoin = 'round';
-              tCtx.strokeStyle = '#ffffff';
+              if (document.body.classList.contains('is-automixing')) {
+                const grad = tCtx.createLinearGradient(waveStart, centerY, waveEnd, centerY);
+                grad.addColorStop(0, '#ff4fa3');
+                grad.addColorStop(0.25, '#8b5cf6');
+                grad.addColorStop(0.5, '#38bdf8');
+                grad.addColorStop(0.75, '#34d399');
+                grad.addColorStop(1, '#fbbf24');
+                tCtx.strokeStyle = grad;
+              } else {
+                tCtx.strokeStyle = '#ffffff';
+              }
 
               if (document.body.classList.contains('no-wavy')) {
                 tCtx.moveTo(waveStart, centerY);
@@ -5603,6 +5629,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
       if (line.time >= 0) {
         div.addEventListener('click', () => {
+          abortAutoMixIfActive('seek');
           const seekTime = getLineStartTime(index);
           if (el.nativeAudio && seekTime >= 0) el.nativeAudio.currentTime = seekTime;
         });
@@ -5670,6 +5697,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       }
       if (line.time >= 0) {
         div.addEventListener('click', () => {
+          abortAutoMixIfActive('seek');
           const seekTime = getLineStartTime(index);
           if (el.nativeAudio && seekTime >= 0) el.nativeAudio.currentTime = seekTime;
         });
@@ -7406,6 +7434,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   const tvkTimeCur = el.tvkTimeCurrent || document.getElementById('tvk-time-current');
   if (tvkSeekSlider) {
     const onTvkSeekInput = () => {
+      abortAutoMixIfActive('seek');
       const dur = getReliableTrackDuration();
       const frac = Math.max(0, Math.min(1, Number(tvkSeekSlider.value) / 1000));
       const targetTime = frac * dur;
@@ -8216,7 +8245,14 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   let isAppClosing = false;
   window.addEventListener('beforeunload', () => { isAppClosing = true; });
 
+  function abortAutoMixIfActive(reason = 'manual') {
+    if (window.autoMixDjInstance && typeof window.autoMixDjInstance.abortCrossfade === 'function') {
+      window.autoMixDjInstance.abortCrossfade(reason);
+    }
+  }
+
   function pauseSmooth() {
+    abortAutoMixIfActive('pause');
     const curToken = ++smoothFadeToken;
     isPauseFading = true;
     frozenCurTime = (el.nativeAudio && Number.isFinite(el.nativeAudio.currentTime)) ? el.nativeAudio.currentTime : 0;
@@ -8515,6 +8551,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       return;
     }
     if (state.isPlaying) {
+      abortAutoMixIfActive('pause');
       pauseSmooth();
     } else {
       playSmooth();
@@ -8561,6 +8598,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   }
     if (syncState && syncState.active) return;
     if (state.queue.length === 0) return;
+    abortAutoMixIfActive('skip');
 
     if (!state._isNaturalEnding && state.myWaveActive && state.currentTrack) {
       const cur = (el.nativeAudio && typeof el.nativeAudio.currentTime === 'number') ? el.nativeAudio.currentTime : 0;
@@ -8665,6 +8703,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
   function playPrev() {
     if (syncState && syncState.active) return;
+    abortAutoMixIfActive('skip');
     if (el.nativeAudio && el.nativeAudio.currentTime > 3) {
       el.nativeAudio.currentTime = 0;
       return;
@@ -9160,6 +9199,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   window.addEventListener('mouseup', (e) => {
     if (!isDraggingScrubber || isDraggingTvkScrubber) return;
     isDraggingScrubber = false;
+    abortAutoMixIfActive('seek');
     if (el.scrubberTrack) el.scrubberTrack.classList.remove('dragging');
     const targetTime = updateScrubberPositionFromEvent(e);
     if (!isNaN(targetTime) && el.nativeAudio) {
@@ -9204,6 +9244,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       if (!isDraggingTvkScrubber) return;
       isDraggingTvkScrubber = false;
       isDraggingScrubber = false;
+      abortAutoMixIfActive('seek');
       const targetTime = updateTvkScrubberPositionFromEvent(e);
       if (!isNaN(targetTime) && el.nativeAudio) {
         el.nativeAudio.currentTime = targetTime;

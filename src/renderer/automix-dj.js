@@ -14,6 +14,7 @@ class AutoMixDJ {
     this._lastOnsetMs = 0;
     this.targetLufs = options.targetLufs || -14.0;
     this.isCrossfading = false;
+    this._currentFade = null;
   }
 
   configure(config = {}) {
@@ -59,17 +60,22 @@ class AutoMixDJ {
       return { skip: true, reason: 'live_broadcast' };
     }
 
-    // 3. MV Video mode active
+    // 3. Repeat One enabled
+    if (context.isRepeatOne || context.isRepeat) {
+      return { skip: true, reason: 'repeat_one_active' };
+    }
+
+    // 4. MV Video mode active
     if (context.isVideoMode) {
       return { skip: true, reason: 'video_mode_active' };
     }
 
-    // 4. Eclipse Sync Room active
+    // 5. Eclipse Sync Room active
     if (context.inSyncRoom) {
       return { skip: true, reason: 'sync_room_active' };
     }
 
-    // 5. Continuous gapless same-album playback
+    // 6. Continuous gapless same-album playback
     if (context.gaplessSameAlbum && currentTrack?.album && nextTrack?.album && currentTrack.album === nextTrack.album) {
       return { skip: true, reason: 'gapless_same_album' };
     }
@@ -273,6 +279,66 @@ class AutoMixDJ {
   }
 
   /**
+   * Abort active crossfade immediately (Pause, Seek, Skip)
+   * Commits immediately to the target track, resets gains, cleans up DJ filter
+   * @param {string} reason 'pause' | 'seek' | 'skip' | 'manual'
+   */
+  abortCrossfade(reason = 'manual') {
+    if (!this.isCrossfading || !this._currentFade) return false;
+
+    const fade = this._currentFade;
+    this.isCrossfading = false;
+    this._currentFade = null;
+
+    if (fade.interval) {
+      clearInterval(fade.interval);
+      fade.interval = null;
+    }
+
+    const { outgoingAudio, incomingAudio, inFilter, initialUserVol, useDeckGains, audioEngine } = fade;
+
+    try {
+      if (useDeckGains && audioEngine && typeof audioEngine.setDeckGains === 'function') {
+        audioEngine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 30 });
+      } else if (audioEngine && audioEngine.fadeGain && audioEngine.ctx) {
+        audioEngine.fadeGain.gain.setValueAtTime(1.0, audioEngine.ctx.currentTime);
+      }
+
+      if (outgoingAudio) {
+        outgoingAudio.volume = initialUserVol;
+        outgoingAudio.playbackRate = 1.0;
+        if (reason === 'skip' || reason === 'seek' || reason === 'pause') {
+          outgoingAudio.pause();
+        }
+      }
+
+      if (incomingAudio) {
+        incomingAudio.volume = initialUserVol;
+        incomingAudio.playbackRate = 1.0;
+        if (reason === 'pause') {
+          incomingAudio.pause();
+        }
+      }
+
+      if (inFilter && inFilter.context) {
+        inFilter.frequency.setValueAtTime(20, inFilter.context.currentTime);
+      }
+    } catch (_) {}
+
+    if (typeof window !== 'undefined') {
+      setTimeout(() => { window._autoMixSuppressVolumeSync = false; }, 80);
+      window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+        detail: { active: false, aborted: true, reason }
+      }));
+    }
+
+    if (typeof fade.reject === 'function') {
+      fade.reject(new Error(`Crossfade aborted: ${reason}`));
+    }
+    return true;
+  }
+
+  /**
    * Execute programmatic crossfade between outgoing audio node/element and incoming one
    */
   async executeCrossfade(outgoingAudio, incomingAudio, duration = this.durationSec, options = {}) {
@@ -283,7 +349,11 @@ class AutoMixDJ {
     const startTime = Date.now();
     const durationMs = Math.max(200, duration * 1000);
     const initialUserVol = Number.isFinite(outgoingAudio.volume) ? Math.max(0, Math.min(1, outgoingAudio.volume)) : 1.0;
-    const useFadeGainNode = !!(typeof window !== 'undefined' && window.audioEngine && window.audioEngine.fadeGain && window.audioEngine.ctx);
+
+    const audioEngine = (typeof window !== 'undefined' && window.audioEngine) ? window.audioEngine : null;
+    const useDeckGains = !!(audioEngine && typeof audioEngine.setDeckGains === 'function');
+    const useFadeGainNode = !useDeckGains && !!(audioEngine && audioEngine.fadeGain && audioEngine.ctx);
+
     const startInRate = this.mode === 'tempo_synced'
       ? this.computeTempoRatio(options.outgoingBpm || this.bpm, options.incomingBpm || this.bpm)
       : 1.0;
@@ -292,7 +362,7 @@ class AutoMixDJ {
     let inFilter = null;
     if (this.djFilter && typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext)) {
       try {
-        const ctx = (window.audioEngine && window.audioEngine.ctx) || this._mixCtx || (this._mixCtx = new (window.AudioContext || window.webkitAudioContext)());
+        const ctx = (audioEngine && audioEngine.ctx) || this._mixCtx || (this._mixCtx = new (window.AudioContext || window.webkitAudioContext)());
         if (ctx.state === 'suspended') ctx.resume().catch(() => {});
         if (!incomingAudio._eclipseMixSource) {
           incomingAudio._eclipseMixSource = ctx.createMediaElementSource(incomingAudio);
@@ -309,25 +379,56 @@ class AutoMixDJ {
       }
     }
 
+    // Initialize gains
+    if (useDeckGains) {
+      audioEngine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 0 });
+    } else if (useFadeGainNode) {
+      audioEngine.fadeGain.gain.setValueAtTime(1.0, audioEngine.ctx.currentTime);
+    } else {
+      outgoingAudio.volume = initialUserVol;
+    }
+
     // Start incoming audio at 0 volume and matched tempo
     try {
-      incomingAudio.volume = 0;
+      if (!useDeckGains) {
+        incomingAudio.volume = 0;
+      } else {
+        incomingAudio.volume = initialUserVol;
+      }
       incomingAudio.playbackRate = startInRate;
       await incomingAudio.play();
     } catch (_) {}
 
-    return new Promise((resolve) => {
-      const interval = setInterval(() => {
+    return new Promise((resolve, reject) => {
+      const fadeState = {
+        outgoingAudio,
+        incomingAudio,
+        inFilter,
+        initialUserVol,
+        useDeckGains,
+        useFadeGainNode,
+        audioEngine,
+        interval: null,
+        resolve,
+        reject
+      };
+      this._currentFade = fadeState;
+
+      fadeState.interval = setInterval(() => {
         const elapsed = Date.now() - startTime;
         const progress = elapsed / durationMs;
 
         if (progress >= 1.0) {
-          clearInterval(interval);
+          clearInterval(fadeState.interval);
+          fadeState.interval = null;
           this.isCrossfading = false;
+          this._currentFade = null;
           try {
             outgoingAudio.pause();
-            if (useFadeGainNode) {
-              window.audioEngine.fadeGain.gain.setValueAtTime(1.0, window.audioEngine.ctx.currentTime);
+            if (useDeckGains) {
+              audioEngine.setDeckGains({ deckA: 0.0, deckB: 1.0, rampMs: 30 });
+            } else if (useFadeGainNode) {
+              audioEngine.fadeGain.gain.setValueAtTime(1.0, audioEngine.ctx.currentTime);
             } else {
               outgoingAudio.volume = initialUserVol;
             }
@@ -352,12 +453,20 @@ class AutoMixDJ {
           inFilter.frequency.setValueAtTime(Math.max(20, freq), inFilter.context.currentTime);
         }
         try {
-          if (useFadeGainNode) {
-            window.audioEngine.fadeGain.gain.setValueAtTime(Math.max(0, Math.min(1, gains.fadeOutGain)), window.audioEngine.ctx.currentTime);
+          if (useDeckGains) {
+            audioEngine.setDeckGains({
+              deckA: Math.max(0, Math.min(1, gains.fadeOutGain)),
+              deckB: Math.max(0, Math.min(1, gains.fadeInGain)),
+              rampMs: 50
+            });
+          } else if (useFadeGainNode) {
+            audioEngine.fadeGain.gain.setValueAtTime(Math.max(0, Math.min(1, gains.fadeOutGain)), audioEngine.ctx.currentTime);
+            incomingAudio.volume = Math.max(0, Math.min(initialUserVol, gains.fadeInGain * initialUserVol));
           } else {
             outgoingAudio.volume = Math.max(0, Math.min(initialUserVol, gains.fadeOutGain * initialUserVol));
+            incomingAudio.volume = Math.max(0, Math.min(initialUserVol, gains.fadeInGain * initialUserVol));
           }
-          incomingAudio.volume = Math.max(0, Math.min(initialUserVol, gains.fadeInGain * initialUserVol));
+
           if (this.mode === 'tempo_synced' && startInRate !== 1.0) {
             incomingAudio.playbackRate = 1.0 + (startInRate - 1.0) * (1.0 - progress);
           }

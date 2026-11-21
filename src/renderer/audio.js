@@ -8,6 +8,13 @@
       this.mediaSource = null;
       this.graphInitialized = false;
 
+      // Dual-Deck Architecture: Deck A (primary) and Deck B (auxiliary)
+      this.deckAGain = null;
+      this.deckBGain = null;
+      this.eqPreGain = null;
+      this.auxMediaSource = null;
+      this._auxAudioElement = null;
+
       this.stdInput = null;
       this.dryGain = null;
       this.distortionNode = null;
@@ -145,6 +152,24 @@
       if (!this.graphInitialized) {
         try {
           this.mediaSource = this.ctx.createMediaElementSource(audioElement);
+
+          // Dual-Deck routing: Deck A & Deck B into unified eqPreGain bus
+          this.eqPreGain = this.ctx.createGain();
+          this.deckAGain = this.ctx.createGain();
+          this.deckAGain.gain.value = 1.0;
+          this.deckBGain = this.ctx.createGain();
+          this.deckBGain.gain.value = 0.0;
+
+          this.mediaSource.connect(this.deckAGain);
+          this.deckAGain.connect(this.eqPreGain);
+          this.deckBGain.connect(this.eqPreGain);
+
+          if (this._auxAudioElement && !this.auxMediaSource) {
+            try {
+              this.auxMediaSource = this.ctx.createMediaElementSource(this._auxAudioElement);
+              this.auxMediaSource.connect(this.deckBGain);
+            } catch (_) {}
+          }
 
           this.stdInput = this.ctx.createGain();
           this.hqInput = this.ctx.createGain();
@@ -356,7 +381,7 @@
       this._routingState = stateKey;
 
       try {
-        this.mediaSource.disconnect();
+        if (this.eqPreGain) this.eqPreGain.disconnect();
         this.stdInput.disconnect();
         this.hqLimiter.disconnect();
         this.bus.disconnect();
@@ -373,9 +398,17 @@
 
       const inputNode = isHqOn ? this.hqLimiter : this.stdInput;
       if (isHqOn) {
-        this.mediaSource.connect(this.hqInput);
+        if (this.eqPreGain) {
+          this.eqPreGain.connect(this.hqInput);
+        } else {
+          this.mediaSource.connect(this.hqInput);
+        }
       } else {
-        this.mediaSource.connect(this.stdInput);
+        if (this.eqPreGain) {
+          this.eqPreGain.connect(this.stdInput);
+        } else {
+          this.mediaSource.connect(this.stdInput);
+        }
       }
 
       if (isEqOn) {
@@ -667,6 +700,62 @@
         }
       }
       if (this.graphInitialized) this._updateRouting();
+    }
+
+    attachAuxAudio(auxEl) {
+      if (!auxEl) return false;
+      this._auxAudioElement = auxEl;
+      if (!this.ctx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        this.ctx = new AC({ latencyHint: 'playback' });
+      }
+      if (!this.deckBGain && this.ctx) {
+        this.deckBGain = this.ctx.createGain();
+        this.deckBGain.gain.value = 0.0;
+        if (this.eqPreGain) {
+          this.deckBGain.connect(this.eqPreGain);
+        }
+      }
+      if (!this.auxMediaSource && this.ctx) {
+        try {
+          this.auxMediaSource = this.ctx.createMediaElementSource(auxEl);
+          if (this.deckBGain) {
+            this.auxMediaSource.connect(this.deckBGain);
+          }
+        } catch (e) {
+          console.warn('[AudioEngine] attachAuxAudio source binding notice:', e);
+        }
+      }
+      return true;
+    }
+
+    setDeckGains({ deckA, deckB, rampMs = 0 } = {}) {
+      if (!this.ctx) return { deckA: 1.0, deckB: 0.0 };
+      const t = this.ctx.currentTime;
+      const duration = Math.max(0, Number(rampMs) || 0) / 1000;
+
+      const applyGain = (node, targetVal) => {
+        if (!node || typeof targetVal !== 'number' || isNaN(targetVal)) return;
+        const clamped = Math.max(0, Math.min(1, targetVal));
+        if (duration > 0 && typeof node.gain.linearRampToValueAtTime === 'function') {
+          node.gain.cancelScheduledValues(t);
+          node.gain.setValueAtTime(node.gain.value, t);
+          node.gain.linearRampToValueAtTime(clamped, t + duration);
+        } else if (typeof node.gain.setValueAtTime === 'function') {
+          node.gain.cancelScheduledValues(t);
+          node.gain.setValueAtTime(clamped, t);
+        } else {
+          node.gain.value = clamped;
+        }
+      };
+
+      if (deckA !== undefined) applyGain(this.deckAGain, deckA);
+      if (deckB !== undefined) applyGain(this.deckBGain, deckB);
+
+      return {
+        deckA: this.deckAGain ? this.deckAGain.gain.value : 1.0,
+        deckB: this.deckBGain ? this.deckBGain.gain.value : 0.0
+      };
     }
 
     setVolume(volume, isMuted) {

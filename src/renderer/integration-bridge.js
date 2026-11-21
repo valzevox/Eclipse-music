@@ -180,11 +180,30 @@
         const coreSt = getCoreState();
         if (coreSt && auxAudio) coreSt.secondaryAudio = auxAudio;
 
+        // Connect eclipse-aux-audio to AudioEngine Deck B DSP graph
+        const connectAuxToAudioEngine = () => {
+          if (auxAudio && window.audioEngine && typeof window.audioEngine.attachAuxAudio === 'function') {
+            try {
+              window.audioEngine.attachAuxAudio(auxAudio);
+              console.log('[EclipseBridge] Connected eclipse-aux-audio to AudioEngine Deck B.');
+            } catch (err) {
+              console.warn('[EclipseBridge] attachAuxAudio error:', err.message);
+            }
+          }
+        };
+        connectAuxToAudioEngine();
+        if (typeof window !== 'undefined') {
+          window.addEventListener('audio-engine-ready', connectAuxToAudioEngine);
+          setTimeout(connectAuxToAudioEngine, 1000);
+        }
+
         console.log('[EclipseBridge] AutoMixDJ initialized with dual-source Equal-Power crossfade.');
 
         let automixTriggeredForTrack = false;
+        let earlyPreloadStartedForTrack = false;
         window.addEventListener('trackchanged', () => {
           automixTriggeredForTrack = false;
+          earlyPreloadStartedForTrack = false;
           if (window.autoMixDjInstance && typeof window.autoMixDjInstance.resetLiveBpm === 'function') {
             window.autoMixDjInstance.resetLiveBpm();
           }
@@ -219,21 +238,39 @@
 
         if (nativeAudio && auxAudio) {
           nativeAudio.addEventListener('timeupdate', async () => {
-            if (!window.autoMixDjInstance || !window.autoMixDjInstance.enabled || window.autoMixDjInstance.isCrossfading || automixTriggeredForTrack) return;
             const dur = nativeAudio.duration;
             const cur = nativeAudio.currentTime;
+            if (!dur || isNaN(dur) || dur <= 0) return;
             const remaining = dur - cur;
+
+            const st = getCoreState();
+            if (!st || !Array.isArray(st.queue) || st.queue.length <= 1) return;
+            const currentTrack = st.currentTrack || st.queue[st.queueIndex];
+            let nextIdx = st.queueIndex + 1;
+            let nextTrack = nextIdx < st.queue.length ? st.queue[nextIdx] : null;
+
+            // 1. Early Stream Preloading at 25-30s before track ends
+            if (dur > 35 && remaining <= 28 && remaining > 16 && !earlyPreloadStartedForTrack) {
+              earlyPreloadStartedForTrack = true;
+              if (nextTrack && !nextTrack._preloadedStreamUrl) {
+                resolveNextTrackStreamUrl(nextTrack).then(url => {
+                  if (url && auxAudio && !window.autoMixDjInstance?.isCrossfading && auxAudio.paused) {
+                    auxAudio.preload = 'auto';
+                    auxAudio.src = url;
+                  }
+                }).catch(() => {});
+              }
+            }
+
+            if (!window.autoMixDjInstance || !window.autoMixDjInstance.enabled || window.autoMixDjInstance.isCrossfading || automixTriggeredForTrack) return;
+
             const autoDur = window.autoMixDjInstance.autoDuration && typeof window.autoMixDjInstance.getBeatAlignedDuration === 'function'
               ? window.autoMixDjInstance.getBeatAlignedDuration()
               : (window.autoMixDjInstance.durationSec || 6.0);
             const threshold = Math.max(2, Math.min(15, autoDur));
 
             if (dur > 20 && remaining <= threshold && remaining > 0.8) {
-              const st = getCoreState();
-              if (!st || !Array.isArray(st.queue) || st.queue.length <= 1 || st.isRepeat) return;
-              const currentTrack = st.currentTrack || st.queue[st.queueIndex];
-              let nextIdx = st.queueIndex + 1;
-              let nextTrack = nextIdx < st.queue.length ? st.queue[nextIdx] : null;
+              if (st.isRepeat || st.repeatMode === 1 || st.repeatMode === 'one') return;
               let targetBpm = window.autoMixDjInstance.bpm || 120;
 
               if (window.autoMixDjInstance.mode === 'tempo_synced' && typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function') {
@@ -255,7 +292,9 @@
               const skipCheck = typeof window.autoMixDjInstance.shouldSkipCrossfade === 'function'
                 ? window.autoMixDjInstance.shouldSkipCrossfade(currentTrack, nextTrack, {
                     gaplessSameAlbum: keepAlbumsContinuous && window.autoMixDjInstance.mode !== 'tempo_synced',
-                    isVideoMode: !!(window.eclipseMvPlayer && window.eclipseMvPlayer.isVideoMode)
+                    isVideoMode: !!(window.eclipseMvPlayer && window.eclipseMvPlayer.isVideoMode),
+                    isRepeatOne: !!(st.isRepeat || st.repeatMode === 1 || st.repeatMode === 'one'),
+                    inSyncRoom: !!(window.syncRoomInstance && typeof window.syncRoomInstance.isActiveRoom === 'function' && window.syncRoomInstance.isActiveRoom())
                   })
                 : { skip: false };
               if (skipCheck.skip) {
@@ -276,8 +315,50 @@
                 return;
               }
 
-              auxAudio.src = nextStreamUrl;
+              if (auxAudio.src !== nextStreamUrl) {
+                auxAudio.src = nextStreamUrl;
+              }
               auxAudio.currentTime = 0;
+
+              // Graceful fallback: verify auxAudio readiness (readyState >= 2) before attempting crossfade
+              const waitForAuxReady = () => {
+                if (auxAudio.readyState >= 2) return Promise.resolve(true);
+                return new Promise(resolve => {
+                  let settled = false;
+                  const onCanPlay = () => {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    resolve(true);
+                  };
+                  const onError = () => {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    resolve(false);
+                  };
+                  const timer = setTimeout(() => {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    resolve(auxAudio.readyState >= 2);
+                  }, 1200);
+                  const cleanup = () => {
+                    clearTimeout(timer);
+                    auxAudio.removeEventListener('canplay', onCanPlay);
+                    auxAudio.removeEventListener('error', onError);
+                  };
+                  auxAudio.addEventListener('canplay', onCanPlay);
+                  auxAudio.addEventListener('error', onError);
+                });
+              };
+
+              const isAuxReady = await waitForAuxReady();
+              if (!isAuxReady || auxAudio.readyState < 2) {
+                console.warn('[EclipseBridge] Aux stream not ready (readyState < 2); falling back gracefully to gapless transition.');
+                window._autoMixHandlingEnd = false;
+                return;
+              }
 
               window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
                 detail: { active: true, nextTrack, durationSec: threshold, mode: window.autoMixDjInstance.mode, bpm: window.autoMixDjInstance.bpm }
@@ -289,6 +370,8 @@
                   outgoingBpm: (currentTrack && currentTrack._detectedBpm) || window.autoMixDjInstance.bpm || 120,
                   incomingBpm: targetBpm
                 });
+              } catch (fadeErr) {
+                console.warn('[EclipseBridge] Crossfade interrupted or failed:', fadeErr?.message || fadeErr);
               } finally {
                 window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
                   detail: { active: false, nextTrack: null, durationSec: 0 }
