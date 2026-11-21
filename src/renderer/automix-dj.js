@@ -391,14 +391,26 @@ class AutoMixDJ {
       const tid = t.id || t.videoId;
       if (tid && played.has(tid)) continue;
 
+      // Only trust verified detected BPM or metadata BPM (>0); do NOT fake BPM from duration
       const tBpm = (typeof t._detectedBpm === 'number' && t._detectedBpm > 0)
         ? t._detectedBpm
-        : ((typeof t.bpm === 'number' && t.bpm > 0) ? t.bpm : (95 + ((Number(t.duration) || 180) % 45)));
-      const diff = Math.abs(tBpm - currentBpm);
-      if (diff < bestDiff) {
-        bestDiff = diff;
-        best = { track: t, index: i, targetBpm: tBpm };
+        : ((typeof t.bpm === 'number' && t.bpm > 0) ? t.bpm : null);
+
+      if (!tBpm || !currentBpm || currentBpm <= 0) continue;
+
+      // Check direct, half-time, and double-time compatibility
+      const candidates = [tBpm, tBpm * 2, tBpm * 0.5];
+      for (const cand of candidates) {
+        const diff = Math.abs(cand - currentBpm);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          best = { track: t, index: i, targetBpm: cand, baseBpm: tBpm };
+        }
       }
+    }
+    // Fallback: if no track has verified BPM, pick next sequential track in queue without forcing fake tempo sync
+    if (!best && currentIndex + 1 < queue.length) {
+      return { track: queue[currentIndex + 1], index: currentIndex + 1, targetBpm: currentBpm, fallback: true };
     }
     return best;
   }
@@ -533,6 +545,9 @@ class AutoMixDJ {
       await incomingAudio.play();
     } catch (playErr) {
       console.warn('[AutoMixDJ] incomingAudio.play() rejected; aborting crossfade and restoring outgoing volume:', playErr?.message || playErr);
+      if (typeof window !== 'undefined') {
+        setTimeout(() => { window._autoMixSuppressVolumeSync = false; }, 50);
+      }
       // Rollback gains immediately to prevent fading outgoing into silence
       if (useDeckGains) {
         audioEngine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 20 });

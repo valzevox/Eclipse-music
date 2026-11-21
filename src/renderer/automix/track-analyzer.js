@@ -11,15 +11,14 @@ class TrackAnalyzer {
     if (!track) return 0;
     if (typeof track._detectedBpm === 'number' && track._detectedBpm > 0) return 0.9;
     if (typeof track.bpm === 'number' && track.bpm > 0) return 0.85;
-    return 0.4;
+    return 0; // Zero confidence for fake/unverified BPM
   }
 
   getEffectiveBpm(track) {
-    if (!track) return 120;
+    if (!track) return null;
     if (typeof track._detectedBpm === 'number' && track._detectedBpm > 0) return track._detectedBpm;
     if (typeof track.bpm === 'number' && track.bpm > 0) return track.bpm;
-    const dur = Number(track.duration) || 180;
-    return 95 + (dur % 45);
+    return null; // Do NOT generate simulated fake BPM from track duration
   }
 
   findHarmonicMatch(sourceBpm, targetBpm, maxDeviation = 0.06) {

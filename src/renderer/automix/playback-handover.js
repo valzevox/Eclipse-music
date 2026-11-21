@@ -43,9 +43,6 @@ class PlaybackHandover {
     }
     nativeAudio.muted = true;
     nativeAudio.preload = 'auto';
-    if (nativeAudio.src !== handover.src) {
-      nativeAudio.src = handover.src;
-    }
 
     let swapped = false;
     const finishSwap = () => {
@@ -64,18 +61,43 @@ class PlaybackHandover {
       }
     };
 
-    const liveTime = (auxAudio && !auxAudio.paused && Number.isFinite(auxAudio.currentTime))
-      ? auxAudio.currentTime + 0.04
-      : (handover.currentTime || 0);
+    const attachPlayAndSwap = () => {
+      const liveTime = (auxAudio && !auxAudio.paused && Number.isFinite(auxAudio.currentTime))
+        ? auxAudio.currentTime + 0.04
+        : (handover.currentTime || 0);
 
-    try { nativeAudio.currentTime = liveTime; } catch (_) {}
+      try { nativeAudio.currentTime = liveTime; } catch (_) {}
 
-    nativeAudio.addEventListener('playing', finishSwap, { once: true });
-    const p = nativeAudio.play();
-    if (p && typeof p.catch === 'function') {
-      p.catch(() => finishSwap());
+      nativeAudio.addEventListener('playing', finishSwap, { once: true });
+      const p = nativeAudio.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch((playErr) => {
+          console.warn('[PlaybackHandover] nativeAudio.play() rejected; keeping auxAudio running to prevent silence:', playErr?.message || playErr);
+          // Critical P0: DO NOT stop auxAudio if nativeAudio fails to play!
+          if (typeof window !== 'undefined') {
+            window._autoMixSuppressVolumeSync = false;
+          }
+          if (typeof options.onDeckGainsReset === 'function') {
+            // Keep Deck B active
+            if (window.audioEngine && typeof window.audioEngine.setDeckGains === 'function') {
+              window.audioEngine.setDeckGains({ deckA: 0.0, deckB: 1.0, rampMs: 20 });
+            }
+          }
+        });
+      }
+    };
+
+    if (nativeAudio.src !== handover.src) {
+      nativeAudio.src = handover.src;
+      nativeAudio.addEventListener('loadedmetadata', attachPlayAndSwap, { once: true });
+      nativeAudio.addEventListener('canplay', attachPlayAndSwap, { once: true });
+    } else {
+      if (nativeAudio.readyState >= 2) {
+        attachPlayAndSwap();
+      } else {
+        nativeAudio.addEventListener('canplay', attachPlayAndSwap, { once: true });
+      }
     }
-    setTimeout(finishSwap, 600);
     return true;
   }
 }

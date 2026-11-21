@@ -435,17 +435,26 @@
               }));
 
               console.log(`[EclipseBridge] AutoMix (${window.autoMixDjInstance.mode}) crossfade (${remaining.toFixed(1)}s remaining, fade: ${plannedFadeDuration.toFixed(1)}s, BPM ${window.autoMixDjInstance.bpm} -> ${targetBpm})...`);
+              let crossfadeSucceeded = false;
               try {
-                await window.autoMixDjInstance.executeCrossfade(nativeAudio, auxAudio, Math.min(plannedFadeDuration, remaining - 0.25), {
+                crossfadeSucceeded = (await window.autoMixDjInstance.executeCrossfade(nativeAudio, auxAudio, Math.min(plannedFadeDuration, remaining - 0.25), {
                   outgoingBpm: (currentTrack && currentTrack._detectedBpm) || window.autoMixDjInstance.bpm || 120,
                   incomingBpm: targetBpm
-                });
+                })) === true;
               } catch (fadeErr) {
-                console.warn('[EclipseBridge] Crossfade interrupted or failed:', fadeErr?.message || fadeErr);
+                console.warn('[EclipseBridge] Crossfade interrupted or failed; aborting handover to keep outgoing track playing:', fadeErr?.message || fadeErr);
+                crossfadeSucceeded = false;
               } finally {
                 window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
                   detail: { active: false, nextTrack: null, durationSec: 0 }
                 }));
+              }
+
+              // P0 Critical: If crossfade did not succeed, DO NOT handover and DO NOT call _eclipsePlayNext()!
+              if (!crossfadeSucceeded) {
+                console.warn('[EclipseBridge] Handover aborted because crossfade was not successful. Outgoing track will continue playing.');
+                window._autoMixHandlingEnd = false;
+                return;
               }
 
               // Zero-Gap Dual-Deck Handover via PlaybackHandover module
