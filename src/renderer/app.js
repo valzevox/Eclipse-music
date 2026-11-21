@@ -13339,6 +13339,7 @@ function renderClickableArtists(container, rawArtist) {
 
   function updateQueueBadge() {
     setNavCount(el.queueCount, state.queue.length);
+    try { window.dispatchEvent(new CustomEvent('queueupdated', { detail: { length: state.queue.length } })); } catch (_) {}
   }
 
   function removeTrackFromQueue(qIdx) {
