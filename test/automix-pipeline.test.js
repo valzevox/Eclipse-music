@@ -301,7 +301,7 @@ test('PlaybackHandover - full production caller integration via playTrack flow',
     }
   };
 
-  // Stale token check: old currentToken (999) does not match appState.loadToken (42) -> must return false and NOT consume token
+  // Stale token check: old currentToken (999) does not match appState.loadToken (42) -> returns status 'stale', does NOT consume token or execute swap
   const staleHandled = handover.handlePlayTrackHandover({
     state: appState,
     track: nextTrack,
@@ -310,10 +310,11 @@ test('PlaybackHandover - full production caller integration via playTrack flow',
     auxAudio: mockAuxAudio,
     options
   });
-  assert.strictEqual(staleHandled, false, 'Stale token must not execute swap');
+  assert.strictEqual(staleHandled.status, 'stale', 'Stale token must return status stale');
+  assert.strictEqual(nativePlayCalls, 0, 'Stale token must not invoke nativeAudio.play()');
   assert.ok(appState._autoMixHandover, 'Handover token preserved across stale play attempt');
 
-  // Active currentToken (42) matches loadToken (42) -> executes swap and consumes token
+  // Active currentToken (42) matches loadToken (42) -> returns status 'handled', executes swap and consumes token
   const handled = handover.handlePlayTrackHandover({
     state: appState,
     track: nextTrack,
@@ -322,7 +323,7 @@ test('PlaybackHandover - full production caller integration via playTrack flow',
     auxAudio: mockAuxAudio,
     options
   });
-  assert.strictEqual(handled, true, 'Matching loadToken must trigger handover successfully');
+  assert.strictEqual(handled.status, 'handled', 'Matching loadToken must trigger handover successfully');
   assert.strictEqual(mockNativeAudio.src, 'http://test/next-track.m4a');
   assert.strictEqual(mockNativeAudio.muted, true, 'Native audio must be muted while buffering');
 
@@ -357,4 +358,52 @@ test('PlaybackHandover - full production caller integration via playTrack flow',
   // Step 8: Subsequent stale playTrack calls must not find handover token
   assert.strictEqual(appState._autoMixHandover, null, 'Handover token was consumed exactly once');
   assert.strictEqual(handover.isHandoverTarget(appState, nextTrack), false, 'Consumed token cannot match');
+
+  // Step 9: Race condition test: newer load arrives while native audio is waiting for 'playing' -> older swap must abort and not finish swap
+  const raceAppState = {
+    loadToken: 100,
+    _autoMixHandover: handover.createHandoverToken(nextTrack, mockAuxAudio, 4),
+    isMuted: false
+  };
+  let raceNativeGain = 0.0;
+  let raceAuxStopped = false;
+  let raceListeners = {};
+  const raceNativeAudio = {
+    src: 'http://test/initial.mp3',
+    readyState: 0,
+    muted: false,
+    currentTime: 0,
+    addEventListener: (ev, fn) => { raceListeners[ev] = fn; },
+    removeEventListener: (ev) => { delete raceListeners[ev]; },
+    play: () => Promise.resolve()
+  };
+  const raceAuxAudio = {
+    src: 'http://test/next-track.m4a',
+    paused: false,
+    currentTime: 20,
+    pause: () => { raceAuxStopped = true; }
+  };
+
+  const raceResult = handover.handlePlayTrackHandover({
+    state: raceAppState,
+    track: nextTrack,
+    currentToken: 100,
+    nativeAudio: raceNativeAudio,
+    auxAudio: raceAuxAudio,
+    options: {
+      onDeckGainsReset: () => { raceNativeGain = 1.0; }
+    }
+  });
+  assert.strictEqual(raceResult.status, 'handled');
+  // loadedmetadata fires and calls attachPlayAndSwap
+  raceListeners['loadedmetadata']();
+  assert.ok(raceListeners['playing'], 'Waiting for playing event');
+
+  // Before playing fires, a newer track load increments loadToken to 101!
+  raceAppState.loadToken = 101;
+
+  // Now stale playing event fires -> finishSwap must check isOwnerInvocation() and abort without resetting gains or stopping aux
+  raceListeners['playing']();
+  assert.strictEqual(raceAuxStopped, false, 'Older swap must not stop auxAudio if newer loadToken took over');
+  assert.strictEqual(raceNativeGain, 0.0, 'Older swap must not reset deck gains if newer loadToken took over');
 });

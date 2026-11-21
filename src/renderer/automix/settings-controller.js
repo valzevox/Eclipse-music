@@ -112,10 +112,63 @@
     return VALID_AUTOMIX_MODES.has(storedMode) ? storedMode : 'equal_power';
   }
 
+  /**
+   * Register unified AutoMix event listeners on nativeAudio and window.
+   * Centralizes cancellation (seek, pause, track switch, error, queue replacement, mode change).
+   *
+   * @param {object} params
+   * @param {HTMLAudioElement} params.nativeAudio - Native player audio element
+   * @param {Window} [params.win] - Window or global event target
+   * @param {Function} [params.getCoreState] - Function returning player state
+   * @param {object} [params.djInstance] - AutoMixDJ instance override
+   * @returns {Function} cleanup function to unregister listeners
+   */
+  function registerAutoMixEventListeners({ nativeAudio, win = (typeof window !== 'undefined' ? window : null), getCoreState, djInstance }) {
+    if (!win) return () => {};
+    const abortActive = (reason) => {
+      const dj = djInstance || (win ? win.autoMixDjInstance : null);
+      if (dj && typeof dj.abortCrossfade === 'function') {
+        dj.abortCrossfade(reason);
+      }
+    };
+
+    const onPause = () => {
+      const st = typeof getCoreState === 'function' ? getCoreState() : null;
+      if (st && !st.isPlaying) abortActive('pause');
+    };
+    const onSeeking = () => abortActive('seek');
+    const onError = () => abortActive('error');
+    const onQueueReplaced = () => abortActive('queue_replaced');
+    const onModeChanged = () => abortActive('mode_change');
+
+    if (nativeAudio && typeof nativeAudio.addEventListener === 'function') {
+      nativeAudio.addEventListener('pause', onPause);
+      nativeAudio.addEventListener('seeking', onSeeking);
+      nativeAudio.addEventListener('error', onError);
+    }
+    if (typeof win.addEventListener === 'function') {
+      win.addEventListener('eclipse:queue-replaced', onQueueReplaced);
+      win.addEventListener('eclipse:automix-mode-changed', onModeChanged);
+    }
+
+    return () => {
+      if (nativeAudio && typeof nativeAudio.removeEventListener === 'function') {
+        nativeAudio.removeEventListener('pause', onPause);
+        nativeAudio.removeEventListener('seeking', onSeeking);
+        nativeAudio.removeEventListener('error', onError);
+      }
+      if (typeof win.removeEventListener === 'function') {
+        win.removeEventListener('eclipse:queue-replaced', onQueueReplaced);
+        win.removeEventListener('eclipse:automix-mode-changed', onModeChanged);
+      }
+    };
+  }
+
   const exportObj = {
     VALID_AUTOMIX_MODES,
     syncAutoMixSettings,
-    resolveInitialAutoMixMode
+    resolveInitialAutoMixMode,
+    registerAutoMixEventListeners
   };
 
   if (typeof module !== 'undefined' && module.exports) {

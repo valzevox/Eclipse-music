@@ -4787,7 +4787,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
     // Zero-Gap Dual-Deck Handover: keep auxAudio playing while nativeAudio buffers, then swap cleanly at live millisecond
     if (window._playbackHandoverInstance && typeof window._playbackHandoverInstance.handlePlayTrackHandover === 'function') {
-      const handled = window._playbackHandoverInstance.handlePlayTrackHandover({
+      const handoverResult = window._playbackHandoverInstance.handlePlayTrackHandover({
         state,
         track,
         currentToken,
@@ -4803,90 +4803,13 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           applySettings: () => applyAudioSettings()
         }
       });
-      if (handled) {
+
+      if (handoverResult && handoverResult.status === 'handled') {
         if (hlsInstance) { try { hlsInstance.destroy(); } catch (_) {} hlsInstance = null; }
         return;
       }
-    }
-
-    const handoverToken = state._autoMixHandover;
-    const isHandover = !!(
-      (window._playbackHandoverInstance && window._playbackHandoverInstance.isHandoverTarget(state, track)) ||
-      (handoverToken && (
-        track.id === handoverToken.trackId ||
-        (track.videoId && track.videoId === handoverToken.trackId) ||
-        (track._matchedYtId && track._matchedYtId === handoverToken.trackId)
-      ))
-    );
-
-    if (isHandover && handoverToken) {
-      const handover = handoverToken;
-      state._autoMixHandover = null;
-      if (currentToken === state.loadToken) {
-        if (hlsInstance) { try { hlsInstance.destroy(); } catch (_) {} hlsInstance = null; }
-        const auxEl = handover.auxAudio || document.getElementById('eclipse-aux-audio');
-
-        if (window._playbackHandoverInstance && typeof window._playbackHandoverInstance.executeSwap === 'function') {
-          window._playbackHandoverInstance.executeSwap(el.nativeAudio, auxEl, handover, {
-            isMuted: state.isMuted,
-            onDeckGainsReset: () => {
-              if (window.audioEngine && typeof window.audioEngine.setDeckGains === 'function') {
-                window.audioEngine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 20 });
-              }
-            },
-            applySettings: () => applyAudioSettings()
-          });
-          return;
-        }
-
-        const stopAux = () => {
-          try {
-            if (auxEl) {
-              auxEl.pause();
-              auxEl.currentTime = 0;
-            }
-          } catch (_) {}
-        };
-        window._autoMixSuppressVolumeSync = true;
-        el.nativeAudio.muted = true;
-        el.nativeAudio.preload = "auto";
-        el.nativeAudio.src = handover.src;
-        let swapped = false;
-        const finishSwap = () => {
-          if (swapped) return;
-          swapped = true;
-          el.nativeAudio.muted = !!state.isMuted;
-          stopAux();
-          if (window.audioEngine && typeof window.audioEngine.setDeckGains === 'function') {
-            window.audioEngine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 20 });
-          }
-          setTimeout(() => { window._autoMixSuppressVolumeSync = false; }, 80);
-          applyAudioSettings();
-        };
-        const applyHandoverOffset = () => {
-          if (currentToken !== state.loadToken) {
-            el.nativeAudio.muted = !!state.isMuted;
-            stopAux();
-            window._autoMixSuppressVolumeSync = false;
-            return;
-          }
-          const liveTime = (auxEl && !auxEl.paused && Number.isFinite(auxEl.currentTime))
-            ? auxEl.currentTime + 0.04
-            : (handover.currentTime || 0);
-          try { el.nativeAudio.currentTime = liveTime; } catch (_) {}
-          el.nativeAudio.addEventListener("playing", finishSwap, { once: true });
-          const p = el.nativeAudio.play();
-          if (p && typeof p.catch === 'function') {
-            p.catch(() => finishSwap());
-          }
-          setTimeout(finishSwap, 600);
-        };
-        if (el.nativeAudio.readyState >= 3) {
-          applyHandoverOffset();
-        } else {
-          el.nativeAudio.addEventListener("canplay", applyHandoverOffset, { once: true });
-          setTimeout(() => { if (!swapped) applyHandoverOffset(); }, 1200);
-        }
+      if (handoverResult && handoverResult.status === 'stale') {
+        // Stale invocation has lost ownership: return early without mutating resources owned by newer invocation
         return;
       }
     }
@@ -15116,7 +15039,10 @@ function updateNavIndicator(animate) {
 
   const syncAutoMixUiAndEngine = (enabled, mode) => {
     const resolvedEnabled = typeof enabled === 'boolean' ? enabled : !!state.isAutoRemix;
-    const resolvedMode = mode || localStorage.getItem('eclipse_automix_mode') || 'equal_power';
+    const resolveMode = (window.AutoMixSettingsController && typeof window.AutoMixSettingsController.resolveInitialAutoMixMode === 'function')
+      ? window.AutoMixSettingsController.resolveInitialAutoMixMode
+      : (m) => m || 'equal_power';
+    const resolvedMode = mode || resolveMode(localStorage.getItem('eclipse_automix_mode'));
     state.isAutoRemix = resolvedEnabled;
     localStorage.setItem('eclipse_automix', resolvedEnabled ? '1' : '0');
     localStorage.setItem('eclipse_automix_mode', resolvedMode);
@@ -15235,7 +15161,10 @@ function updateNavIndicator(animate) {
     }
   });
 
-  syncAutoMixUiAndEngine(state.isAutoRemix, localStorage.getItem('eclipse_automix_mode') || 'equal_power');
+  const resolveInitMode = (window.AutoMixSettingsController && typeof window.AutoMixSettingsController.resolveInitialAutoMixMode === 'function')
+    ? window.AutoMixSettingsController.resolveInitialAutoMixMode
+    : (m) => m || 'equal_power';
+  syncAutoMixUiAndEngine(state.isAutoRemix, resolveInitMode(localStorage.getItem('eclipse_automix_mode')));
 
   if (el.btnSavePresetDialog) {
     el.btnSavePresetDialog.addEventListener('click', () => {

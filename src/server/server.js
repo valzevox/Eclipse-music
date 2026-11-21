@@ -3891,7 +3891,8 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
       return res.end(ssrfCheck.reason || 'Blocked target');
     }
 
-    const client = parsed.protocol === 'https:' ? https : http;
+    const defaultClient = parsed.protocol === 'https:' ? https : http;
+    const client = (options && options.httpClient) || defaultClient;
     const hostLower = parsed.hostname.toLowerCase();
     const forward = { host: parsed.host };
     for (const key of ['range', 'accept', 'accept-language']) {

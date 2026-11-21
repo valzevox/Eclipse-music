@@ -29,6 +29,15 @@ class PlaybackHandover {
   executeSwap(nativeAudio, auxAudio, handover, options = {}) {
     if (!nativeAudio || !handover) return false;
 
+    const targetLoadToken = options.currentToken;
+    const isOwnerInvocation = () => {
+      if (typeof targetLoadToken === 'undefined') return true;
+      if (options.state && typeof options.state.loadToken !== 'undefined') {
+        return options.state.loadToken === targetLoadToken;
+      }
+      return true;
+    };
+
     const stopAux = () => {
       try {
         if (auxAudio) {
@@ -58,6 +67,13 @@ class PlaybackHandover {
       cleanupReadinessListeners();
       nativeAudio.removeEventListener('error', onNativeError);
       nativeAudio.removeEventListener('playing', finishSwap);
+
+      // Guard: if a newer load has taken over while waiting for playing, abort swap to protect new playback
+      if (!isOwnerInvocation()) {
+        if (typeof window !== 'undefined') window._autoMixSuppressVolumeSync = false;
+        return;
+      }
+
       nativeAudio.muted = !!options.isMuted;
       if (typeof options.onDeckGainsReset === 'function') {
         options.onDeckGainsReset();
@@ -81,6 +97,7 @@ class PlaybackHandover {
       if (typeof window !== 'undefined') {
         window._autoMixSuppressVolumeSync = false;
       }
+      if (!isOwnerInvocation()) return;
       if (typeof options.onDeckGainsReset === 'function') {
         if (typeof window !== 'undefined' && window.audioEngine && typeof window.audioEngine.setDeckGains === 'function') {
           window.audioEngine.setDeckGains({ deckA: 0.0, deckB: 1.0, rampMs: 20 });
@@ -92,7 +109,13 @@ class PlaybackHandover {
       if (started) return;
       started = true;
       cleanupReadinessListeners();
-      // Keep 'error' listener active during playback attempt until playing or explicit error
+
+      // Guard: if loadToken changed while waiting for loadedmetadata/canplay, abort and do not play
+      if (!isOwnerInvocation()) {
+        nativeAudio.removeEventListener('error', onNativeError);
+        if (typeof window !== 'undefined') window._autoMixSuppressVolumeSync = false;
+        return;
+      }
 
       const liveTime = (auxAudio && !auxAudio.paused && Number.isFinite(auxAudio.currentTime))
         ? auxAudio.currentTime + 0.04
@@ -111,6 +134,7 @@ class PlaybackHandover {
           if (typeof window !== 'undefined') {
             window._autoMixSuppressVolumeSync = false;
           }
+          if (!isOwnerInvocation()) return;
           if (typeof options.onDeckGainsReset === 'function') {
             // Keep Deck B active
             if (typeof window !== 'undefined' && window.audioEngine && typeof window.audioEngine.setDeckGains === 'function') {
@@ -143,8 +167,10 @@ class PlaybackHandover {
 
   /**
    * Production helper used by playTrack() to handle zero-gap dual-deck handover.
-   * Consumes state._autoMixHandover token once, validates loadToken, delegates swap,
-   * and prevents premature clearing of nativeAudio source.
+   * Distinguishes three terminal states:
+   * - status: 'handled' (handover processed, caller returns early)
+   * - status: 'stale' (currentToken !== state.loadToken, caller returns early without normal load)
+   * - status: 'not-handover' (not a handover target, caller proceeds with normal playTrack)
    *
    * @param {object} params
    * @param {object} params.state - Player state
@@ -153,10 +179,10 @@ class PlaybackHandover {
    * @param {HTMLAudioElement} params.nativeAudio - Native player audio element
    * @param {HTMLAudioElement} [params.auxAudio] - Optional fallback aux element
    * @param {object} [params.options] - Swap options (isMuted, onDeckGainsReset, applySettings)
-   * @returns {boolean} true if handover was handled and caller should return early
+   * @returns {{ status: 'handled'|'stale'|'not-handover', executed?: boolean }}
    */
   handlePlayTrackHandover({ state, track, currentToken, nativeAudio, auxAudio, options = {} }) {
-    if (!state || !track) return false;
+    if (!state || !track) return { status: 'not-handover' };
     const handoverToken = state._autoMixHandover;
     const isHandover = !!(
       this.isHandoverTarget(state, track) ||
@@ -167,16 +193,20 @@ class PlaybackHandover {
       ))
     );
 
-    if (isHandover && handoverToken) {
-      if (currentToken !== state.loadToken) {
-        // Stale load token: do not consume handover token and do not swap
-        return false;
-      }
-      state._autoMixHandover = null; // Consumed exactly once
-      const auxEl = handoverToken.auxAudio || auxAudio || (typeof document !== 'undefined' ? document.getElementById('eclipse-aux-audio') : null);
-      return this.executeSwap(nativeAudio, auxEl, handoverToken, options);
+    if (!isHandover || !handoverToken) {
+      return { status: 'not-handover' };
     }
-    return false;
+
+    if (currentToken !== state.loadToken) {
+      // Stale load token: caller must abort immediately and not corrupt newer playback
+      return { status: 'stale' };
+    }
+
+    state._autoMixHandover = null; // Consumed exactly once
+    const auxEl = handoverToken.auxAudio || auxAudio || (typeof document !== 'undefined' ? document.getElementById('eclipse-aux-audio') : null);
+    const swapOptions = { ...options, currentToken, state };
+    const executed = this.executeSwap(nativeAudio, auxEl, handoverToken, swapOptions);
+    return { status: 'handled', executed };
   }
 }
 

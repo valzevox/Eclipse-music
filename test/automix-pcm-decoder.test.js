@@ -15,7 +15,7 @@ const { validateMediaTargetUrl } = require('../src/server/ssrf-guard.js');
 const { TrackAnalyzer } = require('../src/renderer/automix/track-analyzer.js');
 const { AnalysisCoordinator } = require('../src/renderer/automix/analysis-coordinator.js');
 const { resolveTrackSourceUrl, computeQueueContextId } = require('../src/renderer/automix/source-resolver.js');
-const { syncAutoMixSettings, resolveInitialAutoMixMode } = require('../src/renderer/automix/settings-controller.js');
+const { syncAutoMixSettings, resolveInitialAutoMixMode, registerAutoMixEventListeners } = require('../src/renderer/automix/settings-controller.js');
 const { startServer, stopServer, getServerToken, handleAudioProxy } = require('../src/server/server.js');
 
 function buildWavFixtureBuffer(bpm = 120, durationSec = 6, sampleRate = 22050) {
@@ -426,15 +426,19 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
       assert.ok(pcmBuf.byteLength > 22050 * 4 * 4, 'Positive /api/analyze-pcm must return real Float32Array PCM payload');
 
       // 5. P1 DNS Socket Pinning Integration: handleAudioProxy connects directly to pinnedAddress and preserves Host header
+      const stream = require('node:stream');
       let upstreamReceivedHost = null;
       let upstreamReceivedPath = null;
       let upstreamRequestCount = 0;
+      let secondHopSocketCount = 0;
       const mockAudioServer = http.createServer((req, res) => {
         upstreamRequestCount++;
         upstreamReceivedHost = req.headers.host;
         upstreamReceivedPath = req.url;
         if (req.url === '/redirect-private') {
-          res.writeHead(302, { 'Location': 'http://evil.internal.test/secret.mp3' });
+          res.writeHead(302, {
+            'Location': 'http://evil.internal.test/secret.mp3'
+          });
           return res.end();
         }
         res.writeHead(200, {
@@ -448,11 +452,11 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
       const mockPort = mockAudioServer.address().port;
 
       try {
-        // Direct call to production handleAudioProxy with test seam options.lookup
-        // validateMediaTargetUrl expects an async function returning array of addresses.
-        // We validate the host as a public IP (e.g. 93.184.216.34) so ssrfCheck passes and pins 93.184.216.34.
-        // For the redirect hop to evil.internal.test, lookup returns 10.0.0.1 which SSRF guard blocks with 403.
+        let lookupCallCount = 0;
+        const requestedLookupHostnames = [];
         const customPinLookup = async (hostname) => {
+          lookupCallCount++;
+          requestedLookupHostnames.push(hostname);
           if (hostname === 'cdn.eclipsestream.org') {
             return [{ address: '93.184.216.34', family: 4 }];
           }
@@ -462,49 +466,122 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
           return dns.promises.lookup(hostname, { all: true });
         };
 
-        // Also test the socket pinning behavior: verify http.request with lookup pins to 127.0.0.1 and preserves Host
-        const testOptions = {
-          lookup: (_h, _o, cb) => {
-            const callback = typeof _o === 'function' ? _o : cb;
-            if (typeof _o === 'object' && _o && _o.all) {
-              return callback(null, [{ address: '127.0.0.1', family: 4 }]);
+        // Custom httpClient adapter tracking requests and asserting requestOptions.lookup pins address
+        // Routes local mock socket while preserving requestOptions.headers and verifying pinned lookup
+        let clientRequestCount = 0;
+        const clientRequestedUrls = [];
+        const customHttpClient = {
+          request: (targetUrl, requestOpts, callback) => {
+            clientRequestCount++;
+            clientRequestedUrls.push(targetUrl);
+            const parsedTarget = new URL(targetUrl);
+            if (parsedTarget.hostname === 'evil.internal.test') {
+              secondHopSocketCount++;
             }
-            return callback(null, '127.0.0.1', 4);
+            assert.ok(requestOpts.lookup, 'requestOptions.lookup must be defined for pinned target');
+            let providedLookupIp = null;
+            requestOpts.lookup(parsedTarget.hostname, {}, (err, addr) => {
+              providedLookupIp = addr;
+            });
+            assert.equal(providedLookupIp, '93.184.216.34', 'requestOptions.lookup must resolve to verified pinned IP');
+
+            return http.request({
+              ...requestOpts,
+              host: '127.0.0.1',
+              port: mockPort,
+              path: parsedTarget.pathname + parsedTarget.search
+            }, callback);
           }
         };
 
-        const testReq = http.request(`http://cdn.eclipsestream.org:${mockPort}/stream.mp3`, testOptions, (testRes) => {
-          assert.equal(testRes.statusCode, 200);
+        const createClientReq = () => {
+          const r = new stream.PassThrough();
+          r.method = 'GET';
+          r.headers = { range: 'bytes=0-10' };
+          r.end();
+          return r;
+        };
+
+        // Test A: Direct hop to cdn.eclipsestream.org with DNS Pinning
+        let directStatusCode = null;
+        let directData = '';
+        const mockDirectRes = new stream.PassThrough();
+        mockDirectRes.writeHead = (code) => { directStatusCode = code; };
+        mockDirectRes.on('data', (chunk) => { directData += chunk.toString(); });
+
+        const directDonePromise = new Promise((resolve) => {
+          mockDirectRes.on('finish', resolve);
+          mockDirectRes.on('end', resolve);
+          mockDirectRes.on('close', resolve);
         });
-        testReq.end();
-        await new Promise(r => setTimeout(r, 20));
+
+        await handleAudioProxy(
+          createClientReq(),
+          mockDirectRes,
+          `http://cdn.eclipsestream.org:${mockPort}/stream.mp3`,
+          3,
+          null,
+          { lookup: customPinLookup, httpClient: customHttpClient }
+        );
+
+        await directDonePromise;
+
+        assert.equal(directStatusCode, 200);
+        assert.equal(directData, 'audio-sample');
         assert.equal(upstreamReceivedHost, `cdn.eclipsestream.org:${mockPort}`, 'Host header must retain original hostname during pinned connection');
+        assert.equal(upstreamReceivedPath, '/stream.mp3');
+        assert.equal(clientRequestCount, 1, 'Only one upstream request should be executed');
 
-        // Now test production handleAudioProxy redirect handling:
-        // When handleAudioProxy receives a redirect to evil.internal.test, it calls validateMediaTargetUrl which uses options.lookup,
-        // resolves 10.0.0.1, blocks the second hop, and returns 403 without connecting to private IP!
-        const redirectTargetUrl = `http://cdn.eclipsestream.org:${mockPort}/redirect-private`;
+        // Test B: Upstream redirects to evil.internal.test -> SSRF guard re-checks hop 2 and blocks with 403
         let redirectStatusCode = null;
-        let redirectBody = '';
-        const mockRedirectRes = {
-          writeHead: (code, headers = {}) => { redirectStatusCode = code; },
-          write: (chunk) => { redirectBody += chunk ? chunk.toString() : ''; },
-          end: (chunk) => { if (chunk) redirectBody += chunk.toString(); },
-          on: () => {},
-          once: () => {},
-          emit: () => {}
-        };
-        const mockClientReq = {
-          method: 'GET',
-          headers: { range: 'bytes=0-10' },
-          on: () => {},
-          once: () => {},
-          emit: () => {}
-        };
+        let redirectData = '';
+        const mockRedirectRes = new stream.PassThrough();
+        mockRedirectRes.writeHead = (code) => { redirectStatusCode = code; };
+        mockRedirectRes.on('data', (chunk) => { redirectData += chunk.toString(); });
 
-        // First hop is evil.internal.test directly -> blocked with 403
-        await handleAudioProxy(mockClientReq, mockRedirectRes, 'http://evil.internal.test/stream.mp3', 3, null, { lookup: customPinLookup });
-        assert.equal(redirectStatusCode, 403, 'handleAudioProxy must block target resolving to private IP with 403');
+        const redirectDonePromise = new Promise((resolve) => {
+          mockRedirectRes.on('finish', resolve);
+          mockRedirectRes.on('end', resolve);
+          mockRedirectRes.on('close', resolve);
+        });
+
+        await handleAudioProxy(
+          createClientReq(),
+          mockRedirectRes,
+          `http://cdn.eclipsestream.org:${mockPort}/redirect-private`,
+          3,
+          null,
+          { lookup: customPinLookup, httpClient: customHttpClient }
+        );
+
+        await redirectDonePromise;
+
+        assert.equal(redirectStatusCode, 403, 'handleAudioProxy must block redirect to private IP with 403 on second hop');
+        assert.equal(secondHopSocketCount, 0, 'No socket or HTTP request must ever be opened to private target');
+        assert.ok(requestedLookupHostnames.includes('cdn.eclipsestream.org'), 'First hop hostname must be looked up');
+        assert.ok(requestedLookupHostnames.includes('evil.internal.test'), 'Second hop redirect hostname must be validated via lookup');
+
+        // Test C: Direct private target block
+        let directPrivateStatus = null;
+        const mockDirectPrivateRes = new stream.PassThrough();
+        mockDirectPrivateRes.writeHead = (code) => { directPrivateStatus = code; };
+        const directPrivateDonePromise = new Promise((resolve) => {
+          mockDirectPrivateRes.on('finish', resolve);
+          mockDirectPrivateRes.on('end', resolve);
+          mockDirectPrivateRes.on('close', resolve);
+        });
+
+        await handleAudioProxy(
+          createClientReq(),
+          mockDirectPrivateRes,
+          'http://evil.internal.test/secret.mp3',
+          3,
+          null,
+          { lookup: customPinLookup, httpClient: customHttpClient }
+        );
+
+        await directPrivateDonePromise;
+        assert.equal(directPrivateStatus, 403, 'Direct call to private target must be rejected with 403');
       } finally {
         await new Promise(r => mockAudioServer.close(r));
       }
@@ -736,14 +813,32 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
       addEventListener: (type, fn) => {
         if (!listeners[type]) listeners[type] = [];
         listeners[type].push(fn);
+      },
+      removeEventListener: (type, fn) => {
+        if (listeners[type]) {
+          listeners[type] = listeners[type].filter(cb => cb !== fn);
+        }
       }
     };
 
-    // Central listener attached in integration-bridge.js
-    mockWindow.addEventListener('eclipse:automix-mode-changed', (e) => {
-      if (mockWindow.autoMixDjInstance && typeof mockWindow.autoMixDjInstance.abortCrossfade === 'function') {
-        mockWindow.autoMixDjInstance.abortCrossfade('mode_change');
+    const mockNativeAudio = {
+      addEventListener: (type, fn) => {
+        if (!listeners[type]) listeners[type] = [];
+        listeners[type].push(fn);
+      },
+      removeEventListener: (type, fn) => {
+        if (listeners[type]) {
+          listeners[type] = listeners[type].filter(cb => cb !== fn);
+        }
       }
+    };
+
+    // Production listener registration via shared controller
+    registerAutoMixEventListeners({
+      nativeAudio: mockNativeAudio,
+      win: mockWindow,
+      getCoreState: () => ({ isPlaying: false }),
+      djInstance: mockDjInstance
     });
 
     const context = {

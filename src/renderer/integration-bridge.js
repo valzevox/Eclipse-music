@@ -106,8 +106,10 @@
           ? Math.max(1, Math.min(15, storedCrossfade))
           : 6.0;
         const storedMode = localStorage.getItem('eclipse_automix_mode');
-        const validModes = new Set(['equal_power', 'tempo_synced', 'dj_mix', 'quick_crossfade', 'gapless_album']);
-        const initialMode = validModes.has(storedMode) ? storedMode : 'equal_power';
+        const resolveMode = (window.AutoMixSettingsController && typeof window.AutoMixSettingsController.resolveInitialAutoMixMode === 'function')
+          ? window.AutoMixSettingsController.resolveInitialAutoMixMode
+          : (m) => m || 'equal_power';
+        const initialMode = resolveMode(storedMode);
 
         window.autoMixDjInstance = new window.AutoMixDJ({
           enabled: localStorage.getItem('eclipse_automix') === '1',
@@ -118,63 +120,10 @@
         });
 
         window.syncAutoMixSettings = function (opts = {}) {
-          if (typeof window.AutoMixSettingsController !== 'undefined' && typeof window.AutoMixSettingsController.syncAutoMixSettings === 'function') {
-            return window.AutoMixSettingsController.syncAutoMixSettings(opts, { window });
+          if (window.AutoMixSettingsController && typeof window.AutoMixSettingsController.syncAutoMixSettings === 'function') {
+            return window.AutoMixSettingsController.syncAutoMixSettings(opts, { window, localStorage, djInstance: window.autoMixDjInstance });
           }
-          const cfg = {};
-          if (typeof opts.enabled === 'boolean') {
-            cfg.enabled = opts.enabled;
-            try { localStorage.setItem('eclipse_automix', opts.enabled ? '1' : '0'); } catch (_) {}
-          }
-          if (typeof opts.djFilter === 'boolean') {
-            cfg.djFilter = opts.djFilter;
-            try { localStorage.setItem('eclipse_automix_dj_filter', opts.djFilter ? '1' : '0'); } catch (_) {}
-          }
-          if (typeof opts.autoDuration === 'boolean') {
-            cfg.autoDuration = opts.autoDuration;
-            try { localStorage.setItem('eclipse_automix_auto', opts.autoDuration ? '1' : '0'); } catch (_) {}
-          }
-          if (typeof opts.durationSec === 'number' && Number.isFinite(opts.durationSec)) {
-            const rawSec = Math.max(0, Math.min(15, opts.durationSec));
-            try { localStorage.setItem('eclipse_crossfade', String(rawSec)); } catch (_) {}
-            if (rawSec > 0) {
-              cfg.durationSec = Math.max(1, rawSec);
-            } else if (typeof opts.enabled !== 'boolean') {
-              cfg.enabled = false;
-              try { localStorage.setItem('eclipse_automix', '0'); } catch (_) {}
-            }
-          }
-          if (typeof opts.keepAlbumContinuous === 'boolean') {
-            cfg.keepAlbumContinuous = opts.keepAlbumContinuous;
-            try { localStorage.setItem('eclipse_automix_skip_album', opts.keepAlbumContinuous ? '1' : '0'); } catch (_) {}
-          } else if (localStorage.getItem('eclipse_automix_skip_album') !== null) {
-            cfg.keepAlbumContinuous = localStorage.getItem('eclipse_automix_skip_album') !== '0';
-          }
-          if (opts.mode === 'equal_power' || opts.mode === 'tempo_synced' || opts.mode === 'dj_mix' || opts.mode === 'quick_crossfade' || opts.mode === 'gapless_album') {
-            const prevMode = window.autoMixDjInstance ? window.autoMixDjInstance.mode : null;
-            if (prevMode && prevMode !== opts.mode) {
-              try {
-                window.dispatchEvent(new CustomEvent('eclipse:automix-mode-changed', {
-                  detail: { previousMode: prevMode, newMode: opts.mode }
-                }));
-              } catch (_) {}
-            }
-            cfg.mode = opts.mode;
-            try { localStorage.setItem('eclipse_automix_mode', opts.mode); } catch (_) {}
-          }
-          if (window.autoMixDjInstance && typeof window.autoMixDjInstance.configure === 'function') {
-            window.autoMixDjInstance.configure(cfg);
-            const curMode = window.autoMixDjInstance.mode;
-            if (!window.autoMixDjInstance.enabled || curMode === 'equal_power') {
-              if (window._analysisCoordinatorInstance) window._analysisCoordinatorInstance.cancel();
-            } else if ((curMode === 'tempo_synced' || curMode === 'dj_mix') && typeof window._triggerAutoMixCollectionScan === 'function') {
-              window._triggerAutoMixCollectionScan(false);
-            }
-            return typeof window.autoMixDjInstance.getStatus === 'function'
-              ? window.autoMixDjInstance.getStatus()
-              : cfg;
-          }
-          return cfg;
+          return opts;
         };
 
         const crossfadeSlider = document.getElementById('slider-crossfade');
@@ -595,23 +544,29 @@
             }
           });
 
-          // Unified cancellation: wire abortCrossfade() to pause, seek, track switch and errors
-          const abortActiveAutoMix = (reason) => {
-            if (window.autoMixDjInstance && typeof window.autoMixDjInstance.abortCrossfade === 'function') {
-              window.autoMixDjInstance.abortCrossfade(reason);
-            }
-          };
-
-          nativeAudio.addEventListener('pause', () => {
-            // Only abort if user paused manually (not natural ending transition)
-            const st = getCoreState();
-            if (st && !st.isPlaying) abortActiveAutoMix('pause');
-          });
-          nativeAudio.addEventListener('seeking', () => abortActiveAutoMix('seek'));
-          nativeAudio.addEventListener('error', () => abortActiveAutoMix('error'));
-
-          window.addEventListener('eclipse:queue-replaced', () => abortActiveAutoMix('queue_replaced'));
-          window.addEventListener('eclipse:automix-mode-changed', () => abortActiveAutoMix('mode_change'));
+          // Unified cancellation: wire abortCrossfade() to pause, seek, track switch and errors via shared controller
+          if (window.AutoMixSettingsController && typeof window.AutoMixSettingsController.registerAutoMixEventListeners === 'function') {
+            window.AutoMixSettingsController.registerAutoMixEventListeners({
+              nativeAudio,
+              win: window,
+              getCoreState,
+              djInstance: window.autoMixDjInstance
+            });
+          } else {
+            const abortActiveAutoMix = (reason) => {
+              if (window.autoMixDjInstance && typeof window.autoMixDjInstance.abortCrossfade === 'function') {
+                window.autoMixDjInstance.abortCrossfade(reason);
+              }
+            };
+            nativeAudio.addEventListener('pause', () => {
+              const st = getCoreState();
+              if (st && !st.isPlaying) abortActiveAutoMix('pause');
+            });
+            nativeAudio.addEventListener('seeking', () => abortActiveAutoMix('seek'));
+            nativeAudio.addEventListener('error', () => abortActiveAutoMix('error'));
+            window.addEventListener('eclipse:queue-replaced', () => abortActiveAutoMix('queue_replaced'));
+            window.addEventListener('eclipse:automix-mode-changed', () => abortActiveAutoMix('mode_change'));
+          }
         }
       } catch (err) {
         console.warn('[EclipseBridge] AutoMixDJ init error:', err.message);
