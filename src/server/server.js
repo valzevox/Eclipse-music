@@ -10646,6 +10646,39 @@ if (parsedUrl.pathname === '/api/ytm/login-url') {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ error: 'Missing url parameter' }));
     }
+
+    // SSRF guard: allow only approved local Eclipse media endpoints on active port, or public HTTP(S) URLs
+    let targetParsed;
+    try {
+      targetParsed = new URL(sourceUrl);
+    } catch (_) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Invalid url parameter' }));
+    }
+    if (targetParsed.protocol !== 'http:' && targetParsed.protocol !== 'https:') {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Unsupported URL protocol' }));
+    }
+    const host = targetParsed.hostname.toLowerCase();
+    const activePort = String(getActiveServerPort());
+    const allowedLocalPaths = new Set(['/api/local-track', '/api/library-file', '/api/downloaded-track', '/api/audio-proxy']);
+    const isApprovedSelfMedia = (host === '127.0.0.1' && targetParsed.port === activePort && allowedLocalPaths.has(targetParsed.pathname));
+    const isPrivateOrLoopback = (
+      host === 'localhost' ||
+      host === '::1' ||
+      host === '[::1]' ||
+      /^127\./.test(host) ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^169\.254\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+      host === '0.0.0.0'
+    );
+    if (isPrivateOrLoopback && !isApprovedSelfMedia) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Blocked private/loopback target URL' }));
+    }
+
     if (!global._eclipsePcmActiveDecodes) global._eclipsePcmActiveDecodes = 0;
     if (global._eclipsePcmActiveDecodes >= 2) {
       res.writeHead(429, { 'Content-Type': 'application/json' });

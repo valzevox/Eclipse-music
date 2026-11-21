@@ -58,11 +58,22 @@
       }
     }
 
-    // 5. Streaming tracks (YouTube / YTM / SoundCloud) -> /api/stream-info -> proxyUrl
+    // 5. Streaming tracks (YouTube / YTM / SoundCloud / imported pseudo-IDs) -> /api/stream-info -> proxyUrl
     const trackId = track.id || track.videoId;
     if (trackId && fetchImpl) {
-      const platform = encodeURIComponent(track.platform || track.source || 'youtube');
-      const infoUrl = `${apiBase}/api/stream-info?id=${encodeURIComponent(trackId)}&platform=${platform}${tokQ}`;
+      const params = new URLSearchParams();
+      params.set('id', String(trackId));
+      params.set('platform', String(track.platform || track.source || 'youtube'));
+      if (track.url) params.set('url', String(track.url));
+      if (track.title) params.set('title', String(track.title));
+      if (track.artist) params.set('artist', String(track.artist));
+      if (typeof track.duration === 'number' && track.duration > 0) params.set('duration', String(track.duration));
+      if (track.thumbnail) params.set('thumbnail', String(track.thumbnail));
+      if (track.q) params.set('q', String(track.q));
+      else if (track.title && track.artist) params.set('q', `${track.artist} - ${track.title}`);
+      if (token) params.set('token', String(token));
+
+      const infoUrl = `${apiBase}/api/stream-info?${params.toString()}`;
       const resp = await fetchImpl(infoUrl, { signal });
       if (!resp || !resp.ok || (signal && signal.aborted)) return null;
       const data = await resp.json();
@@ -78,18 +89,22 @@
   }
 
   /**
-   * Compute a stable ordered fingerprint of the queue + index so replacing any track
-   * (even without changing queue length, first item, or queueIndex) triggers a rescan.
+   * Compute a stable ordered fingerprint of the active analysis lookahead window
+   * starting at queueIndex (default 6 items matching AnalysisCoordinator maxTracks).
+   * Works for arbitrarily long queues (> 32 tracks) and detects any replacement
+   * within the active lookahead window even when length, first item, and queueIndex stay identical.
    */
-  function computeQueueContextId(queue, queueIndex = 0, windowSize = 32) {
+  function computeQueueContextId(queue, queueIndex = 0, windowSize = 6) {
     if (!Array.isArray(queue) || queue.length === 0) return 'empty@0';
+    const start = Math.max(0, Math.min(Number(queueIndex) || 0, queue.length - 1));
+    const limit = Math.min(queue.length, Math.max(1, Number(windowSize) || 6));
     const ids = [];
-    const limit = Math.min(queue.length, windowSize);
-    for (let i = 0; i < limit; i++) {
-      const t = queue[i];
-      ids.push(t ? String(t.id || t.videoId || t.libraryFileId || t.title || i) : '');
+    for (let offset = 0; offset < limit; offset++) {
+      const idx = (start + offset) % queue.length;
+      const t = queue[idx];
+      ids.push(t ? String(t.id || t.videoId || t.libraryFileId || t.title || idx) : '');
     }
-    return `${queue.length}@${queueIndex}:${ids.join(',')}`;
+    return `${queue.length}@${start}:${ids.join(',')}`;
   }
 
   const exported = { resolveTrackSourceUrl, computeQueueContextId, extractSafeFilename };

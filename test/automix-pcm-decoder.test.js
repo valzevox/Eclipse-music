@@ -178,7 +178,7 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('P1 Routing: /api/library shape routes to /api/library-file, downloaded track uses ?name=, cache uses /api/local-track', async () => {
+  it('P1 Routing & stream-info metadata: /api/library, downloaded ?name=, cache /api/local-track, and pseudo-ID metadata', async () => {
     const apiBase = 'http://127.0.0.1:3000';
     const token = 'tok123';
 
@@ -200,14 +200,40 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
     // PreloadManager URL takes top priority
     const preloaded = { id: 'yt-2', _preloadedStreamUrl: `${apiBase}/api/audio-proxy?url=abc` };
     assert.equal(await resolveTrackSourceUrl(preloaded, { apiBase, token }), preloaded._preloadedStreamUrl);
+
+    // Non-YouTube / pseudo-ID track passes full metadata (url, title, artist, duration, q) to /api/stream-info
+    let capturedInfoUrl = '';
+    const pseudoTrack = {
+      id: 'sc_pseudo_1',
+      platform: 'soundcloud',
+      title: 'Midnight',
+      artist: 'Nova',
+      url: 'https://soundcloud.com/nova/midnight',
+      duration: 210
+    };
+    const resolvedPseudo = await resolveTrackSourceUrl(pseudoTrack, {
+      apiBase,
+      token,
+      fetchImpl: async (u) => {
+        capturedInfoUrl = u;
+        return { ok: true, json: async () => ({ proxyUrl: `${apiBase}/api/audio-proxy?url=resolved` }) };
+      }
+    });
+    assert.equal(resolvedPseudo, `${apiBase}/api/audio-proxy?url=resolved`);
+    const parsedInfo = new URL(capturedInfoUrl);
+    assert.equal(parsedInfo.pathname, '/api/stream-info');
+    assert.equal(parsedInfo.searchParams.get('id'), 'sc_pseudo_1');
+    assert.equal(parsedInfo.searchParams.get('title'), 'Midnight');
+    assert.equal(parsedInfo.searchParams.get('artist'), 'Nova');
+    assert.equal(parsedInfo.searchParams.get('url'), 'https://soundcloud.com/nova/midnight');
+    assert.equal(parsedInfo.searchParams.get('duration'), '210');
+    assert.equal(parsedInfo.searchParams.get('q'), 'Nova - Midnight');
   });
 
-  it('P2 Queue Invalidation: replacing 2nd queue item changes contextId even with same length, 1st item, and index', () => {
-    const q1 = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
-    const q2 = [{ id: 'a' }, { id: 'x' }, { id: 'c' }];
-    const ctx1 = computeQueueContextId(q1, 0);
-    const ctx2 = computeQueueContextId(q2, 0);
-    assert.notEqual(ctx1, ctx2);
+  it('P2 Queue Invalidation: detects replacement in 6-track lookahead window even in queues > 32 tracks', () => {
+    const q1 = Array.from({ length: 40 }, (_, i) => ({ id: `t-${i}` }));
+    const q2 = q1.map((t, i) => (i === 33 ? { id: 't-replaced' } : t));
+    assert.notEqual(computeQueueContextId(q1, 30), computeQueueContextId(q2, 30));
   });
 
   it('WAV Fixtures (22.05kHz & 44.1kHz): extracts bounded PCM via HTTP 206 and detects 120 BPM + C Major (8B)', async () => {
@@ -230,11 +256,8 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
     assert.equal(rec44.key.camelot, '8B');
   });
 
-  it('Real FFmpeg MP3 & M4A (faststart + moov-at-end): decodes mono Float32Array @ 22050Hz and detects BPM/Key', async (t) => {
-    if (!hasFfmpeg || !mp3Buf || !m4aFastBuf || !m4aMoovEndBuf) {
-      t.skip('ffmpeg not available in this environment');
-      return;
-    }
+  it('Real FFmpeg MP3 & M4A (faststart + moov-at-end) with strict aggregate byte budget enforcement', async () => {
+    assert.ok(hasFfmpeg && mp3Buf && m4aFastBuf && m4aMoovEndBuf, 'FFmpeg must be installed and fixtures generated (no silent skip)');
     const analyzer = new TrackAnalyzer();
 
     // 1. Direct decodeWithFfmpeg() on MP3
@@ -255,10 +278,26 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
     assert.equal(httpM4aFast.sampleRate, 22050);
     assert.ok(httpM4aFast.samples.length > 22050 * 4);
 
-    // 4. moov-at-end M4A (with tiny prefix cap so pipe fails and seek-capable fallback runs)
-    const httpM4aEnd = await extractBoundedPcm(`${baseUrl}/fixture-moov-end.m4a`, { maxInputBytes: 16384 });
+    // 4. moov-at-end M4A: small initial prefix forces ffmpeg-seek fallback; verify aggregate bytesRead <= budget
+    const budget = 300000;
+    const httpM4aEnd = await extractBoundedPcm(`${baseUrl}/fixture-moov-end.m4a`, {
+      maxInputBytes: 16384,
+      maxAggregateInputBytes: budget
+    });
+    assert.equal(httpM4aEnd.decoder, 'ffmpeg-seek');
     assert.equal(httpM4aEnd.sampleRate, 22050);
     assert.ok(httpM4aEnd.samples.length > 22050 * 4);
+    assert.ok(httpM4aEnd.bytesRead > 16384, 'Aggregate bytesRead must include seek requests, not only initial probe');
+    assert.ok(httpM4aEnd.bytesRead <= budget, `Aggregate bytesRead ${httpM4aEnd.bytesRead} exceeded budget ${budget}`);
+
+    // 5. moov-at-end M4A with overly tight aggregate budget MUST fail explicitly without exceeding budget
+    await assert.rejects(
+      extractBoundedPcm(`${baseUrl}/fixture-moov-end.m4a`, {
+        maxInputBytes: 16384,
+        maxAggregateInputBytes: 24576
+      }),
+      /Aggregate input byte budget exceeded/
+    );
   });
 
   it('P2 Content-Range validation & edge cases: rejects invalid/missing/offset/length/truncated/HLS/404 and caps 200 OK', async () => {
@@ -289,7 +328,7 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
     await assert.rejects(p, /Aborted/);
   });
 
-  it('Actual server routes /api/analyze-pcm & /api/audio-proxy: enforces auth, returns PCM headers & forwards Range 206', async () => {
+  it('Actual server routes /api/analyze-pcm & /api/audio-proxy: enforces auth & SSRF protection against private/loopback URLs', async () => {
     const port = await startServer(0);
     try {
       const apiBase = `http://127.0.0.1:${port}`;
@@ -299,14 +338,12 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
       const unauth = await fetch(`${apiBase}/api/analyze-pcm?url=${encodeURIComponent(`${baseUrl}/fixture-22k.wav`)}`);
       assert.ok(unauth.status === 401 || unauth.status === 403, `Expected 401/403, got ${unauth.status}`);
 
-      // 2. Authenticated /api/analyze-pcm returns 200 + PCM headers + binary Float32Array
-      const authUrl = `${apiBase}/api/analyze-pcm?url=${encodeURIComponent(`${baseUrl}/fixture-22k.wav`)}&token=${encodeURIComponent(token)}`;
-      const resp = await fetch(authUrl);
-      assert.equal(resp.status, 200);
-      assert.equal(resp.headers.get('x-pcm-sample-rate'), '22050');
-      assert.equal(resp.headers.get('x-pcm-decoder'), 'wav');
-      const buf = await resp.arrayBuffer();
-      assert.ok(buf.byteLength > 22050 * 4 * 4);
+      // 2. Arbitrary loopback & link-local SSRF targets MUST be rejected with 403
+      const ssrfLoopback = await fetch(`${apiBase}/api/analyze-pcm?url=${encodeURIComponent(`${baseUrl}/fixture-22k.wav`)}&token=${encodeURIComponent(token)}`);
+      assert.equal(ssrfLoopback.status, 403);
+
+      const ssrfMetadata = await fetch(`${apiBase}/api/analyze-pcm?url=${encodeURIComponent('http://169.254.169.254/latest/meta-data/')}&token=${encodeURIComponent(token)}`);
+      assert.equal(ssrfMetadata.status, 403);
 
       // 3. /api/audio-proxy enforces SSRF protection (403 on 127.0.0.1 loopback)
       const proxyResp = await fetch(`${apiBase}/api/audio-proxy?url=${encodeURIComponent(`${baseUrl}/fixture-22k.wav`)}&token=${encodeURIComponent(token)}`, {

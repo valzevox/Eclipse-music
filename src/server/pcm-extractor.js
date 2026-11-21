@@ -361,23 +361,120 @@ function decodeWithFfmpeg(audioBuffer, options = {}) {
 
 /**
  * Bounded seek-capable FFmpeg URL decode for M4A/MP4 containers whose moov atom is at EOF.
- * Strictly capped by -t <maxDurationSec>, maxPcmBytes, timeoutMs, and AbortSignal SIGKILL.
+ * Routes FFmpeg through an ephemeral local loopback accounting proxy that enforces one
+ * aggregate input byte budget across initial probe + all subsequent HTTP Range/seek requests.
  */
-function decodeUrlWithFfmpeg(sourceUrl, options = {}) {
+async function decodeUrlWithFfmpeg(sourceUrl, options = {}) {
   const ffmpegBin = options.ffmpegBin || 'ffmpeg';
   const targetSampleRate = Number(options.targetSampleRate) || DEFAULT_TARGET_SAMPLE_RATE;
   const maxDurationSec = Number(options.maxDurationSec) || DEFAULT_MAX_DURATION_SEC;
+  const initialBytesRead = Math.max(0, Number(options.initialBytesRead) || 0);
+  const maxAggregateBytes = Math.max(4096, Number(options.maxAggregateInputBytes || options.maxInputBytes) || DEFAULT_MAX_INPUT_BYTES);
+  const outerSignal = options.signal || null;
+
+  let parsedUpstream;
+  try {
+    parsedUpstream = new URL(sourceUrl);
+  } catch (_) {
+    throw new Error('Invalid source URL');
+  }
+  const client = parsedUpstream.protocol === 'https:' ? https : http;
+
+  const internalAc = new AbortController();
+  const onOuterAbort = () => internalAc.abort();
+  if (outerSignal) {
+    if (outerSignal.aborted) throw new Error('Aborted before seek decode');
+    outerSignal.addEventListener('abort', onOuterAbort, { once: true });
+  }
+
+  let aggregateBytesRead = initialBytesRead;
+  let budgetExceeded = false;
+  const activeUpstreamReqs = new Set();
+
+  const proxyServer = http.createServer((req, res) => {
+    if (budgetExceeded || internalAc.signal.aborted) {
+      res.writeHead(499);
+      return res.end();
+    }
+
+    const headers = { 'User-Agent': 'Eclipse-AutoMix-Analyzer/1.0' };
+    if (req.headers.range) headers.Range = req.headers.range;
+
+    const upReq = client.get(parsedUpstream, { headers }, (upRes) => {
+      const status = upRes.statusCode || 502;
+      const outHeaders = {};
+      if (upRes.headers['content-type']) outHeaders['content-type'] = upRes.headers['content-type'];
+      if (upRes.headers['content-range']) outHeaders['content-range'] = upRes.headers['content-range'];
+      if (upRes.headers['content-length']) outHeaders['content-length'] = upRes.headers['content-length'];
+      if (upRes.headers['accept-ranges']) outHeaders['accept-ranges'] = upRes.headers['accept-ranges'];
+      res.writeHead(status, outHeaders);
+
+      upRes.on('data', (chunk) => {
+        if (budgetExceeded || internalAc.signal.aborted) {
+          upRes.destroy();
+          res.destroy();
+          return;
+        }
+        const remaining = maxAggregateBytes - aggregateBytesRead;
+        if (chunk.length > remaining) {
+          aggregateBytesRead += Math.max(0, remaining);
+          budgetExceeded = true;
+          upRes.destroy();
+          res.destroy();
+          internalAc.abort();
+          return;
+        }
+        aggregateBytesRead += chunk.length;
+        if (!res.writableEnded) res.write(chunk);
+      });
+
+      upRes.on('end', () => { if (!res.writableEnded) res.end(); });
+      upRes.on('error', () => { if (!res.writableEnded) res.destroy(); });
+    });
+
+    activeUpstreamReqs.add(upReq);
+    upReq.on('close', () => activeUpstreamReqs.delete(upReq));
+    upReq.on('error', () => { if (!res.writableEnded) { res.writeHead(502); res.end(); } });
+    req.on('close', () => { try { upReq.destroy(); } catch (_) {} });
+  });
+
+  await new Promise((resolve) => proxyServer.listen(0, '127.0.0.1', resolve));
+  const proxyUrl = `http://127.0.0.1:${proxyServer.address().port}/audio`;
+
   const args = [
     '-hide_banner',
     '-loglevel', 'error',
-    '-i', sourceUrl,
+    '-i', proxyUrl,
     '-t', String(maxDurationSec),
     '-ac', '1',
     '-ar', String(targetSampleRate),
     '-f', 'f32le',
     'pipe:1'
   ];
-  return runFfmpegDecode(ffmpegBin, args, null, options);
+
+  try {
+    const decoded = await runFfmpegDecode(ffmpegBin, args, null, {
+      ...options,
+      signal: internalAc.signal
+    });
+    if (budgetExceeded) {
+      throw new Error(`Aggregate input byte budget exceeded (${aggregateBytesRead} > ${maxAggregateBytes})`);
+    }
+    return {
+      samples: decoded.samples,
+      sampleRate: decoded.sampleRate,
+      bytesRead: aggregateBytesRead
+    };
+  } catch (err) {
+    if (budgetExceeded) {
+      throw new Error(`Aggregate input byte budget exceeded (${aggregateBytesRead}/${maxAggregateBytes} bytes)`);
+    }
+    throw err;
+  } finally {
+    if (outerSignal) outerSignal.removeEventListener('abort', onOuterAbort);
+    for (const r of activeUpstreamReqs) { try { r.destroy(); } catch (_) {} }
+    await new Promise((resolve) => proxyServer.close(resolve));
+  }
 }
 
 function isIsoBmffContainer(buf, contentType) {
@@ -420,13 +517,18 @@ async function extractBoundedPcm(sourceUrl, options = {}) {
       decoder: 'ffmpeg'
     };
   } catch (pipeErr) {
-    // 3. M4A/MP4 with moov atom at EOF: use bounded seek-capable FFmpeg HTTP Range input
+    // 3. M4A/MP4 with moov atom at EOF: use bounded seek-capable FFmpeg HTTP Range proxy
+    //    accounting for EVERY byte across initial probe + all seek requests.
     if (isIsoBmffContainer(fetched.buffer, fetched.contentType) && fetched.rangeSupported) {
-      const seekDecoded = await decodeUrlWithFfmpeg(sourceUrl, options);
+      const seekDecoded = await decodeUrlWithFfmpeg(sourceUrl, {
+        ...options,
+        initialBytesRead: fetched.bytesRead,
+        maxAggregateInputBytes: options.maxAggregateInputBytes || Math.max(DEFAULT_MAX_INPUT_BYTES, Number(options.maxInputBytes) || DEFAULT_MAX_INPUT_BYTES)
+      });
       return {
         samples: seekDecoded.samples,
         sampleRate: seekDecoded.sampleRate,
-        bytesRead: fetched.bytesRead,
+        bytesRead: seekDecoded.bytesRead,
         statusCode: fetched.statusCode,
         rangeSupported: fetched.rangeSupported,
         partial: true,

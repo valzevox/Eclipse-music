@@ -11055,7 +11055,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       return;
     }
     state.queue.push(cloned);
-    if (el.queueCount) el.queueCount.textContent = String(state.queue.length);
+    updateQueueBadge();
     if (state.currentView === 'queue' && typeof renderQueueView === 'function') {
       renderQueueView();
     } else if (state.currentView === 'queue' && el.queueTracksList) {
@@ -25252,7 +25252,7 @@ function bindCoverHoldZoom(wrapEl) {
         const startIdx = state.queue.length;
         state.queue.push(...fresh);
         if (typeof rememberWaveShown === 'function') rememberWaveShown(fresh);
-        if (el.queueCount) el.queueCount.textContent = String(state.queue.length);
+        updateQueueBadge();
         if (state.currentView === 'queue' && el.queueTracksList) {
           el.queueTracksList.querySelector('.empty-hint')?.remove();
           fresh.forEach((tr, i) => {
