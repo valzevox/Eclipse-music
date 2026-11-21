@@ -89,8 +89,11 @@
             // Cancel previous scan if a different context or restart is requested
             this.cancel();
 
-            // Bounded lookahead window so we never unconditionally download an entire huge playlist
-            const maxTracks = Math.min(tracks.length, Number(options.maxTracks) || 8);
+            // Bounded initial window or batch progression across the full collection
+            const scanAll = options.scanAll === true;
+            const maxTracks = scanAll
+                ? tracks.length
+                : Math.min(tracks.length, Number(options.maxTracks) || 8);
             const currentIndex = Math.max(0, Number(options.currentIndex) || 0);
 
             // Priority order: current track, next tracks after current, then preceding tracks

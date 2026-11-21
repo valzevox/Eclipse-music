@@ -3912,12 +3912,31 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
     }
 
     const isGv = hostLower.endsWith('googlevideo.com');
-    const proxyReq = client.request(targetUrl, {
+    const pinnedIp = ssrfCheck.pinnedAddress;
+    const requestOptions = {
       method: req.method,
-      family: 4,
-      agent: isGv ? false : (parsed.protocol === 'https:' ? keepAliveHttpsAgent : undefined),
       headers: forward
-    }, (proxyRes) => {
+    };
+    if (isGv) {
+      requestOptions.agent = false;
+    } else if (parsed.protocol === 'https:') {
+      requestOptions.agent = keepAliveHttpsAgent;
+    }
+    // DNS Pinning: connect directly to validated IP without independent re-lookup to eliminate DNS rebinding
+    if (pinnedIp && net.isIP(pinnedIp)) {
+      requestOptions.lookup = (_hostname, _opts, callback) => {
+        const cb = typeof _opts === 'function' ? _opts : callback;
+        const family = net.isIP(pinnedIp);
+        if (typeof _opts === 'object' && _opts && _opts.all) {
+          return cb(null, [{ address: pinnedIp, family }]);
+        }
+        return cb(null, pinnedIp, family);
+      };
+    } else {
+      requestOptions.family = 4;
+    }
+
+    const proxyReq = client.request(targetUrl, requestOptions, (proxyRes) => {
       if (res.writableEnded) {
         proxyRes.destroy();
         return;

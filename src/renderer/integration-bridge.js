@@ -573,6 +573,24 @@
               setTimeout(() => { window._autoMixHandlingEnd = false; }, 1500);
             }
           });
+
+          // Unified cancellation: wire abortCrossfade() to pause, seek, track switch and errors
+          const abortActiveAutoMix = (reason) => {
+            if (window.autoMixDjInstance && typeof window.autoMixDjInstance.abortCrossfade === 'function') {
+              window.autoMixDjInstance.abortCrossfade(reason);
+            }
+          };
+
+          nativeAudio.addEventListener('pause', () => {
+            // Only abort if user paused manually (not natural ending transition)
+            const st = getCoreState();
+            if (st && !st.isPlaying) abortActiveAutoMix('pause');
+          });
+          nativeAudio.addEventListener('seeking', () => abortActiveAutoMix('seek'));
+          nativeAudio.addEventListener('error', () => abortActiveAutoMix('error'));
+
+          window.addEventListener('eclipse:queue-replaced', () => abortActiveAutoMix('queue_replaced'));
+          window.addEventListener('eclipse:automix-mode-changed', () => abortActiveAutoMix('mode_change'));
         }
       } catch (err) {
         console.warn('[EclipseBridge] AutoMixDJ init error:', err.message);

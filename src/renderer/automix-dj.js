@@ -441,6 +441,27 @@ class AutoMixDJ {
     const played = playedIds instanceof Set ? playedIds : new Set();
     const analyzer = options.analyzer || null;
     const currentTrack = queue[currentIndex] || null;
+
+    // Keep albums continuous: if keepAlbumContinuous is enabled and next track belongs to the same album,
+    // preserve sequential album progression rather than jumping to an arbitrary candidate
+    if (this.keepAlbumContinuous && currentTrack && currentIndex + 1 < queue.length) {
+      const nextSequential = queue[currentIndex + 1];
+      const sameAlbum = (
+        (currentTrack.albumId && nextSequential.albumId && currentTrack.albumId === nextSequential.albumId) ||
+        (currentTrack.album && nextSequential.album && currentTrack.album === nextSequential.album && currentTrack.artist === nextSequential.artist)
+      );
+      if (sameAlbum) {
+        return {
+          track: nextSequential,
+          index: currentIndex + 1,
+          targetBpm: currentBpm || null,
+          gaplessAlbum: true,
+          compatible: true,
+          reason: 'keep_album_continuous'
+        };
+      }
+    }
+
     const currentRecord = (analyzer && currentTrack && typeof analyzer.getCachedRecord === 'function') ? analyzer.getCachedRecord(currentTrack) : null;
     const currentCamelot = options.currentCamelot || (currentRecord && currentRecord.key && currentRecord.key.camelot) || (currentTrack && currentTrack._camelot) || null;
 
@@ -491,9 +512,18 @@ class AutoMixDJ {
               harmonic = analyzer.scoreHarmonicCompatibility(currentCamelot, candCamelot);
             }
 
+            // Energy continuity score: reward similar energy profiles (+- 30%)
+            let energyScore = 1.0;
+            const curEnergy = currentRecord && currentRecord.energy && typeof currentRecord.energy.rms === 'number' ? currentRecord.energy.rms : null;
+            const candEnergy = rec && rec.energy && typeof rec.energy.rms === 'number' ? rec.energy.rms : null;
+            if (curEnergy && candEnergy && curEnergy > 0) {
+              const energyDiff = Math.abs(curEnergy - candEnergy) / curEnergy;
+              energyScore = Math.max(0, 1.0 - energyDiff);
+            }
+
             const combinedScore = (currentCamelot && candCamelot)
-              ? (bpmScore * 0.65 + harmonic.score * 0.35)
-              : bpmScore;
+              ? (bpmScore * 0.55 + harmonic.score * 0.35 + energyScore * 0.10)
+              : (bpmScore * 0.85 + energyScore * 0.15);
 
             if (combinedScore > bestScore) {
               bestScore = combinedScore;
@@ -506,6 +536,7 @@ class AutoMixDJ {
                 harmonicScore: harmonic.score,
                 harmonicReason: harmonic.relationship,
                 camelot: candCamelot,
+                energyScore: Math.round(energyScore * 100) / 100
               };
             }
           }
@@ -584,9 +615,22 @@ class AutoMixDJ {
 
       if (inFilter && inFilter.context) {
         inFilter.frequency.setValueAtTime(20, inFilter.context.currentTime);
+        if (audioEngine && audioEngine.auxMediaSource && audioEngine.deckBGain) {
+          try {
+            audioEngine.auxMediaSource.disconnect();
+            audioEngine.auxMediaSource.connect(audioEngine.deckBGain);
+          } catch (_) {}
+        }
       }
       if (outFilter && outFilter.context) {
         outFilter.frequency.setValueAtTime(20000, outFilter.context.currentTime);
+        const primarySource = audioEngine && (audioEngine.mediaSource || audioEngine.source);
+        if (primarySource && audioEngine.deckAGain) {
+          try {
+            primarySource.disconnect();
+            primarySource.connect(audioEngine.deckAGain);
+          } catch (_) {}
+        }
       }
     } catch (_) {}
 
@@ -658,7 +702,8 @@ class AutoMixDJ {
           inFilter = null;
         }
 
-        if (ctx && audioEngine.source && audioEngine.deckAGain) {
+        const primarySource = audioEngine.mediaSource || audioEngine.source;
+        if (ctx && primarySource && audioEngine.deckAGain) {
           if (!outgoingAudio._eclipseOutMixFilter) {
             outgoingAudio._eclipseOutMixFilter = ctx.createBiquadFilter();
             outgoingAudio._eclipseOutMixFilter.type = 'lowpass';
@@ -667,12 +712,12 @@ class AutoMixDJ {
           outFilter = outgoingAudio._eclipseOutMixFilter;
           outFilter.frequency.setValueAtTime(18000, ctx.currentTime);
           try {
-            audioEngine.source.disconnect();
-            audioEngine.source.connect(outFilter);
+            primarySource.disconnect();
+            primarySource.connect(outFilter);
             outFilter.connect(audioEngine.deckAGain);
           } catch (outRouteErr) {
             console.warn('[AutoMixDJ] Failed to route outgoing LPF filter, restoring direct Deck A connection:', outRouteErr?.message || outRouteErr);
-            try { audioEngine.source.connect(audioEngine.deckAGain); } catch (_) {}
+            try { primarySource.connect(audioEngine.deckAGain); } catch (_) {}
             outFilter = null;
           }
         }
@@ -766,9 +811,22 @@ class AutoMixDJ {
             incomingAudio.playbackRate = 1.0;
             if (inFilter && inFilter.context) {
               inFilter.frequency.setValueAtTime(20, inFilter.context.currentTime);
+              if (audioEngine && audioEngine.auxMediaSource && audioEngine.deckBGain) {
+                try {
+                  audioEngine.auxMediaSource.disconnect();
+                  audioEngine.auxMediaSource.connect(audioEngine.deckBGain);
+                } catch (_) {}
+              }
             }
             if (outFilter && outFilter.context) {
               outFilter.frequency.setValueAtTime(20000, outFilter.context.currentTime);
+              const primarySource = audioEngine && (audioEngine.mediaSource || audioEngine.source);
+              if (primarySource && audioEngine.deckAGain) {
+                try {
+                  primarySource.disconnect();
+                  primarySource.connect(audioEngine.deckAGain);
+                } catch (_) {}
+              }
             }
           } catch (_) {}
           resolve(true);

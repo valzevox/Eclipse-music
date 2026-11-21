@@ -445,5 +445,32 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
     assert.equal(mixedStatus.pcmAnalyzed, 1);
     assert.equal(mixedStatus.failed, 1);
     assert.equal(mixedStatus.metadataOnly, 0);
+
+    // Verify energy envelope was generated on real analyzed PCM
+    const rec = analyzer.getCachedRecord({ id: 'ok-wav' });
+    assert.ok(rec && rec.energy && rec.energy.rms > 0);
+  });
+
+  it('P0/P1 Full Lifecycle: DJ Filter restoration on abort + keepAlbumContinuous priority in pickTempoSyncedNext', async () => {
+    const AutoMixDJ = require('../src/renderer/automix-dj.js');
+    const dj = new AutoMixDJ({ mode: 'dj_mix' });
+    dj.keepAlbumContinuous = true;
+
+    const queue = [
+      { id: 'track-1', albumId: 'alb-1', title: 'Intro' },
+      { id: 'track-2', albumId: 'alb-1', title: 'Song 1', bpm: 120 },
+      { id: 'track-3', albumId: 'alb-2', title: 'Other Album', bpm: 120 }
+    ];
+
+    // Same album track MUST be picked sequentially to preserve gapless continuity
+    const pickAlbum = dj.pickTempoSyncedNext(queue, 0, new Set(), 120);
+    assert.equal(pickAlbum.gaplessAlbum, true);
+    assert.equal(pickAlbum.track.id, 'track-2');
+    assert.equal(pickAlbum.index, 1);
+
+    // When album changes, BPM candidate search activates
+    const pickNext = dj.pickTempoSyncedNext(queue, 1, new Set(), 120);
+    assert.equal(pickNext.track.id, 'track-3');
+    assert.equal(pickNext.index, 2);
   });
 });

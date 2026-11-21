@@ -324,6 +324,44 @@ class TrackAnalyzer {
   }
 
   /**
+   * Compute energy / RMS envelope and beat-grid phase estimate from mono PCM samples.
+   */
+  computeEnergyProfile(samples, sampleRate = 44100, windowMs = 50) {
+    if (!samples || samples.length === 0) return { rms: 0, envelope: [], beatPhaseSec: 0 };
+    const windowSize = Math.max(64, Math.floor((windowMs / 1000) * sampleRate));
+    const numWindows = Math.floor(samples.length / windowSize);
+    const envelope = [];
+    let totalSq = 0;
+    let maxWinEnergy = 0;
+    let maxWinIdx = 0;
+
+    for (let w = 0; w < numWindows; w++) {
+      let winSq = 0;
+      const offset = w * windowSize;
+      for (let i = 0; i < windowSize; i++) {
+        const s = samples[offset + i];
+        winSq += s * s;
+      }
+      const winRms = Math.sqrt(winSq / windowSize);
+      envelope.push(Math.round(winRms * 1000) / 1000);
+      totalSq += winSq;
+      if (winRms > maxWinEnergy) {
+        maxWinEnergy = winRms;
+        maxWinIdx = w;
+      }
+    }
+
+    const overallRms = Math.sqrt(totalSq / Math.max(1, samples.length));
+    const beatPhaseSec = (maxWinIdx * windowSize) / sampleRate;
+
+    return {
+      rms: Math.round(overallRms * 1000) / 1000,
+      envelope: envelope.slice(0, 40), // compact representative envelope
+      beatPhaseSec: Math.round(beatPhaseSec * 1000) / 1000
+    };
+  }
+
+  /**
    * Build or retrieve a unified Track Analysis Record from metadata and/or PCM.
    */
   analyzeTrack(track, pcmBuffer = null, sampleRate = 44100) {
@@ -349,6 +387,11 @@ class TrackAnalyzer {
         camelot: null,
         confidence: 0,
         alternatives: []
+      },
+      energy: {
+        rms: 0,
+        beatPhaseSec: 0,
+        envelope: []
       },
       status: 'unknown'
     };
@@ -397,6 +440,7 @@ class TrackAnalyzer {
         record.key = keyRes;
         record.source = 'audio-analysis';
       }
+      record.energy = this.computeEnergyProfile(pcmBuffer, sampleRate);
       record.status = (record.tempo.bpm || record.key.tonic) ? 'analyzed' : 'partial';
     }
 
