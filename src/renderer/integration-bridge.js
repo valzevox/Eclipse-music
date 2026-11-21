@@ -322,18 +322,38 @@
 
             if (!window.autoMixDjInstance || !window.autoMixDjInstance.enabled || window.autoMixDjInstance.isCrossfading || automixTriggeredForTrack) return;
 
-            // Compute Transition Plan via TransitionPlanner module if available
+            // 2. Determine target next track first (order of planning)
+            let targetNextTrack = nextTrack;
+            let targetNextIdx = nextIdx;
+            let currentTrackBpm = trackAnalyzer ? trackAnalyzer.getEffectiveBpm(currentTrack) : ((currentTrack && currentTrack._detectedBpm) || null);
+
+            if (window.autoMixDjInstance.mode === 'tempo_synced' && typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function') {
+              const picked = window.autoMixDjInstance.pickTempoSyncedNext(
+                st.queue,
+                st.queueIndex,
+                st.autoMixPlayedIds,
+                currentTrackBpm
+              );
+              if (picked && picked.track) {
+                targetNextTrack = picked.track;
+                targetNextIdx = picked.index;
+              }
+            }
+
+            if (!targetNextTrack) return;
+
+            // 3. Compute Transition Plan based on the ACTUAL selected targetNextTrack
             let plannedFadeDuration = 6.0;
             let fadeOutStart = Math.max(0, dur - 6.0);
             let fadeInSkip = 0;
-            let planBpmPair = { outgoingBpm: 120, incomingBpm: 120 };
+            let planBpmPair = { outgoingBpm: currentTrackBpm || 120, incomingBpm: 120 };
 
-            if (transitionPlanner && nextTrack) {
-              const plan = transitionPlanner.computePlan(currentTrack, nextTrack, { analyzer: trackAnalyzer });
+            if (transitionPlanner) {
+              const plan = transitionPlanner.computePlan(currentTrack, targetNextTrack, { analyzer: trackAnalyzer });
               fadeOutStart = plan.fadeOutStart;
               fadeInSkip = plan.fadeInSkip;
               plannedFadeDuration = plan.fadeDuration;
-              planBpmPair = { outgoingBpm: plan.currentBpm, incomingBpm: plan.nextBpm };
+              planBpmPair = { outgoingBpm: plan.currentBpm || 120, incomingBpm: plan.nextBpm || 120 };
             } else {
               const autoDur = window.autoMixDjInstance.autoDuration && typeof window.autoMixDjInstance.getBeatAlignedDuration === 'function'
                 ? window.autoMixDjInstance.getBeatAlignedDuration()
@@ -345,7 +365,7 @@
                   ? window.EclipseCore.getCurrentSponsorSegments()
                   : null);
               const offsets = typeof window.autoMixDjInstance.getSmartTransitionOffsets === 'function'
-                ? window.autoMixDjInstance.getSmartTransitionOffsets(currentTrack, curSbSegments, nextTrack || nextTrack?.introSec || null)
+                ? window.autoMixDjInstance.getSmartTransitionOffsets(currentTrack, curSbSegments, targetNextTrack || targetNextTrack?.introSec || null)
                 : { fadeOutStart: Math.max(0, dur - threshold), fadeInSkip: 0, crossfadeDuration: threshold };
               fadeOutStart = offsets.fadeOutStart;
               fadeInSkip = offsets.fadeInSkip;
@@ -370,21 +390,8 @@
             if (shouldTriggerTransition) {
               if (st.isRepeat || st.repeatMode === 1 || st.repeatMode === 'one') return;
               let targetBpm = planBpmPair.incomingBpm || window.autoMixDjInstance.bpm || 120;
-
-              if (window.autoMixDjInstance.mode === 'tempo_synced' && typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function') {
-                const picked = window.autoMixDjInstance.pickTempoSyncedNext(
-                  st.queue,
-                  st.queueIndex,
-                  st.autoMixPlayedIds,
-                  (currentTrack && currentTrack._detectedBpm) || window.autoMixDjInstance.bpm || 120
-                );
-                if (picked && picked.track) {
-                  nextTrack = picked.track;
-                  nextIdx = picked.index;
-                  targetBpm = picked.targetBpm;
-                }
-              }
-              if (!nextTrack) return;
+              nextTrack = targetNextTrack;
+              nextIdx = targetNextIdx;
 
               const keepAlbumsContinuous = localStorage.getItem('eclipse_automix_skip_album') !== '0';
               const skipCheck = typeof window.autoMixDjInstance.shouldSkipCrossfade === 'function'

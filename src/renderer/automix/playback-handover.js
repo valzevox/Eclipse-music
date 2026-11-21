@@ -45,9 +45,19 @@ class PlaybackHandover {
     nativeAudio.preload = 'auto';
 
     let swapped = false;
+    let started = false;
+
+    const cleanupReadinessListeners = () => {
+      nativeAudio.removeEventListener('loadedmetadata', onReady);
+      nativeAudio.removeEventListener('canplay', onReady);
+      nativeAudio.removeEventListener('error', onNativeError);
+    };
+
     const finishSwap = () => {
       if (swapped) return;
       swapped = true;
+      cleanupReadinessListeners();
+      nativeAudio.removeEventListener('playing', finishSwap);
       nativeAudio.muted = !!options.isMuted;
       stopAux();
       if (typeof options.onDeckGainsReset === 'function') {
@@ -61,7 +71,25 @@ class PlaybackHandover {
       }
     };
 
+    const onNativeError = (err) => {
+      console.warn('[PlaybackHandover] nativeAudio source error during handover; keeping auxAudio running:', err);
+      cleanupReadinessListeners();
+      nativeAudio.removeEventListener('playing', finishSwap);
+      if (typeof window !== 'undefined') {
+        window._autoMixSuppressVolumeSync = false;
+      }
+      if (typeof options.onDeckGainsReset === 'function') {
+        if (window.audioEngine && typeof window.audioEngine.setDeckGains === 'function') {
+          window.audioEngine.setDeckGains({ deckA: 0.0, deckB: 1.0, rampMs: 20 });
+        }
+      }
+    };
+
     const attachPlayAndSwap = () => {
+      if (started) return;
+      started = true;
+      cleanupReadinessListeners();
+
       const liveTime = (auxAudio && !auxAudio.paused && Number.isFinite(auxAudio.currentTime))
         ? auxAudio.currentTime + 0.04
         : (handover.currentTime || 0);
@@ -73,13 +101,14 @@ class PlaybackHandover {
       if (p && typeof p.catch === 'function') {
         p.catch((playErr) => {
           console.warn('[PlaybackHandover] nativeAudio.play() rejected; keeping auxAudio running to prevent silence:', playErr?.message || playErr);
-          // Critical P0: DO NOT stop auxAudio if nativeAudio fails to play!
+          // Critical P0: clean up playing listener so subsequent plays don't trigger finishSwap and kill auxAudio
+          nativeAudio.removeEventListener('playing', finishSwap);
           if (typeof window !== 'undefined') {
             window._autoMixSuppressVolumeSync = false;
           }
           if (typeof options.onDeckGainsReset === 'function') {
             // Keep Deck B active
-            if (window.audioEngine && typeof window.audioEngine.setDeckGains === 'function') {
+            if (typeof window !== 'undefined' && window.audioEngine && typeof window.audioEngine.setDeckGains === 'function') {
               window.audioEngine.setDeckGains({ deckA: 0.0, deckB: 1.0, rampMs: 20 });
             }
           }
@@ -87,15 +116,21 @@ class PlaybackHandover {
       }
     };
 
+    const onReady = () => {
+      attachPlayAndSwap();
+    };
+
+    nativeAudio.addEventListener('error', onNativeError, { once: true });
+
     if (nativeAudio.src !== handover.src) {
       nativeAudio.src = handover.src;
-      nativeAudio.addEventListener('loadedmetadata', attachPlayAndSwap, { once: true });
-      nativeAudio.addEventListener('canplay', attachPlayAndSwap, { once: true });
+      nativeAudio.addEventListener('loadedmetadata', onReady, { once: true });
+      nativeAudio.addEventListener('canplay', onReady, { once: true });
     } else {
       if (nativeAudio.readyState >= 2) {
         attachPlayAndSwap();
       } else {
-        nativeAudio.addEventListener('canplay', attachPlayAndSwap, { once: true });
+        nativeAudio.addEventListener('canplay', onReady, { once: true });
       }
     }
     return true;

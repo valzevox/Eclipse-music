@@ -377,40 +377,47 @@ class AutoMixDJ {
 
   /**
    * Pick the closest BPM/energy unplayed track in queue for Tempo Synced mode
+   * Enforces strict +/-6% harmonic compatibility; returns fallback sequential track if no match.
    */
   pickTempoSyncedNext(queue, currentIndex, playedIds, currentBpm = this.bpm) {
     if (!Array.isArray(queue) || queue.length <= 1) return null;
     const played = playedIds instanceof Set ? playedIds : new Set();
     let best = null;
-    let bestDiff = Infinity;
+    let bestDiffRatio = Infinity;
 
-    for (let i = 0; i < queue.length; i++) {
-      if (i === currentIndex) continue;
-      const t = queue[i];
-      if (!t) continue;
-      const tid = t.id || t.videoId;
-      if (tid && played.has(tid)) continue;
+    const validCurrentBpm = (typeof currentBpm === 'number' && currentBpm > 0) ? currentBpm : null;
 
-      // Only trust verified detected BPM or metadata BPM (>0); do NOT fake BPM from duration
-      const tBpm = (typeof t._detectedBpm === 'number' && t._detectedBpm > 0)
-        ? t._detectedBpm
-        : ((typeof t.bpm === 'number' && t.bpm > 0) ? t.bpm : null);
+    if (validCurrentBpm) {
+      for (let i = 0; i < queue.length; i++) {
+        if (i === currentIndex) continue;
+        const t = queue[i];
+        if (!t) continue;
+        const tid = t.id || t.videoId;
+        if (tid && played.has(tid)) continue;
 
-      if (!tBpm || !currentBpm || currentBpm <= 0) continue;
+        // Only trust verified detected BPM or metadata BPM (>0); do NOT fake BPM from duration
+        const tBpm = (typeof t._detectedBpm === 'number' && t._detectedBpm > 0)
+          ? t._detectedBpm
+          : ((typeof t.bpm === 'number' && t.bpm > 0) ? t.bpm : null);
 
-      // Check direct, half-time, and double-time compatibility
-      const candidates = [tBpm, tBpm * 2, tBpm * 0.5];
-      for (const cand of candidates) {
-        const diff = Math.abs(cand - currentBpm);
-        if (diff < bestDiff) {
-          bestDiff = diff;
-          best = { track: t, index: i, targetBpm: cand, baseBpm: tBpm };
+        if (!tBpm) continue;
+
+        // Check direct, half-time, and double-time compatibility within strict +/- 6% threshold
+        const candidates = [tBpm, tBpm * 2, tBpm * 0.5];
+        for (const cand of candidates) {
+          const ratio = validCurrentBpm / cand;
+          const diffRatio = Math.abs(ratio - 1.0);
+          if (diffRatio <= 0.06 && diffRatio < bestDiffRatio) {
+            bestDiffRatio = diffRatio;
+            best = { track: t, index: i, targetBpm: cand, baseBpm: tBpm, compatible: true };
+          }
         }
       }
     }
-    // Fallback: if no track has verified BPM, pick next sequential track in queue without forcing fake tempo sync
+
+    // Fallback: if no track has verified BPM or matches within 6%, pick next sequential unplayed track without forcing fake tempo sync
     if (!best && currentIndex + 1 < queue.length) {
-      return { track: queue[currentIndex + 1], index: currentIndex + 1, targetBpm: currentBpm, fallback: true };
+      return { track: queue[currentIndex + 1], index: currentIndex + 1, targetBpm: validCurrentBpm || 120, fallback: true, compatible: false };
     }
     return best;
   }
