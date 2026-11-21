@@ -147,14 +147,9 @@
           } else if (localStorage.getItem('eclipse_automix_skip_album') !== null) {
             cfg.keepAlbumContinuous = localStorage.getItem('eclipse_automix_skip_album') !== '0';
           }
-          let modeChanged = false;
           if (opts.mode === 'equal_power' || opts.mode === 'tempo_synced' || opts.mode === 'dj_mix' || opts.mode === 'quick_crossfade' || opts.mode === 'gapless_album') {
             const prevMode = window.autoMixDjInstance ? window.autoMixDjInstance.mode : null;
             if (prevMode && prevMode !== opts.mode) {
-              modeChanged = true;
-              if (window.autoMixDjInstance && typeof window.autoMixDjInstance.abortCrossfade === 'function') {
-                window.autoMixDjInstance.abortCrossfade('mode_change');
-              }
               try {
                 window.dispatchEvent(new CustomEvent('eclipse:automix-mode-changed', {
                   detail: { previousMode: prevMode, newMode: opts.mode }

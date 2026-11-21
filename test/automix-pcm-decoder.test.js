@@ -526,7 +526,17 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
     assert.equal(s5.wasOutPaused(), true);
     assert.equal(s5.wasInPaused(), true);
 
-    // 6. Idempotence: subsequent call when not crossfading returns false without error
+    // 6. Error: Deck B stopped & reset, Deck A not paused, gains A=1 B=0, DSP reconnected
+    const s6 = createFadeSetup();
+    assert.equal(dj.abortCrossfade('error'), true);
+    assert.equal(s6.wasOutPaused(), false, 'error must not pause outgoing deck');
+    assert.equal(s6.wasInPaused(), true, 'error must pause incoming deck');
+    assert.equal(s6.inAudio.currentTime, 0);
+    assert.equal(s6.getGains().deckA, 1.0);
+    assert.equal(s6.getGains().deckB, 0.0);
+    assert.equal(s6.wasPrimaryReconnected(), true);
+
+    // 7. Idempotence: subsequent call when not crossfading returns false without error
     assert.equal(dj.abortCrossfade('manual'), false);
   });
 
@@ -564,5 +574,37 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
     assert.equal(status.pcmAnalyzed, 5);
     assert.ok(maxObservedWorkers <= 2, `Concurrency must not exceed 2 (observed: ${maxObservedWorkers})`);
     assert.equal(status.state, 'ready');
+
+    // Cancellation test: active workers must receive abort signal, stop immediately, and report 'cancelled'
+    let slowDecodesStarted = 0;
+    const slowQueue = [
+      { id: 'slow-0', url: `${baseUrl}/slow-pcm` },
+      { id: 'slow-1', url: `${baseUrl}/slow-pcm` },
+      { id: 'slow-2', url: `${baseUrl}/slow-pcm` }
+    ];
+
+    const cancelCoordinator = new AnalysisCoordinator({
+      analyzer: new TrackAnalyzer(),
+      concurrency: 2,
+      decodeAudio: async (track, signal) => {
+        slowDecodesStarted++;
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => resolve(null), 1000);
+          if (signal) {
+            signal.addEventListener('abort', () => {
+              clearTimeout(timer);
+              reject(new Error('Aborted'));
+            });
+          }
+        });
+      }
+    });
+
+    const scanPromise = cancelCoordinator.scanCollection(slowQueue, 'cancel-q', { scanAll: true });
+    await new Promise(r => setTimeout(r, 20));
+    cancelCoordinator.cancel();
+    const cancelStatus = await scanPromise;
+    assert.equal(cancelStatus.state, 'cancelled', 'Final state must be cancelled');
+    assert.ok(cancelStatus.completed < 3, 'Must not process all tracks after cancellation');
   });
 });
