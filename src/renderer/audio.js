@@ -164,11 +164,8 @@
           this.deckAGain.connect(this.eqPreGain);
           this.deckBGain.connect(this.eqPreGain);
 
-          if (this._auxAudioElement && !this.auxMediaSource) {
-            try {
-              this.auxMediaSource = this.ctx.createMediaElementSource(this._auxAudioElement);
-              this.auxMediaSource.connect(this.deckBGain);
-            } catch (_) {}
+          if (this._auxAudioElement) {
+            this._connectAuxToDeckB();
           }
 
           this.stdInput = this.ctx.createGain();
@@ -346,6 +343,10 @@
 
           this.graphInitialized = true;
           this._updateRouting();
+
+          if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('audio-engine-ready', { detail: { engine: this } }));
+          }
         } catch (e) {
           console.warn('[AudioEngine] Graph initialization notice:', e);
         }
@@ -702,31 +703,32 @@
       if (this.graphInitialized) this._updateRouting();
     }
 
+    _connectAuxToDeckB() {
+      if (!this.ctx || !this.deckBGain || !this._auxAudioElement) return false;
+      try {
+        if (!this.auxMediaSource) {
+          this.auxMediaSource = this.ctx.createMediaElementSource(this._auxAudioElement);
+        } else {
+          try { this.auxMediaSource.disconnect(); } catch (_) {}
+        }
+        this.auxMediaSource.connect(this.deckBGain);
+        return true;
+      } catch (e) {
+        console.warn('[AudioEngine] _connectAuxToDeckB notice:', e);
+        return false;
+      }
+    }
+
     attachAuxAudio(auxEl) {
       if (!auxEl) return false;
       this._auxAudioElement = auxEl;
-      if (!this.ctx) {
-        const AC = window.AudioContext || window.webkitAudioContext;
-        this.ctx = new AC({ latencyHint: 'playback' });
+
+      // Defer MediaElementSource creation/connection until primary graph is initialized
+      if (!this.graphInitialized || !this.ctx || !this.deckBGain) {
+        return true;
       }
-      if (!this.deckBGain && this.ctx) {
-        this.deckBGain = this.ctx.createGain();
-        this.deckBGain.gain.value = 0.0;
-        if (this.eqPreGain) {
-          this.deckBGain.connect(this.eqPreGain);
-        }
-      }
-      if (!this.auxMediaSource && this.ctx) {
-        try {
-          this.auxMediaSource = this.ctx.createMediaElementSource(auxEl);
-          if (this.deckBGain) {
-            this.auxMediaSource.connect(this.deckBGain);
-          }
-        } catch (e) {
-          console.warn('[AudioEngine] attachAuxAudio source binding notice:', e);
-        }
-      }
-      return true;
+
+      return this._connectAuxToDeckB();
     }
 
     setDeckGains({ deckA, deckB, rampMs = 0 } = {}) {

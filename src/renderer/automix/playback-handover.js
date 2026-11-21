@@ -59,10 +59,12 @@ class PlaybackHandover {
       nativeAudio.removeEventListener('error', onNativeError);
       nativeAudio.removeEventListener('playing', finishSwap);
       nativeAudio.muted = !!options.isMuted;
-      stopAux();
       if (typeof options.onDeckGainsReset === 'function') {
         options.onDeckGainsReset();
+      } else if (typeof window !== 'undefined' && window.audioEngine && typeof window.audioEngine.setDeckGains === 'function') {
+        window.audioEngine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 25 });
       }
+      stopAux();
       setTimeout(() => {
         if (typeof window !== 'undefined') window._autoMixSuppressVolumeSync = false;
       }, 80);

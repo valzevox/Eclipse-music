@@ -525,22 +525,35 @@ class AutoMixDJ {
       : 1.0;
 
     // Optional WebAudio DJ-Style Filter sweep (HPF 1400Hz -> 20Hz on incoming)
+    // Reuse existing auxiliary DSP source from AudioEngine; NEVER create a duplicate MediaElementAudioSourceNode
     let inFilter = null;
     if (this.djFilter && typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext)) {
       try {
-        const ctx = (audioEngine && audioEngine.ctx) || this._mixCtx || (this._mixCtx = new (window.AudioContext || window.webkitAudioContext)());
-        if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-        if (!incomingAudio._eclipseMixSource) {
-          incomingAudio._eclipseMixSource = ctx.createMediaElementSource(incomingAudio);
-          incomingAudio._eclipseMixFilter = ctx.createBiquadFilter();
-          incomingAudio._eclipseMixFilter.type = 'highpass';
-          incomingAudio._eclipseMixFilter.Q.value = 0.7;
-          incomingAudio._eclipseMixSource.connect(incomingAudio._eclipseMixFilter);
-          incomingAudio._eclipseMixFilter.connect(ctx.destination);
+        const ctx = (audioEngine && audioEngine.ctx) || null;
+        if (ctx && audioEngine.auxMediaSource && audioEngine.deckBGain) {
+          if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+          if (!incomingAudio._eclipseMixFilter) {
+            incomingAudio._eclipseMixFilter = ctx.createBiquadFilter();
+            incomingAudio._eclipseMixFilter.type = 'highpass';
+            incomingAudio._eclipseMixFilter.Q.value = 0.7;
+          }
+          inFilter = incomingAudio._eclipseMixFilter;
+          inFilter.frequency.setValueAtTime(1400, ctx.currentTime);
+          try {
+            audioEngine.auxMediaSource.disconnect();
+            audioEngine.auxMediaSource.connect(inFilter);
+            inFilter.connect(audioEngine.deckBGain);
+          } catch (routeErr) {
+            console.warn('[AutoMixDJ] Failed to route DJ filter through Deck B graph, restoring direct Deck B connection:', routeErr?.message || routeErr);
+            try { audioEngine.auxMediaSource.connect(audioEngine.deckBGain); } catch (_) {}
+            inFilter = null;
+          }
+        } else {
+          // AudioEngine does not own an initialized auxiliary source yet — disable DJ filter cleanly rather than creating a duplicate MediaElementSource
+          inFilter = null;
         }
-        inFilter = incomingAudio._eclipseMixFilter;
-        inFilter.frequency.setValueAtTime(1400, ctx.currentTime);
-      } catch (_) {
+      } catch (filterErr) {
+        console.warn('[AutoMixDJ] DJ filter setup disabled:', filterErr?.message || filterErr);
         inFilter = null;
       }
     }
@@ -607,12 +620,14 @@ class AutoMixDJ {
           this._currentFade = null;
           try {
             outgoingAudio.pause();
+            // Required terminal state after successful crossfade: Deck A = 0.0, Deck B = 1.0
+            // Incoming aux audio MUST remain audible through Deck B until PlaybackHandover completes on native 'playing'
             if (useDeckGains) {
-              audioEngine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 30 });
+              audioEngine.setDeckGains({ deckA: 0.0, deckB: 1.0, rampMs: 30 });
             } else if (useFadeGainNode) {
-              audioEngine.fadeGain.gain.setValueAtTime(1.0, audioEngine.ctx.currentTime);
+              audioEngine.fadeGain.gain.setValueAtTime(0.0, audioEngine.ctx.currentTime);
             } else {
-              outgoingAudio.volume = initialUserVol;
+              outgoingAudio.volume = 0;
             }
             outgoingAudio.playbackRate = 1.0;
             incomingAudio.volume = initialUserVol;
@@ -621,9 +636,6 @@ class AutoMixDJ {
               inFilter.frequency.setValueAtTime(20, inFilter.context.currentTime);
             }
           } catch (_) {}
-          if (typeof window !== 'undefined') {
-            setTimeout(() => { window._autoMixSuppressVolumeSync = false; }, 100);
-          }
           resolve(true);
           return;
         }
