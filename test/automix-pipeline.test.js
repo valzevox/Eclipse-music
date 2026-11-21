@@ -407,3 +407,172 @@ test('PlaybackHandover - full production caller integration via playTrack flow',
   assert.strictEqual(raceAuxStopped, false, 'Older swap must not stop auxAudio if newer loadToken took over');
   assert.strictEqual(raceNativeGain, 0.0, 'Older swap must not reset deck gains if newer loadToken took over');
 });
+
+test('PlaybackHandover - _autoMixSuppressVolumeSync ownership generation token prevents stale clearance (Cases A, B, C, D, E)', async () => {
+  const handover = new PlaybackHandover();
+
+  // Setup global mock window
+  const originalWindow = global.window;
+  global.window = {
+    _autoMixSuppressVolumeSync: false,
+    _autoMixSuppressOwnerToken: null,
+    audioEngine: {
+      setDeckGains: () => {}
+    }
+  };
+
+  try {
+    const createMockNative = (opts = {}) => {
+      let listeners = {};
+      return {
+        src: opts.src || 'http://test/init.mp3',
+        readyState: opts.readyState || 0,
+        muted: false,
+        currentTime: 0,
+        listeners,
+        addEventListener: (ev, cb) => { listeners[ev] = cb; },
+        removeEventListener: (ev) => { delete listeners[ev]; },
+        play: opts.play || (() => Promise.resolve())
+      };
+    };
+
+    const createMockAux = () => ({
+      src: 'http://test/aux.m4a',
+      paused: false,
+      currentTime: 10,
+      pause: () => {}
+    });
+
+    // Case E: Normal completion clears suppression cleanly without leaving it stuck true
+    {
+      const nativeE = createMockNative();
+      const auxE = createMockAux();
+      const tokenE = handover.createHandoverToken({ id: 'track-e' }, auxE, 1);
+      handover.executeSwap(nativeE, auxE, tokenE, {});
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, true, 'Suppression enabled on start');
+      const ownerE = global.window._autoMixSuppressOwnerToken;
+      assert.ok(ownerE, 'Owner token assigned');
+
+      nativeE.listeners['loadedmetadata']();
+      assert.ok(nativeE.listeners['playing']);
+      nativeE.listeners['playing'](); // finishSwap
+
+      // Wait 100ms for delayed 80ms cleanup
+      await new Promise(r => setTimeout(r, 100));
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, false, 'Suppression cleared after normal completion');
+      assert.strictEqual(global.window._autoMixSuppressOwnerToken, null, 'Owner token reset after normal completion');
+    }
+
+    // Case A: Stale playing callback does not clear B's suppression
+    {
+      const nativeA = createMockNative();
+      const auxA = createMockAux();
+      const stateA = { loadToken: 1 };
+      const tokenA = handover.createHandoverToken({ id: 'track-a' }, auxA, 1);
+      handover.executeSwap(nativeA, auxA, tokenA, { currentToken: 1, state: stateA });
+      nativeA.listeners['loadedmetadata']();
+      const stalePlayingCallbackA = nativeA.listeners['playing'];
+
+      // Handover B starts
+      const nativeB = createMockNative();
+      const auxB = createMockAux();
+      const stateB = { loadToken: 2 };
+      stateA.loadToken = 2; // invalidate A
+      const tokenB = handover.createHandoverToken({ id: 'track-b' }, auxB, 2);
+      handover.executeSwap(nativeB, auxB, tokenB, { currentToken: 2, state: stateB });
+      const ownerB = global.window._autoMixSuppressOwnerToken;
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, true, 'B active and suppressing');
+
+      // Stale callback A fires
+      stalePlayingCallbackA();
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, true, 'Stale A must not clear B suppression');
+      assert.strictEqual(global.window._autoMixSuppressOwnerToken, ownerB, 'Owner token remains B');
+    }
+
+    // Case B: Stale error callback does not clear B's suppression or alter B's gain
+    {
+      const nativeA = createMockNative();
+      const auxA = createMockAux();
+      const stateA = { loadToken: 10 };
+      const tokenA = handover.createHandoverToken({ id: 'track-a-err' }, auxA, 1);
+      handover.executeSwap(nativeA, auxA, tokenA, { currentToken: 10, state: stateA });
+      const staleErrorCallbackA = nativeA.listeners['error'];
+
+      // Handover B starts
+      const nativeB = createMockNative();
+      const auxB = createMockAux();
+      const stateB = { loadToken: 20 };
+      stateA.loadToken = 20; // invalidate A
+      const tokenB = handover.createHandoverToken({ id: 'track-b-err' }, auxB, 2);
+      let bGainAltered = false;
+      handover.executeSwap(nativeB, auxB, tokenB, {
+        currentToken: 20,
+        state: stateB,
+        onDeckGainsReset: () => { bGainAltered = true; }
+      });
+      const ownerB = global.window._autoMixSuppressOwnerToken;
+
+      // Stale error from A fires
+      staleErrorCallbackA(new Error('Stale decode error A'));
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, true, 'Stale error A must not clear B suppression');
+      assert.strictEqual(global.window._autoMixSuppressOwnerToken, ownerB, 'Owner token remains B');
+      assert.strictEqual(bGainAltered, false, 'Stale error A must not trigger gain changes for B');
+    }
+
+    // Case C: Stale play() Promise rejection does not clear B's suppression
+    {
+      let rejectPlayA;
+      const nativeA = createMockNative({
+        play: () => new Promise((_, rej) => { rejectPlayA = rej; })
+      });
+      const auxA = createMockAux();
+      const stateA = { loadToken: 100 };
+      const tokenA = handover.createHandoverToken({ id: 'track-a-rej' }, auxA, 1);
+      handover.executeSwap(nativeA, auxA, tokenA, { currentToken: 100, state: stateA });
+      nativeA.listeners['loadedmetadata']();
+
+      // Handover B starts
+      const nativeB = createMockNative();
+      const auxB = createMockAux();
+      const stateB = { loadToken: 200 };
+      stateA.loadToken = 200; // invalidate A
+      const tokenB = handover.createHandoverToken({ id: 'track-b-rej' }, auxB, 2);
+      handover.executeSwap(nativeB, auxB, tokenB, { currentToken: 200, state: stateB });
+      const ownerB = global.window._autoMixSuppressOwnerToken;
+
+      // Delayed rejection for A occurs
+      rejectPlayA(new Error('Audio policy reject A'));
+      await new Promise(r => setTimeout(r, 10));
+
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, true, 'Stale play rejection A must not clear B suppression');
+      assert.strictEqual(global.window._autoMixSuppressOwnerToken, ownerB, 'Owner token remains B');
+    }
+
+    // Case D: Delayed 80ms timeout scheduled by A does not clear B's suppression if B started before timeout fired
+    {
+      const nativeA = createMockNative();
+      const auxA = createMockAux();
+      const stateA = { loadToken: 300 };
+      const tokenA = handover.createHandoverToken({ id: 'track-a-delay' }, auxA, 1);
+      handover.executeSwap(nativeA, auxA, tokenA, { currentToken: 300, state: stateA });
+      nativeA.listeners['loadedmetadata']();
+      nativeA.listeners['playing'](); // Schedules 80ms timeout to clear suppression
+
+      // Immediately before 80ms passes, Handover B starts and acquires suppression
+      const nativeB = createMockNative();
+      const auxB = createMockAux();
+      const stateB = { loadToken: 400 };
+      const tokenB = handover.createHandoverToken({ id: 'track-b-delay' }, auxB, 2);
+      handover.executeSwap(nativeB, auxB, tokenB, { currentToken: 400, state: stateB });
+      const ownerB = global.window._autoMixSuppressOwnerToken;
+
+      // Wait 120ms so A's 80ms timeout fires
+      await new Promise(r => setTimeout(r, 120));
+
+      assert.strictEqual(global.window._autoMixSuppressVolumeSync, true, 'A 80ms timeout must not clear B suppression');
+      assert.strictEqual(global.window._autoMixSuppressOwnerToken, ownerB, 'Owner token remains B');
+    }
+  } finally {
+    global.window = originalWindow;
+  }
+});

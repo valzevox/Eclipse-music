@@ -2,6 +2,8 @@
 // JavaScript / playback-handover.js / Web / Eclipse PC & Mobile
 // Seamless dual-deck handover: preserves currentTime, synchronizes live decks, prevents premature cut
 
+let _suppressGeneration = 0;
+
 class PlaybackHandover {
   constructor(options = {}) {
     this.telemetry = options.telemetry || null;
@@ -47,9 +49,21 @@ class PlaybackHandover {
       } catch (_) {}
     };
 
+    const suppressToken = ++_suppressGeneration;
     if (typeof window !== 'undefined') {
       window._autoMixSuppressVolumeSync = true;
+      window._autoMixSuppressOwnerToken = suppressToken;
     }
+
+    const releaseSuppression = () => {
+      if (typeof window !== 'undefined') {
+        if (window._autoMixSuppressOwnerToken === suppressToken) {
+          window._autoMixSuppressVolumeSync = false;
+          window._autoMixSuppressOwnerToken = null;
+        }
+      }
+    };
+
     nativeAudio.muted = true;
     nativeAudio.preload = 'auto';
 
@@ -70,7 +84,7 @@ class PlaybackHandover {
 
       // Guard: if a newer load has taken over while waiting for playing, abort swap to protect new playback
       if (!isOwnerInvocation()) {
-        if (typeof window !== 'undefined') window._autoMixSuppressVolumeSync = false;
+        releaseSuppression();
         return;
       }
 
@@ -82,7 +96,7 @@ class PlaybackHandover {
       }
       stopAux();
       setTimeout(() => {
-        if (typeof window !== 'undefined') window._autoMixSuppressVolumeSync = false;
+        releaseSuppression();
       }, 80);
       if (typeof options.applySettings === 'function') {
         options.applySettings();
@@ -94,9 +108,7 @@ class PlaybackHandover {
       cleanupReadinessListeners();
       nativeAudio.removeEventListener('error', onNativeError);
       nativeAudio.removeEventListener('playing', finishSwap);
-      if (typeof window !== 'undefined') {
-        window._autoMixSuppressVolumeSync = false;
-      }
+      releaseSuppression();
       if (!isOwnerInvocation()) return;
       if (typeof options.onDeckGainsReset === 'function') {
         if (typeof window !== 'undefined' && window.audioEngine && typeof window.audioEngine.setDeckGains === 'function') {
@@ -113,7 +125,7 @@ class PlaybackHandover {
       // Guard: if loadToken changed while waiting for loadedmetadata/canplay, abort and do not play
       if (!isOwnerInvocation()) {
         nativeAudio.removeEventListener('error', onNativeError);
-        if (typeof window !== 'undefined') window._autoMixSuppressVolumeSync = false;
+        releaseSuppression();
         return;
       }
 
@@ -131,9 +143,7 @@ class PlaybackHandover {
           // Critical P0: clean up listeners so subsequent plays don't trigger finishSwap and kill auxAudio
           nativeAudio.removeEventListener('playing', finishSwap);
           nativeAudio.removeEventListener('error', onNativeError);
-          if (typeof window !== 'undefined') {
-            window._autoMixSuppressVolumeSync = false;
-          }
+          releaseSuppression();
           if (!isOwnerInvocation()) return;
           if (typeof options.onDeckGainsReset === 'function') {
             // Keep Deck B active
