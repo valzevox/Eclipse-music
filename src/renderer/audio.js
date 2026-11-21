@@ -890,7 +890,8 @@
 
     setHidden(hidden) {
       if (this.analyserNode) {
-        this.analyserNode.fftSize = hidden ? 512 : 2048;
+        // Keep 2048 FFT resolution even when window is hidden/minimized so live BPM bass isolation (40-180Hz) stays accurate
+        this.analyserNode.fftSize = 2048;
       }
       if (hidden) this.setAnalyserEnabled(false);
     }

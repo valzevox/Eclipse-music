@@ -6172,6 +6172,7 @@ const TOKEN_PROTECTED_ROUTES = new Set([
   '/api/check-cache',
   '/api/stream-info',
   '/api/track-analysis',
+  '/api/analyze-pcm',
   '/api/tools-status',
   '/api/tools-install',
   '/api/tools/status',
@@ -10637,6 +10638,52 @@ if (parsedUrl.pathname === '/api/ytm/login-url') {
     } catch (e) {}
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ success: true }));
+  }
+
+  if (parsedUrl.pathname === '/api/analyze-pcm') {
+    const sourceUrl = parsedUrl.query.url || '';
+    if (!sourceUrl) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Missing url parameter' }));
+    }
+    if (!global._eclipsePcmActiveDecodes) global._eclipsePcmActiveDecodes = 0;
+    if (global._eclipsePcmActiveDecodes >= 2) {
+      res.writeHead(429, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'PCM analyzer concurrency limit reached' }));
+    }
+
+    const { extractBoundedPcm } = require('./pcm-extractor');
+    const ffmpegBin = typeof resolveBinary === 'function' ? (resolveBinary('ffmpeg') || 'ffmpeg') : 'ffmpeg';
+    const ac = new AbortController();
+    req.on('close', () => { try { ac.abort(); } catch (_) {} });
+
+    global._eclipsePcmActiveDecodes++;
+    return extractBoundedPcm(sourceUrl, {
+      ffmpegBin,
+      signal: ac.signal,
+      maxDurationSec: 20,
+      maxInputBytes: 524288,
+      timeoutMs: 12000
+    }).then((result) => {
+      if (res.writableEnded || ac.signal.aborted) return;
+      const pcmBuf = Buffer.from(result.samples.buffer, result.samples.byteOffset, result.samples.byteLength);
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(pcmBuf.length),
+        'X-PCM-Sample-Rate': String(result.sampleRate),
+        'X-PCM-Bytes-Read': String(result.bytesRead),
+        'X-PCM-Range-Supported': result.rangeSupported ? '1' : '0',
+        'X-PCM-Decoder': result.decoder
+      });
+      res.end(pcmBuf);
+    }).catch((err) => {
+      if (res.writableEnded) return;
+      const status = /Aborted/i.test(err.message) ? 499 : 422;
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'PCM extraction failed' }));
+    }).finally(() => {
+      global._eclipsePcmActiveDecodes = Math.max(0, (global._eclipsePcmActiveDecodes || 1) - 1);
+    });
   }
 
   if (parsedUrl.pathname === '/api/audio-proxy') {

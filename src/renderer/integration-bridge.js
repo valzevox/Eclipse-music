@@ -145,12 +145,15 @@
           if (opts.mode === 'equal_power' || opts.mode === 'tempo_synced' || opts.mode === 'dj_mix') {
             cfg.mode = opts.mode;
             try { localStorage.setItem('eclipse_automix_mode', opts.mode); } catch (_) {}
-            if (window._analysisCoordinatorInstance && opts.mode === 'equal_power') {
-              window._analysisCoordinatorInstance.cancel();
-            }
           }
           if (window.autoMixDjInstance && typeof window.autoMixDjInstance.configure === 'function') {
             window.autoMixDjInstance.configure(cfg);
+            const curMode = window.autoMixDjInstance.mode;
+            if (!window.autoMixDjInstance.enabled || curMode === 'equal_power') {
+              if (window._analysisCoordinatorInstance) window._analysisCoordinatorInstance.cancel();
+            } else if ((curMode === 'tempo_synced' || curMode === 'dj_mix') && typeof window._triggerAutoMixCollectionScan === 'function') {
+              window._triggerAutoMixCollectionScan(false);
+            }
             return typeof window.autoMixDjInstance.getStatus === 'function'
               ? window.autoMixDjInstance.getStatus()
               : cfg;
@@ -227,46 +230,69 @@
           telemetry: automixTelemetry
         }) : null;
         const audioGraph = typeof window.AudioGraphManager !== 'undefined' ? new window.AudioGraphManager(window.audioEngine) : null;
-        const decodeTrackPcmBounded = async (track, signal) => {
+        const resolveTrackSourceUrl = async (track, signal) => {
           if (!track || (signal && signal.aborted)) return null;
-          const AudioCtx = (typeof window !== 'undefined') && (window.AudioContext || window.webkitAudioContext);
-          if (!AudioCtx) return null;
+          const apiBase = getInternalApiBase();
+          const token = getInternalApiToken();
+          const tokQ = token ? `&token=${encodeURIComponent(token)}` : '';
 
-          // Resolve local path, direct stream URL, or internal proxy URL safely
-          let url = track.localPath || track.fileUrl || track.streamUrl || null;
-          if (!url && track.id) {
-            const apiBase = getInternalApiBase();
-            const token = getInternalApiToken();
-            if (apiBase) {
-              url = `${apiBase}/api/stream/${encodeURIComponent(track.id)}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+          // 1. Prefer already-resolved PreloadManager URL
+          if (track._preloadedStreamUrl && typeof track._preloadedStreamUrl === 'string') {
+            return track._preloadedStreamUrl;
+          }
+
+          // 2. Local / library / downloaded tracks -> real server endpoints
+          if (apiBase) {
+            if (track.isLocal || track.platform === 'local' || track.source === 'local') {
+              if (track.id) return `${apiBase}/api/local-track?id=${encodeURIComponent(track.id)}${tokQ}`;
+            }
+            if (track.isDownloaded || track.offline) {
+              if (track.id) return `${apiBase}/api/downloaded-track?id=${encodeURIComponent(track.id)}${tokQ}`;
+            }
+            if (track.libraryFileId) {
+              return `${apiBase}/api/library-file?id=${encodeURIComponent(track.libraryFileId)}${tokQ}`;
             }
           }
-          if (!url) return null;
 
-          const headers = { Range: 'bytes=0-524287' }; // Bounded 512KB window (~15-30s of compressed audio)
-          const resp = await fetch(url, { headers, signal });
+          // 3. Streaming tracks (YouTube / YTM / SoundCloud) -> resolve via /api/stream-info to obtain proxyUrl
+          const trackId = track.id || track.videoId;
+          if (apiBase && trackId) {
+            const platform = encodeURIComponent(track.platform || track.source || 'youtube');
+            const infoUrl = `${apiBase}/api/stream-info?id=${encodeURIComponent(trackId)}&platform=${platform}${tokQ}`;
+            const resp = await fetch(infoUrl, { signal });
+            if (!resp.ok || (signal && signal.aborted)) return null;
+            const data = await resp.json();
+            if (data && typeof data.proxyUrl === 'string' && data.proxyUrl) {
+              return data.proxyUrl;
+            }
+            if (data && typeof data.streamUrl === 'string' && data.streamUrl && !/googlevideo\.com/i.test(data.streamUrl)) {
+              return data.streamUrl;
+            }
+          }
+          return null;
+        };
+
+        // Server-side bounded PCM extraction via /api/analyze-pcm (never passes partial Range fragments to decodeAudioData)
+        const decodeTrackPcmBounded = async (track, signal) => {
+          if (!track || (signal && signal.aborted)) return null;
+          const apiBase = getInternalApiBase();
+          if (!apiBase) return null;
+
+          const sourceUrl = await resolveTrackSourceUrl(track, signal);
+          if (!sourceUrl || (signal && signal.aborted)) return null;
+
+          const token = getInternalApiToken();
+          const analyzeUrl = `${apiBase}/api/analyze-pcm?url=${encodeURIComponent(sourceUrl)}${token ? `&token=${encodeURIComponent(token)}` : ''}`;
+          const resp = await fetch(analyzeUrl, { signal });
           if (!resp.ok || (signal && signal.aborted)) return null;
+
+          const sampleRate = Number(resp.headers.get('X-PCM-Sample-Rate')) || 22050;
           const arrayBuf = await resp.arrayBuffer();
           if (!arrayBuf || arrayBuf.byteLength < 4096 || (signal && signal.aborted)) return null;
 
-          const ctx = (window.audioEngine && window.audioEngine.ctx) ? window.audioEngine.ctx : new AudioCtx();
-          const ownedCtx = !(window.audioEngine && window.audioEngine.ctx);
-          try {
-            const decoded = await ctx.decodeAudioData(arrayBuf.slice(0));
-            if (!decoded || decoded.length === 0) return null;
-            const ch0 = decoded.getChannelData(0);
-            let samples = ch0;
-            if (decoded.numberOfChannels > 1) {
-              const ch1 = decoded.getChannelData(1);
-              samples = new Float32Array(decoded.length);
-              for (let i = 0; i < decoded.length; i++) samples[i] = (ch0[i] + ch1[i]) * 0.5;
-            }
-            return { samples, sampleRate: decoded.sampleRate };
-          } finally {
-            if (ownedCtx && typeof ctx.close === 'function') {
-              ctx.close().catch(() => {});
-            }
-          }
+          const alignedLen = arrayBuf.byteLength - (arrayBuf.byteLength % 4);
+          const samples = new Float32Array(arrayBuf, 0, alignedLen / 4);
+          return { samples, sampleRate };
         };
 
         const analysisCoordinator = typeof window.EclipseAnalysisCoordinator !== 'undefined' ? new window.EclipseAnalysisCoordinator({
@@ -287,17 +313,24 @@
         window._audioGraphInstance = audioGraph;
         window._analysisCoordinatorInstance = analysisCoordinator;
 
-        // Trigger non-blocking background collection scan when track/queue changes in Tempo Synced / DJ Mix mode
-        const triggerCollectionScan = () => {
+        // Trigger non-blocking background collection scan on track/queue/mode change in Tempo Synced / DJ Mix mode
+        let lastScannedContextId = null;
+        const triggerCollectionScan = (force = false) => {
           if (!analysisCoordinator || !window.autoMixDjInstance || !window.autoMixDjInstance.enabled) return;
           const mode = window.autoMixDjInstance.mode;
           if (mode !== 'tempo_synced' && mode !== 'dj_mix') return;
           const st = getCoreState();
           if (!st || !Array.isArray(st.queue) || st.queue.length === 0) return;
-          const contextId = `${st.queue.length}_${(st.queue[0] && (st.queue[0].id || st.queue[0].videoId)) || 'q'}`;
+          const contextId = `${st.queue.length}_${(st.queue[0] && (st.queue[0].id || st.queue[0].videoId)) || 'q'}_${st.queueIndex || 0}`;
+          const curStatus = analysisCoordinator.getStatus();
+          if (!force && contextId === lastScannedContextId && (curStatus.state === 'scanning' || curStatus.state === 'ready')) {
+            return;
+          }
+          lastScannedContextId = contextId;
           analysisCoordinator.scanCollection(st.queue, contextId, { currentIndex: st.queueIndex || 0, maxTracks: 6 }).catch(() => {});
         };
-        window.addEventListener('trackchanged', triggerCollectionScan);
+        window._triggerAutoMixCollectionScan = triggerCollectionScan;
+        window.addEventListener('trackchanged', () => triggerCollectionScan(false));
 
         // Live BPM sampler for Tempo Synced / DJ Mix mode (lightweight 150ms tick only when playing)
         setInterval(() => {
