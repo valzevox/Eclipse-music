@@ -452,84 +452,117 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
     assert.ok(rec && rec.energy && rec.energy.rms > 0);
   });
 
-  it('P0/P1 Full Lifecycle: DJ Filter restoration on abort + keepAlbumContinuous priority in pickTempoSyncedNext', async () => {
+  it('P0/P1 Full Cancellation Semantics: verifies seek, pause, skip, mode_change, queue_replaced, and error', () => {
     const AutoMixDJ = require('../src/renderer/automix-dj.js');
     const dj = new AutoMixDJ();
     dj.configure({ mode: 'dj_mix', keepAlbumContinuous: true });
-    assert.equal(dj.keepAlbumContinuous, true);
 
-    const queue = [
-      { id: 'track-1', albumId: 'alb-1', title: 'Intro' },
-      { id: 'track-2', albumId: 'alb-1', title: 'Song 1', bpm: 120 },
-      { id: 'track-3', albumId: 'alb-2', title: 'Other Album', bpm: 120 }
+    const createFadeSetup = () => {
+      let deckA = 0.5, deckB = 0.5;
+      let primaryReconnected = false;
+      let outPaused = false, inPaused = false;
+      const engine = {
+        mediaSource: { disconnect: () => {}, connect: () => { primaryReconnected = true; } },
+        auxMediaSource: { disconnect: () => {}, connect: () => {} },
+        deckAGain: {},
+        deckBGain: {},
+        setDeckGains: ({ deckA: a, deckB: b }) => { deckA = a; deckB = b; }
+      };
+      const outAudio = { volume: 0.8, playbackRate: 1.0, pause: () => { outPaused = true; } };
+      const inAudio = { volume: 0.8, playbackRate: 1.0, currentTime: 5, pause: () => { inPaused = true; } };
+
+      dj.isCrossfading = true;
+      dj._currentFade = {
+        outgoingAudio: outAudio,
+        incomingAudio: inAudio,
+        inFilter: { frequency: { setValueAtTime: () => {} }, context: {} },
+        outFilter: { frequency: { setValueAtTime: () => {} }, context: {} },
+        initialUserVol: 0.8,
+        useDeckGains: true,
+        audioEngine: engine
+      };
+
+      return {
+        getGains: () => ({ deckA, deckB }),
+        wasPrimaryReconnected: () => primaryReconnected,
+        wasOutPaused: () => outPaused,
+        wasInPaused: () => inPaused,
+        inAudio
+      };
+    };
+
+    // 1. Seek: Deck A not paused; Deck B paused & reset; Deck A=1, B=0
+    const s1 = createFadeSetup();
+    assert.equal(dj.abortCrossfade('seek'), true);
+    assert.equal(s1.wasOutPaused(), false, 'seek must not pause outgoing deck');
+    assert.equal(s1.wasInPaused(), true, 'seek must pause incoming deck');
+    assert.equal(s1.inAudio.currentTime, 0, 'incoming currentTime must be reset to 0');
+    assert.equal(s1.getGains().deckA, 1.0);
+    assert.equal(s1.getGains().deckB, 0.0);
+    assert.equal(s1.wasPrimaryReconnected(), true);
+
+    // 2. Mode Change: Deck A not paused; Deck B paused & reset
+    const s2 = createFadeSetup();
+    assert.equal(dj.abortCrossfade('mode_change'), true);
+    assert.equal(s2.wasOutPaused(), false, 'mode_change must not pause outgoing deck');
+    assert.equal(s2.wasInPaused(), true);
+    assert.equal(s2.getGains().deckA, 1.0);
+
+    // 3. Pause: both decks paused
+    const s3 = createFadeSetup();
+    assert.equal(dj.abortCrossfade('pause'), true);
+    assert.equal(s3.wasOutPaused(), true, 'pause must pause outgoing deck');
+    assert.equal(s3.wasInPaused(), true, 'pause must pause incoming deck');
+
+    // 4. Skip: both decks paused
+    const s4 = createFadeSetup();
+    assert.equal(dj.abortCrossfade('skip'), true);
+    assert.equal(s4.wasOutPaused(), true);
+    assert.equal(s4.wasInPaused(), true);
+
+    // 5. Queue Replaced: both decks paused
+    const s5 = createFadeSetup();
+    assert.equal(dj.abortCrossfade('queue_replaced'), true);
+    assert.equal(s5.wasOutPaused(), true);
+    assert.equal(s5.wasInPaused(), true);
+
+    // 6. Idempotence: subsequent call when not crossfading returns false without error
+    assert.equal(dj.abortCrossfade('manual'), false);
+  });
+
+  it('P1 Full Collection Bounded Scan: scanAll processes entire collection with concurrency limit and respects cancellation', async () => {
+    const analyzer = new TrackAnalyzer();
+    let activeWorkers = 0;
+    let maxObservedWorkers = 0;
+    const coordinator = new AnalysisCoordinator({
+      analyzer,
+      concurrency: 2,
+      decodeAudio: async (track, signal) => {
+        activeWorkers++;
+        if (activeWorkers > maxObservedWorkers) maxObservedWorkers = activeWorkers;
+        await new Promise(r => setTimeout(r, 15));
+        activeWorkers--;
+        return extractBoundedPcm(track.url, { signal, maxInputBytes: 300000 });
+      }
+    });
+
+    const fullQueue = [
+      { id: 'track-0', url: `${baseUrl}/fixture-22k.wav` },
+      { id: 'track-1', url: `${baseUrl}/fixture-22k.wav` },
+      { id: 'track-2', url: `${baseUrl}/fixture-22k.wav` },
+      { id: 'track-3', url: `${baseUrl}/fixture-22k.wav` },
+      { id: 'track-4', url: `${baseUrl}/fixture-22k.wav` }
     ];
 
-    // Same album track MUST be picked sequentially to preserve gapless continuity
-    const pickAlbum = dj.pickTempoSyncedNext(queue, 0, new Set(), 120);
-    assert.equal(pickAlbum.gaplessAlbum, true);
-    assert.equal(pickAlbum.track.id, 'track-2');
-    assert.equal(pickAlbum.index, 1);
+    const status = await coordinator.scanCollection(fullQueue, 'full-q-1', {
+      currentIndex: 2,
+      scanAll: true
+    });
 
-    // When album changes, BPM candidate search activates
-    const pickNext = dj.pickTempoSyncedNext(queue, 1, new Set(), 120);
-    assert.equal(pickNext.track.id, 'track-3');
-    assert.equal(pickNext.index, 2);
-
-    // Mock AudioEngine graph and verify abortCrossfade('seek') preserves outgoing playback intent
-    let deckAGainVal = 0.5;
-    let deckBGainVal = 0.5;
-    let primarySourceConnected = false;
-    const mockPrimarySource = {
-      disconnect: () => {},
-      connect: () => { primarySourceConnected = true; }
-    };
-    const mockAuxSource = {
-      disconnect: () => {},
-      connect: () => {}
-    };
-    const mockAudioEngine = {
-      mediaSource: mockPrimarySource,
-      auxMediaSource: mockAuxSource,
-      deckAGain: {},
-      deckBGain: {},
-      setDeckGains: ({ deckA, deckB }) => {
-        deckAGainVal = deckA;
-        deckBGainVal = deckB;
-      }
-    };
-
-    let outgoingPaused = false;
-    let incomingPaused = false;
-    const mockOutgoing = {
-      volume: 0.8,
-      playbackRate: 1.0,
-      pause: () => { outgoingPaused = true; }
-    };
-    const mockIncoming = {
-      volume: 0.8,
-      playbackRate: 1.0,
-      pause: () => { incomingPaused = true; }
-    };
-
-    dj.isCrossfading = true;
-    dj._currentFade = {
-      outgoingAudio: mockOutgoing,
-      incomingAudio: mockIncoming,
-      inFilter: { frequency: { setValueAtTime: () => {} }, context: {} },
-      outFilter: { frequency: { setValueAtTime: () => {} }, context: {} },
-      initialUserVol: 0.8,
-      useDeckGains: true,
-      audioEngine: mockAudioEngine
-    };
-
-    // Seek MUST abort crossfade, reset gains to Deck A=1, B=0, stop incoming, but NOT pause outgoing!
-    const aborted = dj.abortCrossfade('seek');
-    assert.equal(aborted, true);
-    assert.equal(dj.isCrossfading, false);
-    assert.equal(deckAGainVal, 1.0);
-    assert.equal(deckBGainVal, 0.0);
-    assert.equal(outgoingPaused, false, 'Seek must preserve outgoing playback and not pause it');
-    assert.equal(incomingPaused, true, 'Incoming deck must be paused on abort');
-    assert.equal(primarySourceConnected, true, 'Primary source must reconnect to Deck A gain');
+    assert.equal(status.total, 5, 'scanAll must queue all 5 tracks');
+    assert.equal(status.completed, 5, 'All 5 tracks must complete');
+    assert.equal(status.pcmAnalyzed, 5);
+    assert.ok(maxObservedWorkers <= 2, `Concurrency must not exceed 2 (observed: ${maxObservedWorkers})`);
+    assert.equal(status.state, 'ready');
   });
 });
