@@ -76,7 +76,12 @@ class PlaybackHandover {
     let swapped = false;
     let started = false;
 
+    let readinessTimeout = null;
     const cleanupReadinessListeners = () => {
+      if (readinessTimeout) {
+        clearTimeout(readinessTimeout);
+        readinessTimeout = null;
+      }
       nativeAudio.removeEventListener('loadedmetadata', onReady);
       nativeAudio.removeEventListener('canplay', onReady);
     };
@@ -114,6 +119,7 @@ class PlaybackHandover {
       cleanupReadinessListeners();
       nativeAudio.removeEventListener('error', onNativeError);
       nativeAudio.removeEventListener('playing', finishSwap);
+      nativeAudio.muted = !!options.isMuted;
       releaseSuppression();
       if (!isOwnerInvocation()) return;
       if (typeof options.onDeckGainsReset === 'function') {
@@ -131,6 +137,7 @@ class PlaybackHandover {
       // Guard: if loadToken changed while waiting for loadedmetadata/canplay, abort and do not play
       if (!isOwnerInvocation()) {
         nativeAudio.removeEventListener('error', onNativeError);
+        nativeAudio.muted = !!options.isMuted;
         releaseSuppression();
         return;
       }
@@ -166,6 +173,21 @@ class PlaybackHandover {
     };
 
     nativeAudio.addEventListener('error', onNativeError, { once: true });
+
+    readinessTimeout = setTimeout(() => {
+      if (!started && !swapped) {
+        console.warn('[PlaybackHandover] nativeAudio readiness timeout (4000ms); aborting handover to keep auxAudio playing');
+        cleanupReadinessListeners();
+        nativeAudio.removeEventListener('error', onNativeError);
+        nativeAudio.muted = !!options.isMuted;
+        releaseSuppression();
+        if (isOwnerInvocation() && typeof options.onDeckGainsReset === 'function') {
+          if (typeof window !== 'undefined' && window.audioEngine && typeof window.audioEngine.setDeckGains === 'function') {
+            window.audioEngine.setDeckGains({ deckA: 0.0, deckB: 1.0, rampMs: 20 });
+          }
+        }
+      }
+    }, 4000);
 
     if (nativeAudio.src !== handover.src) {
       nativeAudio.src = handover.src;

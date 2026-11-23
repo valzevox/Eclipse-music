@@ -22827,19 +22827,12 @@ function bindCoverHoldZoom(wrapEl) {
       } catch (e) {}
       googleConnected = false;
       updateGoogleAuthUI();
-      if (googleConnected && state.serverPort) {
-        try {
-          const accRes = await fetch(`http://127.0.0.1:${state.serverPort}/api/ytm/accounts`);
-          const accData = await accRes.json();
-          const active = accData && accData.activeAccount;
-          if (active && active.name && googleLoginStatus) {
-            googleLoginStatus.textContent = `Connected: ${active.name}`;
-          }
-          if (typeof showToast === 'function') {
-            showToast(active && active.name ? `Đã kết nối YouTube Music: ${active.name}` : 'Đã kết nối YouTube Music', 'success');
-          }
-          fetch(`http://127.0.0.1:${state.serverPort}/api/ytm/library`).catch(() => {});
-        } catch (_) {}
+      if (googleLoginStatus) {
+        googleLoginStatus.textContent = 'Chưa kết nối';
+        googleLoginStatus.style.color = 'var(--md-sys-color-outline)';
+      }
+      if (typeof showToast === 'function') {
+        showToast('Đã đăng xuất YouTube Music', 'info');
       }
     });
   }

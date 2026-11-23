@@ -153,3 +153,42 @@ test('YouTube library import paginates likes and playlists and adds video durati
   assert.equal(result.playlists[0].tracks[0].duration, 45);
   assert.ok(requests.some(url => url.searchParams.get('pageToken') === 'likes-page-2'));
 });
+
+test('YtmAuthManager enforces valid account profile and safe persistence', async () => {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  const YtmAuthManager = require('../src/server/ytm-auth');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytm-auth-test-'));
+  try {
+    const authManager = new YtmAuthManager(tmpDir);
+    await authManager.init();
+
+    // 1. Initial state has no accounts
+    assert.equal(authManager.getAccounts().length, 0);
+    assert.equal(authManager.getDefaultAccount(), null);
+
+    // 2. Clear all accounts on empty state returns true/clean
+    const clearRes = await authManager.clearAllAccounts();
+    assert.equal(clearRes, true);
+    assert.equal(authManager.getAccounts().length, 0);
+
+    // 3. Reject invalid / empty cookie payload
+    await assert.rejects(
+      async () => authManager.addAccountFromCookie(''),
+      /Invalid cookie payload/
+    );
+
+    // 4. Reject cookie that fails Innertube session or getInfo (dummy cookie)
+    await assert.rejects(
+      async () => authManager.addAccountFromCookie('SAPISID=fake_value_1234; SID=fake_sid'),
+      /(Failed to retrieve YouTube account profile|Could not establish YouTube Music session)/
+    );
+
+    // Verify storage remained untouched and uncorrupted
+    assert.equal(authManager.getAccounts().length, 0);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+  }
+});

@@ -702,7 +702,6 @@ class AutoMixDJ {
     const suppressionMgr = _getDJSuppressionManager();
     const suppressToken = suppressionMgr ? suppressionMgr.acquire('AutoMixDJ') : null;
     this._crossfadeSuppressToken = suppressToken;
-    const startTime = Date.now();
     const durationMs = Math.max(200, duration * 1000);
     const initialUserVol = Number.isFinite(outgoingAudio.volume) ? Math.max(0, Math.min(1, outgoingAudio.volume)) : 1.0;
 
@@ -784,6 +783,33 @@ class AutoMixDJ {
       outgoingAudio.volume = initialUserVol;
     }
 
+    // Register pending transaction state BEFORE awaiting play()
+    // This ensures any synchronous or intermediate abortCrossfade() finds and cancels this transaction cleanly
+    let rejectPromise = null;
+    let resolvePromise = null;
+    const crossfadePromise = new Promise((res, rej) => {
+      resolvePromise = res;
+      rejectPromise = rej;
+    });
+
+    const transitionId = (options && options.transitionId) || ('tx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
+    const fadeState = {
+      outgoingAudio,
+      incomingAudio,
+      inFilter,
+      outFilter,
+      initialUserVol,
+      useDeckGains,
+      useFadeGainNode,
+      audioEngine,
+      suppressToken,
+      transitionId,
+      interval: null,
+      resolve: resolvePromise,
+      reject: rejectPromise
+    };
+    this._currentFade = fadeState;
+
     // Start incoming audio at 0 volume and matched tempo
     try {
       if (!useDeckGains) {
@@ -822,29 +848,20 @@ class AutoMixDJ {
         outgoingAudio.volume = initialUserVol;
       }
       this.isCrossfading = false;
+      this._currentFade = null;
       this._activeCrossfade = null;
       throw new Error(`Incoming audio play failed: ${playErr?.message || 'Playback blocked'}`);
     }
 
-    return new Promise((resolve, reject) => {
-      const fadeState = {
-        outgoingAudio,
-        incomingAudio,
-        inFilter,
-        outFilter,
-        initialUserVol,
-        useDeckGains,
-        useFadeGainNode,
-        audioEngine,
-        suppressToken,
-        transitionId: (options && options.transitionId) || ('tx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7)),
-        interval: null,
-        resolve,
-        reject
-      };
-      this._currentFade = fadeState;
+    // Verify crossfade was not aborted during the play() await
+    if (!this.isCrossfading || this._currentFade !== fadeState) {
+      return crossfadePromise;
+    }
 
-      fadeState.interval = setInterval(() => {
+    // Capture precise startTime AFTER play() resolves successfully
+    const startTime = Date.now();
+
+    fadeState.interval = setInterval(() => {
         const elapsed = Date.now() - startTime;
         const progress = Math.min(1.0, elapsed / durationMs);
 
@@ -893,7 +910,7 @@ class AutoMixDJ {
               }
             }
           } catch (_) {}
-          resolve(true);
+          resolvePromise(true);
           return;
         }
 
@@ -928,7 +945,8 @@ class AutoMixDJ {
           }
         } catch (_) {}
       }, 50);
-    });
+
+      return crossfadePromise;
   }
 }
 

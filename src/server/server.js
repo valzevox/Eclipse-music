@@ -9967,6 +9967,17 @@ if (parsedUrl.pathname === '/api/ytm/login-url') {
     return;
   }
 
+  if (parsedUrl.pathname === '/api/ytm/clear-accounts' && req.method === 'POST') {
+    try {
+      const cleared = await ytmAuth.clearAllAccounts();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: true, cleared }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+  }
+
   if (parsedUrl.pathname === '/api/ytm/remove-account' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => body += chunk);

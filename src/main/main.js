@@ -1782,17 +1782,75 @@ ipcMain.on('window-minimize', () => {
         }
       }
 
+      let capturedGoogleCookieHeader = '';
+
+      function getSapisidFromCookieStr(str) {
+        if (!str) return '';
+        const m = String(str).match(/(?:^|;\s*)(?:SAPISID|__Secure-3PAPISID)=([^;]+)/);
+        return m ? m[1].trim() : '';
+      }
+
+      function extractCandidateYtCookie(cookies) {
+        if (!Array.isArray(cookies)) return null;
+        const candidate = cookies.find(c => c && (c.name === 'SAPISID' || c.name === '__Secure-3PAPISID') && c.value);
+        if (!candidate) return null;
+        const cookiePairs = [];
+        for (const c of cookies) {
+          if (!c || !c.name || !c.value) continue;
+          const dom = String(c.domain || '').toLowerCase();
+          if (dom.includes('youtube.com') || dom.includes('google.com')) {
+            cookiePairs.push(`${c.name}=${c.value}`);
+          }
+        }
+        return {
+          candidateName: candidate.name,
+          candidateValue: candidate.value,
+          cookieHeader: cookiePairs.join('; ')
+        };
+      }
+
+      async function verifyAndPersistYtSession(cookieStr, sessionObj) {
+        if (!cookieStr || typeof cookieStr !== 'string') return false;
+        if (!serverPort) {
+          console.warn('[auth] Cannot verify session: backend serverPort not available');
+          return false;
+        }
+        try {
+          const res = await fetch(`http://127.0.0.1:${serverPort}/api/ytm/intercept-cookie`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cookie: cookieStr }),
+            signal: AbortSignal.timeout(15000)
+          });
+          if (!res.ok) {
+            console.warn(`[auth] intercept-cookie returned HTTP ${res.status}`);
+            return false;
+          }
+          const body = await res.json().catch(() => null);
+          if (!body || !body.success || !body.account) {
+            console.warn('[auth] intercept-cookie returned unauthenticated profile:', body && body.error);
+            return false;
+          }
+          capturedGoogleCookieHeader = cookieStr;
+          await exportSessionCookiesToFile().catch(() => {});
+          try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
+          try { if (fs.existsSync(GOOGLE_OAUTH_FILE)) fs.unlinkSync(GOOGLE_OAUTH_FILE); } catch (_) {}
+          return true;
+        } catch (err) {
+          console.warn('[auth] verifyAndPersistYtSession network/timeout error:', err && err.message);
+          return false;
+        }
+      }
+
       ipcMain.handle('google-import-cookie-text', async (event, cookieText) => {
         try {
           if (!cookieText || typeof cookieText !== 'string' || !cookieText.trim()) {
             return { success: false, error: 'Cookie content is empty' };
           }
           const raw = cookieText.trim();
-          const googleSession = session.fromPartition('persist:eclipse-google');
-          await googleSession.clearStorageData({ storages: ['cookies'] });
-
+          const parsedCookies = [];
           const netscapeLines = ['# Netscape HTTP Cookie File', '# Created by Eclipse', ''];
-          let sapisidFound = false;
+          let candidateFound = false;
 
           let parsedJson = null;
           if (raw.startsWith('[') || raw.startsWith('{')) {
@@ -1803,13 +1861,12 @@ ipcMain.on('window-minimize', () => {
           }
 
           if (parsedJson && Array.isArray(parsedJson)) {
-            // JSON cookie array format (EditThisCookie, Cookie-Editor, DevTools export)
             for (const item of parsedJson) {
               if (!item || typeof item !== 'object') continue;
               const name = String(item.name || '').trim();
               const val = String(item.value != null ? item.value : '').trim();
               if (!name || !val) continue;
-              if (name === 'SAPISID') sapisidFound = true;
+              if (name === 'SAPISID' || name === '__Secure-3PAPISID') candidateFound = true;
 
               let domain = String(item.domain || '.youtube.com').trim();
               if (!domain.startsWith('.') && !domain.includes('localhost') && domain.includes('.')) {
@@ -1831,12 +1888,10 @@ ipcMain.on('window-minimize', () => {
                 httpOnly
               };
               if (Number.isFinite(expiration) && expiration > 0) details.expirationDate = Math.floor(expiration);
-
-              await googleSession.cookies.set(details).catch(() => {});
+              parsedCookies.push(details);
               netscapeLines.push(`${httpOnly ? '#HttpOnly_' : ''}${domain}\tTRUE\t${details.path}\t${secure ? 'TRUE' : 'FALSE'}\t${details.expirationDate || 2147483647}\t${name}\t${val}`);
             }
           } else if (raw.includes('\t') && (raw.includes('youtube.com') || raw.includes('google.com') || raw.includes('#HttpOnly'))) {
-            // Netscape cookies.txt format
             const rows = raw.split(/\r?\n/);
             for (const row of rows) {
               const line = row.startsWith('#HttpOnly_') ? row.slice(10) : row;
@@ -1846,7 +1901,7 @@ ipcMain.on('window-minimize', () => {
               const [domain, , cookiePath, secure, expires, name, ...valueParts] = fields;
               if (!domain || !name || valueParts.length === 0) continue;
               const val = valueParts.join('\t');
-              if (name === 'SAPISID' && val) sapisidFound = true;
+              if (name === 'SAPISID' || name === '__Secure-3PAPISID') candidateFound = true;
               const host = domain.replace(/^\./, '');
               const details = {
                 url: `https://${host}${cookiePath.startsWith('/') ? cookiePath : '/'}`,
@@ -1859,11 +1914,10 @@ ipcMain.on('window-minimize', () => {
               };
               const expiration = Number(expires);
               if (Number.isFinite(expiration) && expiration > 0) details.expirationDate = expiration;
-              await googleSession.cookies.set(details).catch(() => {});
+              parsedCookies.push(details);
               netscapeLines.push(`${details.httpOnly ? '#HttpOnly_' : ''}${domain}\tTRUE\t${details.path}\t${details.secure ? 'TRUE' : 'FALSE'}\t${details.expirationDate || 2147483647}\t${name}\t${val}`);
             }
           } else {
-            // Header cookie string format: "NAME1=VAL1; NAME2=VAL2; ..."
             const pairs = raw.split(';');
             const now = Math.floor(Date.now() / 1000) + 31536000;
             for (const pair of pairs) {
@@ -1872,9 +1926,9 @@ ipcMain.on('window-minimize', () => {
               const name = pair.slice(0, eq).trim();
               const val = pair.slice(eq + 1).trim();
               if (!name || !val) continue;
-              if (name === 'SAPISID') sapisidFound = true;
+              if (name === 'SAPISID' || name === '__Secure-3PAPISID') candidateFound = true;
               for (const domain of ['.youtube.com', '.google.com']) {
-                await googleSession.cookies.set({
+                parsedCookies.push({
                   url: `https://${domain.replace(/^\./, '')}/`,
                   name,
                   value: val,
@@ -1882,23 +1936,48 @@ ipcMain.on('window-minimize', () => {
                   path: '/',
                   secure: true,
                   expirationDate: now
-                }).catch(() => {});
+                });
                 netscapeLines.push(`${domain}\tTRUE\t/\tTRUE\t${now}\t${name}\t${val}`);
               }
             }
           }
 
-          if (!sapisidFound) {
-            const cookies = await googleSession.cookies.get({ name: 'SAPISID' });
-            if (Array.isArray(cookies) && cookies.some(c => c && c.value)) {
-              sapisidFound = true;
+          if (!candidateFound) {
+            return { success: false, error: 'Could not find SAPISID or __Secure-3PAPISID in the provided cookie. Make sure you copied cookies from YouTube or YouTube Music while logged in.' };
+          }
+
+          const cookieHeaderStr = parsedCookies
+            .filter(c => c.name && c.value && c.domain && (c.domain.includes('youtube.com') || c.domain.includes('google.com')))
+            .map(c => `${c.name}=${c.value}`)
+            .join('; ');
+
+          if (serverPort) {
+            const res = await fetch(`http://127.0.0.1:${serverPort}/api/ytm/intercept-cookie`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ cookie: cookieHeaderStr }),
+              signal: AbortSignal.timeout(15000)
+            }).catch(() => null);
+
+            if (!res || !res.ok) {
+              return { success: false, error: 'YouTube Music authentication server rejected the imported cookies' };
+            }
+            const body = await res.json().catch(() => null);
+            if (!body || !body.success || !body.account) {
+              return { success: false, error: (body && body.error) || 'Failed to authenticate YouTube Music profile with imported cookies' };
             }
           }
 
-          if (!sapisidFound) {
-            return { success: false, error: 'Could not find SAPISID in the provided cookie. Make sure you copied cookies from YouTube or YouTube Music while logged in.' };
+          const googleSession = session.fromPartition('persist:eclipse-google');
+          await googleSession.clearStorageData({ storages: ['cookies'] });
+
+          for (const details of parsedCookies) {
+            const setDetails = { ...details };
+            if (setDetails.name.startsWith('__Host-')) delete setDetails.domain;
+            await googleSession.cookies.set(setDetails).catch(() => {});
           }
 
+          capturedGoogleCookieHeader = cookieHeaderStr;
           fs.mkdirSync(DATA_DIR, { recursive: true });
           fs.writeFileSync(YT_COOKIES_FILE, netscapeLines.join('\n'), 'utf8');
           try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
@@ -1910,23 +1989,30 @@ ipcMain.on('window-minimize', () => {
         }
       });
 
-      let capturedGoogleCookieHeader = '';
-      function getSapisidFromCookieStr(str) {
-        if (!str) return '';
-        const m = String(str).match(/(?:^|;\s*)SAPISID=([^;]+)/);
-        return m ? m[1].trim() : '';
-      }
-
       ipcMain.handle('google-auth-status', async () => {
         try {
           const auth = readGoogleOAuthData();
           if (auth && auth.refreshToken) return { loggedIn: true };
+          let serverHasActive = false;
+          if (serverPort) {
+            try {
+              const sRes = await fetch(`http://127.0.0.1:${serverPort}/api/ytm/accounts`, { signal: AbortSignal.timeout(3000) });
+              if (sRes.ok) {
+                const sData = await sRes.json();
+                serverHasActive = !!(sData && sData.activeAccount && sData.activeAccount.id);
+              }
+            } catch (_) {}
+          }
           const s = session.fromPartition('persist:eclipse-google');
-          const cookies = await s.cookies.get({ name: 'SAPISID' });
-          const hasSessionSap = Array.isArray(cookies) && cookies.some(c => c && c.value);
+          const [sapCookies, secCookies] = await Promise.all([
+            s.cookies.get({ name: 'SAPISID' }).catch(() => []),
+            s.cookies.get({ name: '__Secure-3PAPISID' }).catch(() => [])
+          ]);
+          const hasSessionSap = (Array.isArray(sapCookies) && sapCookies.some(c => c && c.value)) ||
+                                (Array.isArray(secCookies) && secCookies.some(c => c && c.value));
           const hasMemSap = !!getSapisidFromCookieStr(capturedGoogleCookieHeader);
-          const loggedIn = hasSessionSap || hasMemSap || hasValidYtCookiesFile();
-          if (loggedIn && !hasValidYtCookiesFile()) {
+          const loggedIn = serverHasActive || ((hasSessionSap || hasMemSap || hasValidYtCookiesFile()) && !fs.existsSync(YT_LOGOUT_FLAG));
+          if (loggedIn && !hasValidYtCookiesFile() && hasSessionSap) {
             exportSessionCookiesToFile().catch(() => {});
           }
           return { loggedIn };
@@ -1942,6 +2028,15 @@ ipcMain.on('window-minimize', () => {
           const auth = readGoogleOAuthData();
           revokeToken = auth && auth.refreshToken ? auth.refreshToken : '';
         } catch (_) {}
+        if (serverPort) {
+          try {
+            await fetch(`http://127.0.0.1:${serverPort}/api/ytm/clear-accounts`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              signal: AbortSignal.timeout(5000)
+            });
+          } catch (_) {}
+        }
         try {
           fs.mkdirSync(DATA_DIR, { recursive: true });
           fs.writeFileSync(YT_LOGOUT_FLAG, '1', 'utf8');
@@ -1969,7 +2064,6 @@ ipcMain.on('window-minimize', () => {
         const s = session.fromPartition('persist:eclipse-google');
         const loginUrl = 'https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F';
 
-        // Find real system Chrome or Edge so Google never blocks with "This browser or app may not be secure"
         const { spawn } = require('child_process');
         const os = require('os');
         const net = require('net');
@@ -2003,26 +2097,31 @@ ipcMain.on('window-minimize', () => {
 
           return new Promise((resolve) => {
             let finished = false;
+            let validating = false;
+            const timeoutTimer = setTimeout(() => {
+              finish(false, 'Login timed out after 120 seconds');
+            }, 120000);
+
             const cleanup = () => {
+              clearTimeout(timeoutTimer);
               clearInterval(timer);
               try { proc.kill(); } catch (_) {}
               setTimeout(() => {
                 try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch (_) {}
               }, 800);
             };
-            const finish = async (loggedIn) => {
+
+            const finish = async (loggedIn, err = null) => {
               if (finished) return;
               finished = true;
               cleanup();
-              if (loggedIn) {
-                try { await exportYoutubeCookiesToDisk(); } catch (_) {}
-              }
-              resolve({ success: loggedIn, loggedIn });
+              resolve({ success: loggedIn, loggedIn, error: err });
             };
+
             proc.on('exit', () => { if (!finished) finish(false); });
 
             const timer = setInterval(async () => {
-              if (finished) return;
+              if (finished || validating) return;
               try {
                 const targetsRes = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1500) });
                 const targets = await targetsRes.json();
@@ -2040,14 +2139,15 @@ ipcMain.on('window-minimize', () => {
                       const data = JSON.parse(String(msg.data));
                       if (data.id === 1 && data.result && Array.isArray(data.result.cookies)) {
                         const cookies = data.result.cookies;
-                        const hasSap = cookies.some(c => c.name === 'SAPISID' && c.value);
-                        if (hasSap) {
+                        const candidate = extractCandidateYtCookie(cookies);
+                        if (candidate) {
+                          validating = true;
                           for (const c of cookies) {
                             if (!c.domain || (!c.domain.includes('youtube.com') && !c.domain.includes('google.com'))) continue;
                             const cleanDomain = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain;
                             const url = `https://${cleanDomain}${c.path || '/'}`;
                             try {
-                              await s.cookies.set({
+                              const cookieObj = {
                                 url,
                                 name: c.name,
                                 value: c.value,
@@ -2056,31 +2156,25 @@ ipcMain.on('window-minimize', () => {
                                 secure: !!c.secure,
                                 httpOnly: !!c.httpOnly,
                                 expirationDate: c.expires > 0 ? c.expires : undefined
-                              });
+                              };
+                              if (c.name.startsWith('__Host-')) delete cookieObj.domain;
+                              await s.cookies.set(cookieObj);
                             } catch (_) {}
                           }
                           ws.close();
-                          const ytCookieStr = cookies
-                            .filter(c => c.domain && (c.domain.includes('youtube.com') || c.domain.includes('google.com')) && c.name && c.value)
-                            .map(c => `${c.name}=${c.value}`)
-                            .join('; ');
-                          if (ytCookieStr) capturedGoogleCookieHeader = ytCookieStr;
-                          if (ytCookieStr && serverPort) {
-                            try {
-                              await fetch(`http://127.0.0.1:${serverPort}/api/ytm/intercept-cookie`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ cookie: ytCookieStr }),
-                                signal: AbortSignal.timeout(8000)
-                              });
-                            } catch (_) {}
+                          const verified = await verifyAndPersistYtSession(candidate.cookieHeader, s);
+                          if (verified) {
+                            resWs(true);
+                            await finish(true);
+                            return;
+                          } else {
+                            validating = false;
                           }
-                          resWs(true);
-                          await finish(true);
-                          return;
                         }
                       }
-                    } catch (_) {}
+                    } catch (_) {
+                      validating = false;
+                    }
                     ws.close();
                     resWs(false);
                   });
@@ -2113,36 +2207,59 @@ ipcMain.on('window-minimize', () => {
             }
           });
           let finished = false;
-          const hasSapisid = async () => {
+          let validating = false;
+
+          const timeoutTimer = setTimeout(() => {
+            finish(false, 'Login timed out after 120 seconds');
+          }, 120000);
+
+          const getSessionCandidateCookieHeader = async () => {
             try {
-              const cookies = await s.cookies.get({ name: 'SAPISID' });
-              return Array.isArray(cookies) && cookies.some(c => c && c.value);
-            } catch (_) { return false; }
+              const allCookies = await s.cookies.get({});
+              return extractCandidateYtCookie(allCookies);
+            } catch (_) { return null; }
           };
-          const finish = async (loggedIn) => {
+
+          const finish = async (loggedIn, err = null) => {
             if (finished) return;
             finished = true;
+            clearTimeout(timeoutTimer);
             clearInterval(timer);
-            if (loggedIn) {
-              try { await exportYoutubeCookiesToDisk(); } catch (_) {}
-            }
             if (!win.isDestroyed()) win.close();
-            resolve({ success: loggedIn, loggedIn });
+            resolve({ success: loggedIn, loggedIn, error: err });
           };
+
           const check = async () => {
-            if (finished || win.isDestroyed()) return;
+            if (finished || validating || win.isDestroyed()) return;
             const url = win.webContents.getURL() || '';
-            if (/^https:\/\/(?:music|www)\.youtube\.com\//.test(url) && (await hasSapisid())) {
-              await finish(true);
+            if (/^https:\/\/(?:music|www)\.youtube\.com\//.test(url)) {
+              const candidate = await getSessionCandidateCookieHeader();
+              if (candidate) {
+                validating = true;
+                const verified = await verifyAndPersistYtSession(candidate.cookieHeader, s);
+                if (verified) {
+                  await finish(true);
+                  return;
+                }
+                validating = false;
+              }
             }
           };
+
           const timer = setInterval(check, 1000);
           win.webContents.on('did-navigate', check);
           win.webContents.on('did-navigate-in-page', check);
           win.webContents.on('did-finish-load', check);
           win.on('closed', () => {
             if (!finished) {
-              hasSapisid().then(v => finish(!!v), () => finish(false));
+              getSessionCandidateCookieHeader().then(async (cand) => {
+                if (cand) {
+                  const verified = await verifyAndPersistYtSession(cand.cookieHeader, s);
+                  finish(verified);
+                } else {
+                  finish(false);
+                }
+              }, () => finish(false));
             }
           });
           win.loadURL(

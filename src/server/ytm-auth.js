@@ -272,40 +272,40 @@ class YtmAuthManager {
     }
 
     // Extract Account Info
-    let accountInfo;
+    let accountInfo = null;
     try {
       accountInfo = await yt.account.getInfo();
     } catch (e) {
-      logger.log('warn', `ytm-auth: getInfo failed, falling back to base profile: ${e.message}`);
-      accountInfo = null;
+      logger.log('error', `ytm-auth: getInfo failed: ${e.message}`);
+      throw new Error(`Failed to retrieve YouTube account profile: ${e.message}`);
+    }
+
+    if (!accountInfo) {
+      throw new Error('No YouTube account profile returned from InnerTube');
     }
 
     // Extract name, avatar, channel id
-    let channelId = 'unknown';
-    let name = 'YouTube User';
+    let channelId = '';
+    let name = '';
     let handle = '';
     let avatarUrl = '';
 
-    if (accountInfo) {
-      if (accountInfo.contents && accountInfo.contents.length > 0) {
-        const primary = accountInfo.contents[0];
-        channelId = primary.endpoint?.browse_endpoint?.browse_id || primary.id || 'default';
-        name = primary.title?.text || primary.name || name;
-        if (primary.thumbnail?.length > 0) {
-          avatarUrl = primary.thumbnail[0].url || '';
-        }
+    if (accountInfo.contents && accountInfo.contents.length > 0) {
+      const primary = accountInfo.contents[0];
+      channelId = primary.endpoint?.browse_endpoint?.browse_id || primary.id || '';
+      name = primary.title?.text || primary.name || '';
+      if (primary.thumbnail?.length > 0) {
+        avatarUrl = primary.thumbnail[0].url || '';
       }
     }
 
-    // Fallback parsing from cookie if getInfo is minimal
-    if (channelId === 'unknown') {
-      const match = cookieString.match(/SAPISID=([^;]+)/);
-      channelId = match ? `user_${match[1].slice(0, 10)}` : `user_${Date.now()}`;
+    if (!channelId || channelId === 'unknown') {
+      throw new Error('Authenticated YouTube account profile does not contain a valid channel or account ID');
     }
 
     const newAccount = {
       id: channelId,
-      name: name,
+      name: name || 'YouTube User',
       handle: handle,
       avatarUrl: avatarUrl,
       cookie: cookieString,
@@ -321,7 +321,17 @@ class YtmAuthManager {
       this.accounts.push(newAccount);
     }
 
-    await this.saveAccounts();
+    const saveOk = await this.saveAccounts();
+    if (!saveOk) {
+      if (existingIndex >= 0) {
+        // rollback if possible, or reload from disk
+        await this.loadAccounts();
+      } else {
+        this.accounts.pop();
+      }
+      throw new Error('Failed to persist authenticated YouTube account to disk');
+    }
+
     this.activeClient = yt;
     return this.getSanitizedAccount(newAccount);
   }
@@ -357,6 +367,13 @@ class YtmAuthManager {
       this.activeClient = null; // Re-create client on next demand
     }
     return found;
+  }
+
+  async clearAllAccounts() {
+    this.accounts = [];
+    this.activeClient = null;
+    const saveOk = await this.saveAccounts();
+    return saveOk;
   }
 
   removeAccount(id) {

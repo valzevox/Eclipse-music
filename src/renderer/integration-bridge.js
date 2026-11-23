@@ -482,7 +482,35 @@
                 : (auxAudio.readyState >= 2);
 
               if (!isAuxReady || auxAudio.readyState < 2) {
-                console.warn('[EclipseBridge] Aux stream not ready (readyState < 2); falling back gracefully to gapless transition.');
+                console.warn('[EclipseBridge] Aux stream not ready (readyState < 2); resetting flag to retry on next timeupdate.');
+                automixTriggeredForTrack = false;
+                window._autoMixHandlingEnd = false;
+                return;
+              }
+
+              // Re-validate track and queue state after async audio readiness
+              const freshCoreState = getCoreState();
+              const freshTrack = freshCoreState ? freshCoreState.currentTrack : null;
+              const freshQueue = freshCoreState ? (freshCoreState.queue || []) : [];
+              const freshIdx = freshCoreState ? freshCoreState.currentIndex : -1;
+              const freshNext = freshQueue[freshIdx + 1];
+              if (!freshTrack || !currentTrack || (freshTrack.id !== currentTrack.id && freshTrack.videoId !== currentTrack.videoId)) {
+                console.warn('[EclipseBridge] Active track changed during preflight readiness; aborting transition.');
+                window._autoMixHandlingEnd = false;
+                return;
+              }
+              if (!freshNext || (nextTrack && freshNext.id !== nextTrack.id && freshNext.videoId !== nextTrack.videoId)) {
+                console.warn('[EclipseBridge] Target queue changed during preflight readiness; aborting transition.');
+                window._autoMixHandlingEnd = false;
+                return;
+              }
+
+              // Re-read current audio progress to avoid stale duration math
+              const freshDur = Number.isFinite(nativeAudio.duration) && nativeAudio.duration > 0 ? nativeAudio.duration : (st.duration || 0);
+              const freshCur = Number.isFinite(nativeAudio.currentTime) ? nativeAudio.currentTime : (st.currentTime || 0);
+              const freshRemaining = Math.max(0, freshDur - freshCur);
+              if (freshRemaining <= 0.5) {
+                console.warn('[EclipseBridge] Insufficient time remaining after readiness check; falling back to gapless handover.');
                 window._autoMixHandlingEnd = false;
                 return;
               }
@@ -492,11 +520,11 @@
                 detail: { active: true, transitionId: currentTransitionId, nextTrack, durationSec: plannedFadeDuration, mode: window.autoMixDjInstance.mode, bpm: window.autoMixDjInstance.bpm }
               }));
 
-              console.log(`[EclipseBridge] AutoMix (${window.autoMixDjInstance.mode}) crossfade (${remaining.toFixed(1)}s remaining, fade: ${plannedFadeDuration.toFixed(1)}s, BPM ${window.autoMixDjInstance.bpm} -> ${targetBpm}, ratio: ${plannedTempoRatio.toFixed(3)}, synced: ${plannedTempoSynced})...`);
+              console.log(`[EclipseBridge] AutoMix (${window.autoMixDjInstance.mode}) crossfade (${freshRemaining.toFixed(1)}s remaining, fade: ${plannedFadeDuration.toFixed(1)}s, BPM ${window.autoMixDjInstance.bpm} -> ${targetBpm}, ratio: ${plannedTempoRatio.toFixed(3)}, synced: ${plannedTempoSynced})...`);
               let crossfadeSucceeded = false;
               let fadeFailureReason = null;
               try {
-                crossfadeSucceeded = (await window.autoMixDjInstance.executeCrossfade(nativeAudio, auxAudio, Math.min(plannedFadeDuration, remaining - 0.25), {
+                crossfadeSucceeded = (await window.autoMixDjInstance.executeCrossfade(nativeAudio, auxAudio, Math.min(plannedFadeDuration, freshRemaining - 0.25), {
                   outgoingBpm: currentTrackBpm || window.autoMixDjInstance.bpm || 120,
                   incomingBpm: targetBpm,
                   tempoRatio: plannedTempoRatio,
