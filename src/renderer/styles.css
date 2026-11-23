@@ -3432,6 +3432,23 @@ body.perf .playbar .time-label { transition: none !important; }
   margin-left: 8px;
   letter-spacing: 0.5px;
 }
+.badge-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #a855f7, #ec4899);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  box-shadow: 0 0 10px rgba(168, 85, 247, 0.45);
+  margin-left: 8px;
+  vertical-align: middle;
+  line-height: 1.2;
+}
 .hq-panel-wrapper {
   display: grid;
   grid-template-rows: 0fr;
