@@ -3182,7 +3182,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
           }
 
-          let bassEnergy = (freqData[0] + freqData[1] + freqData[2] + freqData[3]) / (4 * 255);
+          let bassEnergy = 0;
+                    if (audioEngine && audioEngine.ctx && freqData.length) {
+                      const sampleRate = audioEngine.ctx.sampleRate || 44100;
+                      const binWidth = sampleRate / (freqData.length * 2);
+                      const minBin = Math.max(1, Math.floor(40 / binWidth));
+                      const maxBin = Math.min(freqData.length - 1, Math.ceil(160 / binWidth));
+                      let sum = 0;
+                      let count = 0;
+                      for (let b = minBin; b <= maxBin; b++) {
+                        sum += freqData[b];
+                        count++;
+                      }
+                      bassEnergy = count > 0 ? (sum / (count * 255)) : 0;
+                    } else {
+                      bassEnergy = (freqData[0] + freqData[1] + freqData[2] + freqData[3]) / (4 * 255);
+                    }
           if (isTvkBassPulse && window.KaraokeMotionController) {
             window.KaraokeMotionController.triggerBassPulse(bassEnergy);
           }
@@ -7949,45 +7964,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       sliderBarVizSens.addEventListener('change', onSensInput);
     }
 
-    window.addEventListener('eclipse:karaoke-dominant-switch', (ev) => {
-      if (!state.isTvKaraokeOpen) return;
-      const toTrack = ev.detail && ev.detail.toTrack;
-      if (toTrack) {
-        const titleEl = el.tvKaraokeTitle || document.getElementById('tv-karaoke-title');
-        const artistEl = el.tvKaraokeArtist || document.getElementById('tv-karaoke-artist');
-        const coverEl = el.tvCover || document.getElementById('tv-cover');
-        if (titleEl) {
-          titleEl.style.opacity = '0';
-          titleEl.style.transform = 'translateY(6px)';
-          setTimeout(() => {
-            titleEl.textContent = toTrack.title || '';
-            titleEl.style.opacity = '1';
-            titleEl.style.transform = 'none';
-          }, 140);
-        }
-        if (artistEl) {
-          artistEl.style.opacity = '0';
-          artistEl.style.transform = 'translateY(6px)';
-          setTimeout(() => {
-            renderClickableArtists(artistEl, toTrack.artist || '');
-            artistEl.style.opacity = '1';
-            artistEl.style.transform = 'none';
-          }, 140);
-        }
-        if (coverEl) {
-          const thumb = getTrackThumbUrl(toTrack);
-          if (thumb) {
-            coverEl.style.opacity = '0';
-            coverEl.style.transform = 'scale(0.96)';
-            setTimeout(() => {
-              coverEl.src = thumb;
-              coverEl.style.opacity = '1';
-              coverEl.style.transform = 'scale(1)';
-            }, 140);
-          }
-        }
-      }
-    });
+    
 
     if (btnReset) {
       btnReset.addEventListener('click', () => {
@@ -28253,6 +28230,54 @@ function bindCoverHoldZoom(wrapEl) {
   refreshStacks();
   requestAnimationFrame(() => requestAnimationFrame(refreshStacks));
   initTvk();
+  if (window.KaraokeMotionController && typeof window.KaraokeMotionController.init === 'function') {
+    window.KaraokeMotionController.init();
+  }
+  let dominantGeneration = 0;
+  window.addEventListener('eclipse:karaoke-dominant-switch', (ev) => {
+    if (!state.isTvKaraokeOpen) return;
+    const toTrack = ev.detail && ev.detail.toTrack;
+    if (toTrack) {
+      dominantGeneration += 1;
+      const currentGen = dominantGeneration;
+      const titleEl = el.tvKaraokeTitle || document.getElementById('tv-karaoke-title');
+      const artistEl = el.tvKaraokeArtist || document.getElementById('tv-karaoke-artist');
+      const coverEl = el.tvCover || document.getElementById('tv-cover');
+      if (titleEl) {
+        titleEl.style.opacity = '0';
+        titleEl.style.transform = 'translateY(6px)';
+        setTimeout(() => {
+          if (dominantGeneration !== currentGen) return;
+          titleEl.textContent = toTrack.title || '';
+          titleEl.style.opacity = '1';
+          titleEl.style.transform = 'none';
+        }, 140);
+      }
+      if (artistEl) {
+        artistEl.style.opacity = '0';
+        artistEl.style.transform = 'translateY(6px)';
+        setTimeout(() => {
+          if (dominantGeneration !== currentGen) return;
+          renderClickableArtists(artistEl, toTrack.artist || '');
+          artistEl.style.opacity = '1';
+          artistEl.style.transform = 'none';
+        }, 140);
+      }
+      if (coverEl) {
+        const thumb = getTrackThumbUrl(toTrack);
+        if (thumb) {
+          coverEl.style.opacity = '0';
+          coverEl.style.transform = 'scale(0.96)';
+          setTimeout(() => {
+            if (dominantGeneration !== currentGen) return;
+            coverEl.src = thumb;
+            coverEl.style.opacity = '1';
+            coverEl.style.transform = 'scale(1)';
+          }, 140);
+        }
+      }
+    }
+  });
   if (typeof m3cInit === 'function') m3cInit();
   requestAnimationFrame(() => requestAnimationFrame(() => updateNavIndicator(false)));
 

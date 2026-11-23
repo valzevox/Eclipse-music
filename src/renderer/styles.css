@@ -8870,9 +8870,9 @@ body.perf .tv-karaoke .tvk-panel { transition: none !important; }
   transition: transform var(--tvk-speed, 400ms) cubic-bezier(0.2, 0.8, 0.2, 1),
               opacity var(--tvk-speed, 400ms) cubic-bezier(0.2, 0.8, 0.2, 1),
               filter var(--tvk-speed, 400ms) cubic-bezier(0.2, 0.8, 0.2, 1);
-  will-change: transform, opacity, filter;
 }
 .tv-karaoke[data-tvk-anim="focus"] .lyric-line.active {
+  will-change: transform, opacity;
   transform: scale(1.035);
   opacity: 1;
   filter: blur(0);
@@ -11837,4 +11837,32 @@ body.perf .tvk-automix-pill, body.perf .tvk-up-next-chip, body.perf .tv-karaoke.
 }
 @media (prefers-reduced-motion: reduce) {
   .tvk-automix-dot { animation: none !important; }
+}
+
+/* Performance and Accessibility Overrides for Focus Flow and AutoMix TVK */
+body.perf .tv-karaoke[data-tvk-anim="focus"] .lyric-line {
+  filter: none !important;
+  transition: none !important;
+  will-change: auto !important;
+}
+body.perf .tv-karaoke[data-tvk-anim="focus"] .lyric-line.active {
+  transform: none !important;
+  text-shadow: none !important;
+}
+body.perf .tv-karaoke[data-tvk-anim="focus"] .lyric-word.active-word {
+  transform: none !important;
+  transition: none !important;
+  text-shadow: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tv-karaoke[data-tvk-anim="focus"] .lyric-line,
+  .tv-karaoke[data-tvk-anim="focus"] .lyric-line.active,
+  .tv-karaoke[data-tvk-anim="focus"] .lyric-word.active-word,
+  .tvk-automix-pill,
+  .tvk-up-next-chip {
+    transition: none !important;
+    animation: none !important;
+    transform: none !important;
+    filter: none !important;
+  }
 }

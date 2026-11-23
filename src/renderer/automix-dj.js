@@ -666,8 +666,9 @@ class AutoMixDJ {
           suppressionMgr.release(suppressToken);
         }
       }, 80);
+      const activeTxId = (this._currentFade && this._currentFade.transitionId) || null;
       window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
-        detail: { active: false, aborted: true, reason }
+        detail: { active: false, aborted: true, failed: reason !== 'user_cancelled', reason, transitionId: activeTxId }
       }));
     } else if (suppressionMgr && suppressToken !== null) {
       setTimeout(() => {
@@ -826,6 +827,7 @@ class AutoMixDJ {
         useFadeGainNode,
         audioEngine,
         suppressToken,
+        transitionId: (options && options.transitionId) || ('tx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7)),
         interval: null,
         resolve,
         reject
@@ -838,7 +840,7 @@ class AutoMixDJ {
 
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('eclipse:automix-progress', {
-            detail: { progress, elapsedMs: elapsed, durationMs }
+            detail: { transitionId: fadeState.transitionId || null, progress, elapsedMs: elapsed, durationMs }
           }));
         }
 

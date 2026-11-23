@@ -487,8 +487,9 @@
                 return;
               }
 
+              const currentTransitionId = 'tx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
               window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
-                detail: { active: true, nextTrack, durationSec: plannedFadeDuration, mode: window.autoMixDjInstance.mode, bpm: window.autoMixDjInstance.bpm }
+                detail: { active: true, transitionId: currentTransitionId, nextTrack, durationSec: plannedFadeDuration, mode: window.autoMixDjInstance.mode, bpm: window.autoMixDjInstance.bpm }
               }));
 
               console.log(`[EclipseBridge] AutoMix (${window.autoMixDjInstance.mode}) crossfade (${remaining.toFixed(1)}s remaining, fade: ${plannedFadeDuration.toFixed(1)}s, BPM ${window.autoMixDjInstance.bpm} -> ${targetBpm}, ratio: ${plannedTempoRatio.toFixed(3)}, synced: ${plannedTempoSynced})...`);
@@ -498,14 +499,15 @@
                   outgoingBpm: currentTrackBpm || window.autoMixDjInstance.bpm || 120,
                   incomingBpm: targetBpm,
                   tempoRatio: plannedTempoRatio,
-                  tempoSynced: plannedTempoSynced
+                  tempoSynced: plannedTempoSynced,
+                  transitionId: currentTransitionId
                 })) === true;
               } catch (fadeErr) {
                 console.warn('[EclipseBridge] Crossfade interrupted or failed; aborting handover to keep outgoing track playing:', fadeErr?.message || fadeErr);
                 crossfadeSucceeded = false;
               } finally {
                 window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
-                  detail: { active: false, nextTrack: null, durationSec: 0 }
+                  detail: { active: false, transitionId: currentTransitionId, nextTrack: null, durationSec: 0, completed: crossfadeSucceeded, aborted: !crossfadeSucceeded, failed: !crossfadeSucceeded }
                 }));
               }
 
