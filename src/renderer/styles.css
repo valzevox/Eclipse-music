@@ -2890,7 +2890,8 @@ body.m3-cover-on .artwork-wrapper {
 }
 
 #btn-shuffle,
-#btn-repeat {
+#btn-repeat,
+#btn-auto-remix {
   width: 32px;
   height: 48px;
   padding: 0;
@@ -2900,12 +2901,14 @@ body.m3-cover-on .artwork-wrapper {
   opacity: 0.85;
 }
 #btn-shuffle:hover,
-#btn-repeat:hover {
+#btn-repeat:hover,
+#btn-auto-remix:hover {
   background: var(--md-sys-color-surface-container-highest);
   opacity: 1;
 }
 #btn-shuffle.active,
-#btn-repeat.active {
+#btn-repeat.active,
+#btn-auto-remix.active {
   background: var(--md-sys-color-surface-container-highest);
   color: var(--md-sys-color-primary);
   opacity: 1;
@@ -11546,15 +11549,15 @@ body.hide-sp-table-cols .track-row-col-date {
   transition: background 180ms ease, border-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
 }
 .automix-pill-btn:hover {
-  background: rgba(168, 85, 247, 0.16);
-  border-color: rgba(168, 85, 247, 0.4);
+  background: color-mix(in srgb, var(--md-sys-color-primary) 16%, transparent);
+  border-color: color-mix(in srgb, var(--md-sys-color-primary) 40%, transparent);
   color: #fff;
 }
 .automix-pill-btn.active {
-  background: rgba(168, 85, 247, 0.24);
-  border-color: rgba(192, 132, 252, 0.75);
+  background: color-mix(in srgb, var(--md-sys-color-primary) 24%, transparent);
+  border-color: var(--md-sys-color-primary);
   color: #f3e8ff;
-  box-shadow: 0 0 14px rgba(168, 85, 247, 0.4);
+  box-shadow: 0 0 14px var(--accent-glow, rgba(168, 85, 247, 0.4));
 }
 
 .glass-control-card {
@@ -11595,10 +11598,10 @@ body.hide-sp-table-cols .track-row-col-date {
 }
 .glass-mode-pill.active,
 .sb-cat-pill.active {
-  background: rgba(168, 85, 247, 0.22);
-  border-color: rgba(192, 132, 252, 0.65);
-  color: #f5f3ff;
-  box-shadow: 0 0 10px rgba(168, 85, 247, 0.28);
+  background: color-mix(in srgb, var(--md-sys-color-primary) 22%, transparent);
+  border-color: var(--md-sys-color-primary);
+  color: #fff;
+  box-shadow: 0 0 10px var(--accent-glow, rgba(168, 85, 247, 0.28));
 }
 
 .spatial-8d-controls {
