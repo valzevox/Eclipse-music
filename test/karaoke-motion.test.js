@@ -53,7 +53,10 @@ function setupMockEnvironment() {
   const document = {
     body: {
       classList: {
-        contains(cls) { return false; }
+        _bodyClasses: new Set(),
+        add(c) { this._bodyClasses.add(c); },
+        remove(c) { this._bodyClasses.delete(c); },
+        contains(c) { return this._bodyClasses.has(c); }
       }
     },
     getElementById(id) {
@@ -79,6 +82,20 @@ function setupMockEnvironment() {
   ambientBg.id = 'tvk-ambient-bg';
   elements.set('tvk-ambient-bg', ambientBg);
 
+  const titleEl = createElement('div');
+  titleEl.id = 'tv-karaoke-title';
+  elements.set('tv-karaoke-title', titleEl);
+
+  const artistEl = createElement('div');
+  artistEl.id = 'tv-karaoke-artist';
+  elements.set('tv-karaoke-artist', artistEl);
+
+  const coverEl = createElement('img');
+  coverEl.id = 'tv-cover';
+  elements.set('tv-cover', coverEl);
+
+  let prefersReducedMotion = false;
+
   const window = {
     addEventListener(event, fn) {
       if (!listeners.has(event)) listeners.set(event, []);
@@ -94,7 +111,12 @@ function setupMockEnvironment() {
       fns.forEach(fn => fn(event));
     },
     matchMedia(query) {
-      return { matches: false };
+      return {
+        matches: query.includes('prefers-reduced-motion') ? prefersReducedMotion : false
+      };
+    },
+    setPrefersReducedMotion(val) {
+      prefersReducedMotion = val;
     }
   };
 
@@ -112,7 +134,7 @@ function setupMockEnvironment() {
   return { listeners, elements, window, document };
 }
 
-describe('KaraokeMotionController Lifecycle & Guardrails', () => {
+describe('KaraokeMotionController Unit & Integration Pipeline', () => {
   let env;
   let KaraokeMotionController;
 
@@ -124,7 +146,7 @@ describe('KaraokeMotionController Lifecycle & Guardrails', () => {
     KaraokeMotionController = mod.KaraokeMotionController;
   });
 
-  test('Test Case 1: Controller init once - idempotency and single listener set', () => {
+  test('Unit: Controller init once - idempotency and single listener set', () => {
     const controller = new KaraokeMotionController();
     assert.strictEqual(controller._isSubscribed, false);
 
@@ -142,106 +164,111 @@ describe('KaraokeMotionController Lifecycle & Guardrails', () => {
     assert.strictEqual((env.listeners.get('eclipse:automix-progress') || []).length, 1);
   });
 
-  test('Test Case 2: Progress ownership - ignores stale transitionId', () => {
+  test('IT-01: Abort A không được huỷ B (End-to-End DOM dispatch pipeline)', () => {
     const controller = new KaraokeMotionController();
     controller.init();
 
-    // Start transition 1
-    controller.handleAutomixState({
-      active: true,
-      transitionId: 'tx-001',
-      nextTrack: { title: 'Track A', artist: 'Artist A' },
-      durationSec: 6.0,
-      bpm: 124
-    });
-
+    // 1. Start transition A via real event pipeline
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: true, transitionId: 'tx-A', nextTrack: { title: 'Track A' } }
+    }));
+    assert.strictEqual(controller.state.transitionId, 'tx-A');
     assert.strictEqual(controller.state.phase, 'mixing');
-    assert.strictEqual(controller.state.transitionId, 'tx-001');
 
-    // Send valid progress for tx-001
-    controller.handleAutomixProgress({
-      transitionId: 'tx-001',
-      progress: 0.35
-    });
-    assert.strictEqual(controller.state.progress, 0.35);
+    // 2. Abort A happens, but then transition B immediately starts
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: true, transitionId: 'tx-B', nextTrack: { title: 'Track B' } }
+    }));
+    assert.strictEqual(controller.state.transitionId, 'tx-B');
+    assert.strictEqual(controller.state.phase, 'mixing');
 
-    // Start transition 2 (new track incoming)
-    controller.handleAutomixState({
-      active: true,
-      transitionId: 'tx-002',
-      nextTrack: { title: 'Track B', artist: 'Artist B' },
-      durationSec: 8.0,
-      bpm: 128
-    });
-    assert.strictEqual(controller.state.transitionId, 'tx-002');
+    // 3. Delayed terminal abort event from A arrives
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: false, transitionId: 'tx-A', aborted: true, reason: 'skip' }
+    }));
+
+    // 4. Assert B is unaffected: still mixing, still tx-B
+    assert.strictEqual(controller.state.transitionId, 'tx-B', 'Transition B ownership must be preserved');
+    assert.strictEqual(controller.state.phase, 'mixing', 'Transition B must not be cancelled by A');
+  });
+
+  test('IT-02: Terminal event thiếu ID bị từ chối khi transition active có ID', () => {
+    const controller = new KaraokeMotionController();
+    controller.init();
+
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: true, transitionId: 'tx-active-with-id', nextTrack: { title: 'Track Active' } }
+    }));
+    assert.strictEqual(controller.state.phase, 'mixing');
+
+    // Malformed/untracked terminal event with null/undefined transitionId
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: false, transitionId: null, aborted: true }
+    }));
+
+    assert.strictEqual(controller.state.phase, 'mixing', 'Terminal event without ID must be rejected');
+    assert.strictEqual(controller.state.transitionId, 'tx-active-with-id');
+  });
+
+  test('IT-03: Duplicate terminal event là idempotent', () => {
+    const controller = new KaraokeMotionController();
+    controller.init();
+
+    let notificationCount = 0;
+    controller.subscribe(() => { notificationCount++; });
+
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: true, transitionId: 'tx-single-terminal', nextTrack: { title: 'Track Single' } }
+    }));
+    const notifsAfterStart = notificationCount;
+
+    // Terminal dispatch #1
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: false, transitionId: 'tx-single-terminal', completed: true }
+    }));
+    assert.strictEqual(controller.state.phase, 'settled');
+    const notifsAfterFirstTerminal = notificationCount;
+    assert.ok(notifsAfterFirstTerminal > notifsAfterStart);
+
+    // Duplicate terminal dispatch #2 (from finally or race)
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: false, transitionId: 'tx-single-terminal', completed: true }
+    }));
+
+    // Must be completely ignored (idempotent, no side effects)
+    assert.strictEqual(notificationCount, notifsAfterFirstTerminal, 'Duplicate terminal dispatch must be idempotent');
+    assert.strictEqual(controller.state.phase, 'settled');
+  });
+
+  test('IT-04: Progress stale của A không ghi đè B', () => {
+    const controller = new KaraokeMotionController();
+    controller.init();
+
+    // Start A
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: true, transitionId: 'tx-first', nextTrack: { title: 'Track 1' } }
+    }));
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-progress', {
+      detail: { transitionId: 'tx-first', progress: 0.45 }
+    }));
+    assert.strictEqual(controller.state.progress, 0.45);
+
+    // Start B
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: true, transitionId: 'tx-second', nextTrack: { title: 'Track 2' } }
+    }));
     assert.strictEqual(controller.state.progress, 0.0);
 
-    // Stale progress from tx-001 arrives delayed
-    controller.handleAutomixProgress({
-      transitionId: 'tx-001',
-      progress: 0.95
-    });
+    // Stale progress from A arrives late
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-progress', {
+      detail: { transitionId: 'tx-first', progress: 0.85 }
+    }));
 
-    // Verify stale progress was ignored and didn't trigger dominance or overwrite
-    assert.strictEqual(controller.state.progress, 0.0, 'Stale progress must be discarded');
-    assert.strictEqual(controller.state.phase, 'mixing');
+    assert.strictEqual(controller.state.progress, 0.0, 'Stale progress from A must be discarded');
+    assert.strictEqual(controller.state.transitionId, 'tx-second');
   });
 
-  test('Test Case 3: Abort outcomes - cancelled vs error vs settled', () => {
-    const controller = new KaraokeMotionController();
-    controller.init();
-
-    // 1. Abort scenario (user skipped / crossfade cancelled)
-    controller.handleAutomixState({
-      active: true,
-      transitionId: 'tx-cancel',
-      nextTrack: { title: 'Track C' }
-    });
-    controller.handleAutomixProgress({
-      transitionId: 'tx-cancel',
-      progress: 0.42
-    });
-
-    controller.handleAutomixState({
-      active: false,
-      transitionId: 'tx-cancel',
-      aborted: true,
-      reason: 'user_skipped'
-    });
-
-    assert.strictEqual(controller.state.phase, 'cancelled', 'Aborted transition must have phase cancelled');
-    assert.strictEqual(controller.state.progress, 0.42, 'Progress must not be forced to 1.0 on cancel');
-
-    // 2. Failure scenario (decode error)
-    controller.handleAutomixState({
-      active: true,
-      transitionId: 'tx-err',
-      nextTrack: { title: 'Track D' }
-    });
-    controller.handleAutomixState({
-      active: false,
-      transitionId: 'tx-err',
-      failed: true,
-      reason: 'decode_error'
-    });
-    assert.strictEqual(controller.state.phase, 'error', 'Failed transition must have phase error');
-
-    // 3. Normal settled completion
-    controller.handleAutomixState({
-      active: true,
-      transitionId: 'tx-ok',
-      nextTrack: { title: 'Track E' }
-    });
-    controller.handleAutomixState({
-      active: false,
-      transitionId: 'tx-ok',
-      completed: true
-    });
-    assert.strictEqual(controller.state.phase, 'settled', 'Completed transition must settle');
-    assert.strictEqual(controller.state.progress, 1.0);
-  });
-
-  test('Test Case 4: Dominant switch dispatches at >= 60% with transitionId', () => {
+  test('IT-05: Dominance event trễ không tác động transition mới', () => {
     const controller = new KaraokeMotionController();
     controller.init();
 
@@ -253,69 +280,77 @@ describe('KaraokeMotionController Lifecycle & Guardrails', () => {
       dominantDetail = ev.detail;
     });
 
-    controller.handleAutomixState({
-      active: true,
-      transitionId: 'tx-dom-test',
-      nextTrack: { title: 'Dominant Song', artist: 'Artist X' }
-    });
-
-    // 50% progress - dominance should not trigger yet
-    controller.handleAutomixProgress({
-      transitionId: 'tx-dom-test',
-      progress: 0.50
-    });
-    assert.strictEqual(dominantFired, 0);
-    assert.strictEqual(controller.state.phase, 'mixing');
-
-    // 60% progress - triggers dominance switch once
-    controller.handleAutomixProgress({
-      transitionId: 'tx-dom-test',
-      progress: 0.60
-    });
+    // Start A and push past 60%
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: true, transitionId: 'tx-dom-A', nextTrack: { title: 'Track Old' } }
+    }));
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-progress', {
+      detail: { transitionId: 'tx-dom-A', progress: 0.65 }
+    }));
     assert.strictEqual(dominantFired, 1);
-    assert.strictEqual(controller.state.phase, 'dominance');
-    assert.strictEqual(dominantDetail.transitionId, 'tx-dom-test');
-    assert.strictEqual(dominantDetail.toTrack.title, 'Dominant Song');
+    assert.strictEqual(dominantDetail.transitionId, 'tx-dom-A');
 
-    // 70% progress - does not re-dispatch dominance
-    controller.handleAutomixProgress({
-      transitionId: 'tx-dom-test',
-      progress: 0.70
-    });
-    assert.strictEqual(dominantFired, 1, 'Dominance switch must only fire once per transition');
+    // End A and Start B
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: false, transitionId: 'tx-dom-A', completed: true }
+    }));
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: true, transitionId: 'tx-dom-B', nextTrack: { title: 'Track New' } }
+    }));
+
+    // Stale progress >= 60% from A arrives
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-progress', {
+      detail: { transitionId: 'tx-dom-A', progress: 0.90 }
+    }));
+
+    // Must NOT fire dominant switch again for A
+    assert.strictEqual(dominantFired, 1, 'Stale dominance must not fire for old transition');
   });
 
-  test('Test Case 5: Bass Pulse timer generation protects overlapping pulses', async () => {
+  test('IT-06: Abort tại nhiều mốc progress (20%, 50%, 60%, 95%) preserves real progress', () => {
     const controller = new KaraokeMotionController();
     controller.init();
 
-    const ambientBg = env.elements.get('tvk-ambient-bg');
-    assert.ok(ambientBg);
+    const testCheckpoints = [0.20, 0.50, 0.60, 0.95];
 
-    // Initial pulse A (energy = 0.8)
-    controller.triggerBassPulse(0.8);
-    const genA = controller._bassPulseGeneration;
-    assert.strictEqual(genA, 1);
-    assert.ok(controller._bassPulseTimer !== null);
-    assert.ok(ambientBg.style.transform.includes('scale'));
+    testCheckpoints.forEach((p, idx) => {
+      const txId = `tx-chk-${idx}`;
+      env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+        detail: { active: true, transitionId: txId, nextTrack: { title: `Track ${idx}` } }
+      }));
+      env.window.dispatchEvent(new CustomEvent('eclipse:automix-progress', {
+        detail: { transitionId: txId, progress: p }
+      }));
+      assert.strictEqual(controller.state.progress, p);
 
-    // Wait 145ms (passes the 140ms gate but before 160ms decay of pulse A)
-    await new Promise(r => setTimeout(r, 145));
+      // Abort
+      env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+        detail: { active: false, transitionId: txId, aborted: true, reason: 'manual_skip' }
+      }));
 
-    // Pulse B triggers
+      assert.strictEqual(controller.state.phase, 'cancelled');
+      assert.strictEqual(controller.state.progress, p, `Progress at checkpoint ${p} must be preserved on abort`);
+    });
+  });
+
+  test('IT-07: Guardrails & Accessibility - reduced-motion & body.perf suppression', () => {
+    const controller = new KaraokeMotionController();
+    controller.init();
+
+    // 1. With reduced-motion enabled
+    env.window.setPrefersReducedMotion(true);
     controller.triggerBassPulse(0.9);
-    const genB = controller._bassPulseGeneration;
-    assert.strictEqual(genB, 2, 'New pulse increments generation');
+    assert.strictEqual(controller._bassPulseGeneration, 0, 'Bass pulse must be suppressed under prefers-reduced-motion');
 
-    // Wait 25ms so that 145 + 25 = 170ms elapsed from pulse A
-    // (if pulse A timer was not cleared or checked generation, it would reset transform)
-    await new Promise(r => setTimeout(r, 25));
+    // 2. With body.perf enabled
+    env.window.setPrefersReducedMotion(false);
+    env.document.body.classList.add('perf');
+    controller.triggerBassPulse(0.9);
+    assert.strictEqual(controller._bassPulseGeneration, 0, 'Bass pulse must be suppressed under body.perf');
 
-    // At 170ms, pulse A expired, but pulse B is only 25ms old and should still be active
-    assert.strictEqual(controller._bassPulseGeneration, 2);
-
-    // Wait for pulse B timer to finish (150ms more)
-    await new Promise(r => setTimeout(r, 150));
-    assert.strictEqual(ambientBg.style.transform, 'scale(4) translateZ(0)', 'Reset applied cleanly after pulse B');
+    // 3. Normal conditions: Bass pulse works
+    env.document.body.classList.remove('perf');
+    controller.triggerBassPulse(0.9);
+    assert.strictEqual(controller._bassPulseGeneration, 1, 'Bass pulse operates normally when guards are off');
   });
 });

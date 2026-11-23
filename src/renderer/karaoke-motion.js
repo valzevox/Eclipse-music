@@ -76,9 +76,22 @@
       const active = !!detail.active;
 
       if (!active) {
-        // If event carries transitionId, verify ownership unless we have no active transition
-        if (detail.transitionId && this.state.transitionId && detail.transitionId !== this.state.transitionId) {
-          return; // Ignore stale terminal event from older transition
+        const activeId = this.state.transitionId || null;
+        const incomingId = detail.transitionId || null;
+
+        // Terminal event lacking ownership token MUST NOT terminate an active transition with ID
+        if (activeId && !incomingId) {
+          return;
+        }
+
+        // Stale or different transitionId
+        if (activeId && incomingId && incomingId !== activeId) {
+          return;
+        }
+
+        // Idempotency: if already terminal for this transition, ignore duplicate terminal dispatch
+        if (this.state.phase === 'settled' || this.state.phase === 'cancelled' || this.state.phase === 'error') {
+          return;
         }
 
         if (detail.aborted) {

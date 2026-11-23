@@ -666,9 +666,9 @@ class AutoMixDJ {
           suppressionMgr.release(suppressToken);
         }
       }, 80);
-      const activeTxId = (this._currentFade && this._currentFade.transitionId) || null;
+      const activeTxId = (fade && fade.transitionId) || null;
       window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
-        detail: { active: false, aborted: true, failed: reason !== 'user_cancelled', reason, transitionId: activeTxId }
+        detail: { active: false, aborted: true, failed: (reason !== 'user_cancelled' && reason !== 'skip' && reason !== 'manual'), reason, transitionId: activeTxId }
       }));
     } else if (suppressionMgr && suppressToken !== null) {
       setTimeout(() => {
