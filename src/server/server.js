@@ -9970,11 +9970,15 @@ if (parsedUrl.pathname === '/api/ytm/login-url') {
   if (parsedUrl.pathname === '/api/ytm/clear-accounts' && req.method === 'POST') {
     try {
       const cleared = await ytmAuth.clearAllAccounts();
+      if (!cleared) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, cleared: false, error: 'Failed to persist cleared accounts state to encrypted storage' }));
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ success: true, cleared }));
+      return res.end(JSON.stringify({ success: true, cleared: true }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ success: false, error: e.message }));
+      return res.end(JSON.stringify({ success: false, cleared: false, error: e.message }));
     }
   }
 

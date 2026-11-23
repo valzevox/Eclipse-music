@@ -390,6 +390,20 @@ describe('Phase D — Harmonic-Aware Candidate Ranking & End-to-End PCM Schema',
       assert.equal(inC._eclipseMixFilter.history.at(-1), 20);
       assert.equal(outC._eclipseOutMixFilter.history.at(-1), 20000);
       assert.deepEqual({ a: mockAudioEngine.lastGains.deckA, b: mockAudioEngine.lastGains.deckB }, { a: 1, b: 0 });
+
+      // 4. Graph readiness fallback: if AudioEngine lacks ctx or deck gains, fallback to HTMLAudioElement volume
+      const uninitializedAudioEngine = { setDeckGains: () => {}, ctx: null, deckAGain: null, deckBGain: null };
+      global.window.audioEngine = uninitializedAudioEngine;
+      const outD = { volume: 1.0, playbackRate: 1, pause() {} };
+      const inD = { volume: 0.0, playbackRate: 1, play: async () => {} };
+      const fallbackFadePromise = dj.executeCrossfade(outD, inD, 0.2);
+      await new Promise(r => setTimeout(r, 60));
+      // In volume fallback mode, outD.volume should be reduced below 1.0
+      assert.ok(outD.volume < 1.0, 'Volume fallback reduces outgoingAudio.volume when deck gains not ready');
+      assert.ok(inD.volume > 0.0, 'Volume fallback increases incomingAudio.volume when deck gains not ready');
+      await fallbackFadePromise;
+      assert.equal(outD.volume, 0);
+      assert.equal(inD.volume, 1);
     } finally {
       await new Promise(r => setTimeout(r, 100));
       global.window = prevWindow;

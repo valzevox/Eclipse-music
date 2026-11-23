@@ -170,9 +170,11 @@
         console.log('[EclipseBridge] AutoMixDJ initialized with dual-source Equal-Power crossfade.');
 
         let automixTriggeredForTrack = false;
+        let automixRetryCount = 0;
         let earlyPreloadStartedForTrack = false;
         window.addEventListener('trackchanged', () => {
           automixTriggeredForTrack = false;
+          automixRetryCount = 0;
           earlyPreloadStartedForTrack = false;
           if (window.autoMixDjInstance) {
             if (typeof window.autoMixDjInstance.resetLiveBpm === 'function') window.autoMixDjInstance.resetLiveBpm();
@@ -466,6 +468,14 @@
               } catch (_) {}
 
               if (!nextStreamUrl) {
+                // Allow bounded retry (up to 3 times) for transient stream resolver errors
+                automixRetryCount++;
+                if (automixRetryCount <= 3) {
+                  console.warn(`[EclipseBridge] Stream resolver returned empty URL (attempt ${automixRetryCount}/3); resetting trigger to retry.`);
+                  automixTriggeredForTrack = false;
+                } else {
+                  console.warn('[EclipseBridge] Stream resolver failed 3 times; falling back to gapless transition.');
+                }
                 window._autoMixHandlingEnd = false;
                 return;
               }
@@ -482,8 +492,13 @@
                 : (auxAudio.readyState >= 2);
 
               if (!isAuxReady || auxAudio.readyState < 2) {
-                console.warn('[EclipseBridge] Aux stream not ready (readyState < 2); resetting flag to retry on next timeupdate.');
-                automixTriggeredForTrack = false;
+                automixRetryCount++;
+                if (automixRetryCount <= 3) {
+                  console.warn(`[EclipseBridge] Aux stream not ready (readyState < 2, attempt ${automixRetryCount}/3); resetting flag to retry on next timeupdate.`);
+                  automixTriggeredForTrack = false;
+                } else {
+                  console.warn('[EclipseBridge] Aux stream readiness failed 3 times; falling back gracefully to gapless transition.');
+                }
                 window._autoMixHandlingEnd = false;
                 return;
               }
@@ -500,7 +515,8 @@
                 return;
               }
               if (!freshNext || (nextTrack && freshNext.id !== nextTrack.id && freshNext.videoId !== nextTrack.videoId)) {
-                console.warn('[EclipseBridge] Target queue changed during preflight readiness; aborting transition.');
+                console.warn('[EclipseBridge] Target queue changed during preflight readiness; resetting trigger to allow transition to new target track.');
+                automixTriggeredForTrack = false;
                 window._autoMixHandlingEnd = false;
                 return;
               }

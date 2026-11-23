@@ -706,7 +706,8 @@ class AutoMixDJ {
     const initialUserVol = Number.isFinite(outgoingAudio.volume) ? Math.max(0, Math.min(1, outgoingAudio.volume)) : 1.0;
 
     const audioEngine = (typeof window !== 'undefined' && window.audioEngine) ? window.audioEngine : null;
-    const useDeckGains = !!(audioEngine && typeof audioEngine.setDeckGains === 'function');
+    const isAudioEngineReady = !!(audioEngine && audioEngine.ctx && audioEngine.deckAGain && audioEngine.deckBGain);
+    const useDeckGains = isAudioEngineReady && typeof audioEngine.setDeckGains === 'function';
     const useFadeGainNode = !useDeckGains && !!(audioEngine && audioEngine.fadeGain && audioEngine.ctx);
 
     const isTempoMode = (this.mode === 'tempo_synced' || this.mode === 'dj_mix');

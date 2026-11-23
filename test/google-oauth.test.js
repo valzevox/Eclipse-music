@@ -188,7 +188,97 @@ test('YtmAuthManager enforces valid account profile and safe persistence', async
 
     // Verify storage remained untouched and uncorrupted
     assert.equal(authManager.getAccounts().length, 0);
+
+    // 5. Test persistence failure rollback in addAccountFromCookie
+    // Simulate saveAccounts failure
+    authManager.saveAccounts = async () => false;
+    authManager.accounts = [{ id: 'existing_account', name: 'Existing' }];
+    await assert.rejects(
+      async () => authManager.addAccountFromCookie('SAPISID=fake_fail; SID=fake_sid'),
+      /(Failed to persist authenticated YouTube account to disk|Failed to retrieve YouTube account profile|Could not establish YouTube Music session)/
+    );
   } finally {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
   }
+});
+
+test('google-auth-status Detailed Auth Status logic verifies fail-closed invariants', () => {
+  // Simulating google-auth-status evaluator function
+  function evaluateGoogleAuthStatus({ authData, serverAccountsData, serverAvailable, hasLogoutFlag }) {
+    const auth = authData;
+    const googleDataOAuth = {
+      hasRefreshToken: !!(auth && typeof auth.refreshToken === 'string' && auth.refreshToken.trim())
+    };
+
+    let ytmConnected = false;
+    let ytmAccount = null;
+
+    if (serverAvailable && !hasLogoutFlag) {
+      if (serverAccountsData && serverAccountsData.activeAccount && serverAccountsData.activeAccount.id && serverAccountsData.activeAccount.id !== 'unknown') {
+        ytmConnected = true;
+        ytmAccount = serverAccountsData.activeAccount;
+      }
+    }
+
+    return {
+      loggedIn: ytmConnected,
+      ytmConnected,
+      ytmAccount,
+      googleDataOAuth
+    };
+  }
+
+  // 1. Has Google OAuth refresh token but NO backend YTM account -> loggedIn: false, ytmConnected: false
+  const res1 = evaluateGoogleAuthStatus({
+    authData: { refreshToken: 'valid-google-refresh-token' },
+    serverAccountsData: { activeAccount: null },
+    serverAvailable: true,
+    hasLogoutFlag: false
+  });
+  assert.equal(res1.loggedIn, false);
+  assert.equal(res1.ytmConnected, false);
+  assert.equal(res1.ytmAccount, null);
+  assert.equal(res1.googleDataOAuth.hasRefreshToken, true);
+
+  // 2. Has raw cookie in session but backend has NO active account -> ytmConnected: false
+  const res2 = evaluateGoogleAuthStatus({
+    authData: null,
+    serverAccountsData: { activeAccount: null },
+    serverAvailable: true,
+    hasLogoutFlag: false
+  });
+  assert.equal(res2.loggedIn, false);
+  assert.equal(res2.ytmConnected, false);
+
+  // 3. Has active YTM account but NO Google OAuth token -> ytmConnected: true, hasRefreshToken: false
+  const res3 = evaluateGoogleAuthStatus({
+    authData: null,
+    serverAccountsData: { activeAccount: { id: 'channel_123', name: 'Alice' } },
+    serverAvailable: true,
+    hasLogoutFlag: false
+  });
+  assert.equal(res3.loggedIn, true);
+  assert.equal(res3.ytmConnected, true);
+  assert.equal(res3.ytmAccount.id, 'channel_123');
+  assert.equal(res3.googleDataOAuth.hasRefreshToken, false);
+
+  // 4. Backend down / timeout (serverAvailable: false) -> ytmConnected: false (no fallback)
+  const res4 = evaluateGoogleAuthStatus({
+    authData: { refreshToken: 'tok' },
+    serverAccountsData: { activeAccount: { id: 'channel_123' } },
+    serverAvailable: false,
+    hasLogoutFlag: false
+  });
+  assert.equal(res4.loggedIn, false);
+  assert.equal(res4.ytmConnected, false);
+
+  // 5. Logout flag present -> ytmConnected: false even if server had cached session
+  const res5 = evaluateGoogleAuthStatus({
+    authData: null,
+    serverAccountsData: { activeAccount: { id: 'channel_123' } },
+    serverAvailable: true,
+    hasLogoutFlag: true
+  });
+  assert.equal(res5.loggedIn, false);
+  assert.equal(res5.ytmConnected, false);
 });

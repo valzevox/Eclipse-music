@@ -307,6 +307,20 @@ test('P0-4 & P0-5 & P0-6 & P0-7 & P0-9: Full crossfade ends at Deck A=0, Deck B=
     assert.strictEqual(engine.deckAGain.gain.value, 0.0, 'Deck A stays 0.0 on play() rejection');
     assert.strictEqual(engine.deckBGain.gain.value, 1.0, 'Deck B preserved at 1.0 on play() rejection');
     assert.strictEqual(auxEl.paused, false, 'Aux continues playing on play() rejection');
+    assert.strictEqual(rejectNativeEl.muted, false, 'nativeAudio unmuted on play() rejection');
+
+    // Test playing timeout restores mute and preserves aux
+    const timeoutNativeEl = createMockAudioElement('native-timeout');
+    timeoutNativeEl.src = auxEl.src;
+    timeoutNativeEl.readyState = 4;
+    timeoutNativeEl.play = () => new Promise(() => {}); // never resolves or fires playing
+    handover.executeSwap(timeoutNativeEl, auxEl, token, {
+      onDeckGainsReset: () => engine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 0 })
+    });
+    // advance clock past playingTimeout (3500ms)
+    await new Promise(r => setTimeout(r, 3600));
+    assert.strictEqual(timeoutNativeEl.muted, false, 'nativeAudio unmuted on playing timeout');
+    assert.strictEqual(engine.deckBGain.gain.value, 1.0, 'Deck B preserved on playing timeout');
   } finally {
     global.window = prevWindow;
   }

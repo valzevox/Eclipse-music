@@ -1951,21 +1951,26 @@ ipcMain.on('window-minimize', () => {
             .map(c => `${c.name}=${c.value}`)
             .join('; ');
 
-          if (serverPort) {
-            const res = await fetch(`http://127.0.0.1:${serverPort}/api/ytm/intercept-cookie`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ cookie: cookieHeaderStr }),
-              signal: AbortSignal.timeout(15000)
-            }).catch(() => null);
+          if (!serverPort) {
+            return { success: false, error: 'Cannot authenticate: YouTube Music backend service is not running or available' };
+          }
 
-            if (!res || !res.ok) {
-              return { success: false, error: 'YouTube Music authentication server rejected the imported cookies' };
-            }
-            const body = await res.json().catch(() => null);
-            if (!body || !body.success || !body.account) {
-              return { success: false, error: (body && body.error) || 'Failed to authenticate YouTube Music profile with imported cookies' };
-            }
+          const res = await fetch(`http://127.0.0.1:${serverPort}/api/ytm/intercept-cookie`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cookie: cookieHeaderStr }),
+            signal: AbortSignal.timeout(15000)
+          }).catch((fetchErr) => {
+            console.warn('[auth] intercept-cookie network failure:', fetchErr?.message || fetchErr);
+            return null;
+          });
+
+          if (!res || !res.ok) {
+            return { success: false, error: 'YouTube Music authentication server rejected the imported cookies or timed out' };
+          }
+          const body = await res.json().catch(() => null);
+          if (!body || !body.success || !body.account) {
+            return { success: false, error: (body && body.error) || 'Failed to authenticate YouTube Music profile with imported cookies' };
           }
 
           const googleSession = session.fromPartition('persist:eclipse-google');
@@ -1992,32 +1997,42 @@ ipcMain.on('window-minimize', () => {
       ipcMain.handle('google-auth-status', async () => {
         try {
           const auth = readGoogleOAuthData();
-          if (auth && auth.refreshToken) return { loggedIn: true };
-          let serverHasActive = false;
-          if (serverPort) {
+          const googleDataOAuth = {
+            hasRefreshToken: !!(auth && typeof auth.refreshToken === 'string' && auth.refreshToken.trim())
+          };
+
+          // YouTube Music authentication status is strictly verified via backend active account
+          // Never rely on unverified raw cookies or Google Data OAuth refresh tokens!
+          let ytmConnected = false;
+          let ytmAccount = null;
+
+          if (serverPort && !fs.existsSync(YT_LOGOUT_FLAG)) {
             try {
               const sRes = await fetch(`http://127.0.0.1:${serverPort}/api/ytm/accounts`, { signal: AbortSignal.timeout(3000) });
               if (sRes.ok) {
                 const sData = await sRes.json();
-                serverHasActive = !!(sData && sData.activeAccount && sData.activeAccount.id);
+                if (sData && sData.activeAccount && sData.activeAccount.id && sData.activeAccount.id !== 'unknown') {
+                  ytmConnected = true;
+                  ytmAccount = sData.activeAccount;
+                }
               }
             } catch (_) {}
           }
-          const s = session.fromPartition('persist:eclipse-google');
-          const [sapCookies, secCookies] = await Promise.all([
-            s.cookies.get({ name: 'SAPISID' }).catch(() => []),
-            s.cookies.get({ name: '__Secure-3PAPISID' }).catch(() => [])
-          ]);
-          const hasSessionSap = (Array.isArray(sapCookies) && sapCookies.some(c => c && c.value)) ||
-                                (Array.isArray(secCookies) && secCookies.some(c => c && c.value));
-          const hasMemSap = !!getSapisidFromCookieStr(capturedGoogleCookieHeader);
-          const loggedIn = serverHasActive || ((hasSessionSap || hasMemSap || hasValidYtCookiesFile()) && !fs.existsSync(YT_LOGOUT_FLAG));
-          if (loggedIn && !hasValidYtCookiesFile() && hasSessionSap) {
-            exportSessionCookiesToFile().catch(() => {});
-          }
-          return { loggedIn };
+
+          // loggedIn is an alias of ytmConnected for backward compatibility
+          return {
+            loggedIn: ytmConnected,
+            ytmConnected,
+            ytmAccount,
+            googleDataOAuth
+          };
         } catch (e) {
-          return { loggedIn: false };
+          return {
+            loggedIn: false,
+            ytmConnected: false,
+            ytmAccount: null,
+            googleDataOAuth: { hasRefreshToken: false }
+          };
         }
       });
 
@@ -2028,15 +2043,27 @@ ipcMain.on('window-minimize', () => {
           const auth = readGoogleOAuthData();
           revokeToken = auth && auth.refreshToken ? auth.refreshToken : '';
         } catch (_) {}
+
         if (serverPort) {
           try {
-            await fetch(`http://127.0.0.1:${serverPort}/api/ytm/clear-accounts`, {
+            const clearRes = await fetch(`http://127.0.0.1:${serverPort}/api/ytm/clear-accounts`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               signal: AbortSignal.timeout(5000)
             });
-          } catch (_) {}
+            if (!clearRes.ok) {
+              const errBody = await clearRes.json().catch(() => null);
+              return { success: false, error: (errBody && errBody.error) || 'Failed to clear server accounts' };
+            }
+            const clearData = await clearRes.json().catch(() => null);
+            if (!clearData || clearData.success !== true || clearData.cleared !== true) {
+              return { success: false, error: (clearData && clearData.error) || 'Failed to persist cleared accounts on disk' };
+            }
+          } catch (netErr) {
+            return { success: false, error: `Logout failed: unable to reach backend service (${netErr.message})` };
+          }
         }
+
         try {
           fs.mkdirSync(DATA_DIR, { recursive: true });
           fs.writeFileSync(YT_LOGOUT_FLAG, '1', 'utf8');

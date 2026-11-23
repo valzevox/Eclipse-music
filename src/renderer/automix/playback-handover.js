@@ -77,10 +77,16 @@ class PlaybackHandover {
     let started = false;
 
     let readinessTimeout = null;
+    let playingTimeout = null;
+
     const cleanupReadinessListeners = () => {
       if (readinessTimeout) {
         clearTimeout(readinessTimeout);
         readinessTimeout = null;
+      }
+      if (playingTimeout) {
+        clearTimeout(playingTimeout);
+        playingTimeout = null;
       }
       nativeAudio.removeEventListener('loadedmetadata', onReady);
       nativeAudio.removeEventListener('canplay', onReady);
@@ -95,6 +101,7 @@ class PlaybackHandover {
 
       // Guard: if a newer load has taken over while waiting for playing, abort swap to protect new playback
       if (!isOwnerInvocation()) {
+        nativeAudio.muted = !!options.isMuted;
         releaseSuppression();
         return;
       }
@@ -149,13 +156,33 @@ class PlaybackHandover {
       try { nativeAudio.currentTime = liveTime; } catch (_) {}
 
       nativeAudio.addEventListener('playing', finishSwap, { once: true });
+
+      // Timeout for playing event after play() is initiated (3500ms)
+      playingTimeout = setTimeout(() => {
+        if (!swapped) {
+          console.warn('[PlaybackHandover] nativeAudio playing timeout (3500ms); aborting handover to keep auxAudio playing');
+          cleanupReadinessListeners();
+          nativeAudio.removeEventListener('playing', finishSwap);
+          nativeAudio.removeEventListener('error', onNativeError);
+          nativeAudio.muted = !!options.isMuted;
+          releaseSuppression();
+          if (isOwnerInvocation() && typeof options.onDeckGainsReset === 'function') {
+            if (typeof window !== 'undefined' && window.audioEngine && typeof window.audioEngine.setDeckGains === 'function') {
+              window.audioEngine.setDeckGains({ deckA: 0.0, deckB: 1.0, rampMs: 20 });
+            }
+          }
+        }
+      }, 3500);
+
       const p = nativeAudio.play();
       if (p && typeof p.catch === 'function') {
         p.catch((playErr) => {
           console.warn('[PlaybackHandover] nativeAudio.play() rejected; keeping auxAudio running to prevent silence:', playErr?.message || playErr);
-          // Critical P0: clean up listeners so subsequent plays don't trigger finishSwap and kill auxAudio
+          // Critical P0: clean up listeners and restore mute so subsequent plays don't trigger finishSwap and kill auxAudio
+          cleanupReadinessListeners();
           nativeAudio.removeEventListener('playing', finishSwap);
           nativeAudio.removeEventListener('error', onNativeError);
+          nativeAudio.muted = !!options.isMuted;
           releaseSuppression();
           if (!isOwnerInvocation()) return;
           if (typeof options.onDeckGainsReset === 'function') {
