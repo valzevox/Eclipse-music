@@ -353,4 +353,98 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
     controller.triggerBassPulse(0.9);
     assert.strictEqual(controller._bassPulseGeneration, 1, 'Bass pulse operates normally when guards are off');
   });
+
+  test('P2 Race: Timer cleanup của A không thể ẩn hoặc reset state của B', async () => {
+    const controller = new KaraokeMotionController();
+    controller.init();
+
+    // 1. A starts and completes at t=0; starts 350ms cleanup timer for tx-A
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: true, transitionId: 'tx-A', nextTrack: { title: 'Track A' } }
+    }));
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: false, transitionId: 'tx-A', completed: true }
+    }));
+    assert.strictEqual(controller.state.phase, 'settled');
+    assert.strictEqual(controller.state.transitionId, 'tx-A');
+
+    // 2. Before 350ms elapses (e.g. at 50ms), transition B starts!
+    await new Promise(r => setTimeout(r, 50));
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: true, transitionId: 'tx-B', nextTrack: { title: 'Track B' } }
+    }));
+    assert.strictEqual(controller.state.phase, 'mixing');
+    assert.strictEqual(controller.state.transitionId, 'tx-B');
+
+    // 3. B also completes quickly (e.g. after 50ms more = 100ms total from t=0)
+    await new Promise(r => setTimeout(r, 50));
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: { active: false, transitionId: 'tx-B', completed: true }
+    }));
+    assert.strictEqual(controller.state.phase, 'settled');
+    assert.strictEqual(controller.state.transitionId, 'tx-B');
+
+    // 4. Wait 280ms (total time ~380ms from t=0, so Timer A would have expired at 350ms)
+    // But Timer B was created at ~100ms, so Timer B will expire at ~450ms.
+    // At t=380ms, B must still be settled and NOT prematurely cleaned up to idle/null!
+    await new Promise(r => setTimeout(r, 260));
+    assert.strictEqual(controller.state.transitionId, 'tx-B', 'Timer A must not reset transitionId of B');
+    assert.strictEqual(controller.state.phase, 'settled', 'Timer A must not reset phase of B to idle');
+
+    // 5. Wait remaining time for Timer B to expire
+    await new Promise(r => setTimeout(r, 150));
+    assert.strictEqual(controller.state.phase, 'idle');
+    assert.strictEqual(controller.state.transitionId, null);
+  });
+
+  test('Producer Verification: AutoMixDJ.abortCrossfade() captures transitionId and dispatches accurate outcome', () => {
+    let capturedEvent = null;
+    const onState = (ev) => {
+      capturedEvent = ev.detail;
+    };
+    env.window.addEventListener('eclipse:automix-state', onState);
+
+    // Instantiate AutoMixDJ
+    delete require.cache[require.resolve('../src/renderer/automix-dj.js')];
+    const AutoMixDJ = require('../src/renderer/automix-dj.js');
+    const dj = new AutoMixDJ();
+
+    // Mock an active crossfade with transitionId
+    const mockFade = {
+      transitionId: 'tx-producer-test-999',
+      interval: setInterval(() => {}, 1000),
+      outgoingAudio: { volume: 0.8, pause() {} },
+      incomingAudio: { volume: 0.2, pause() {}, currentTime: 0 },
+      initialUserVol: 0.8,
+      audioEngine: null,
+      suppressToken: null
+    };
+    dj.isCrossfading = true;
+    dj._currentFade = mockFade;
+
+    // Call real producer method
+    const res = dj.abortCrossfade('user_skipped');
+    assert.strictEqual(res, true, 'abortCrossfade returns true on successful abort');
+    assert.strictEqual(dj.isCrossfading, false, 'isCrossfading must be false after abort');
+    assert.strictEqual(dj._currentFade, null, '_currentFade must be null after abort');
+
+    assert.ok(capturedEvent, 'Terminal eclipse:automix-state event must be dispatched');
+    assert.strictEqual(capturedEvent.transitionId, 'tx-producer-test-999', 'event.transitionId must match captured token');
+    assert.strictEqual(capturedEvent.active, false);
+    assert.strictEqual(capturedEvent.aborted, true);
+    assert.strictEqual(capturedEvent.reason, 'user_skipped');
+
+    env.window.removeEventListener('eclipse:automix-state', onState);
+  });
+
+  test('Lifecycle: controller.dispose() cleans up listeners, DOM refs and pending timers', () => {
+    const controller = new KaraokeMotionController();
+    controller.init();
+    assert.strictEqual(controller._isSubscribed, true);
+
+    controller.dispose();
+    assert.strictEqual(controller._isSubscribed, false);
+    assert.strictEqual(controller.state.phase, 'idle');
+    assert.strictEqual(controller.state.transitionId, null);
+  });
 });

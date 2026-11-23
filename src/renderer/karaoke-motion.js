@@ -26,7 +26,10 @@
       this._lastBassTime = -999999;
       this._bassPulseTimer = null;
       this._bassPulseGeneration = 0;
+      this._terminalCleanupTimer = null;
       this._isSubscribed = false;
+      this._onAutomixState = null;
+      this._onAutomixProgress = null;
     }
 
     init() {
@@ -34,16 +37,45 @@
       this._isSubscribed = true;
 
       if (typeof window !== 'undefined') {
-        window.addEventListener('eclipse:automix-state', (ev) => {
+        this._onAutomixState = (ev) => {
           this.handleAutomixState(ev.detail);
-        });
-
-        window.addEventListener('eclipse:automix-progress', (ev) => {
+        };
+        this._onAutomixProgress = (ev) => {
           this.handleAutomixProgress(ev.detail);
-        });
+        };
+
+        window.addEventListener('eclipse:automix-state', this._onAutomixState);
+        window.addEventListener('eclipse:automix-progress', this._onAutomixProgress);
       }
 
       this._ensureDomElements();
+    }
+
+    dispose() {
+      if (this._terminalCleanupTimer) {
+        clearTimeout(this._terminalCleanupTimer);
+        this._terminalCleanupTimer = null;
+      }
+      if (this._bassPulseTimer) {
+        clearTimeout(this._bassPulseTimer);
+        this._bassPulseTimer = null;
+      }
+
+      if (this._isSubscribed && typeof window !== 'undefined') {
+        if (this._onAutomixState) {
+          window.removeEventListener('eclipse:automix-state', this._onAutomixState);
+          this._onAutomixState = null;
+        }
+        if (this._onAutomixProgress) {
+          window.removeEventListener('eclipse:automix-progress', this._onAutomixProgress);
+          this._onAutomixProgress = null;
+        }
+      }
+
+      this._isSubscribed = false;
+      this.state.phase = 'idle';
+      this.state.transitionId = null;
+      this._subscribers.clear();
     }
 
     _ensureDomElements() {
@@ -103,16 +135,27 @@
           this.state.progress = 1.0;
         }
 
+        const terminalTxId = this.state.transitionId;
+
+        if (this._terminalCleanupTimer) {
+          clearTimeout(this._terminalCleanupTimer);
+          this._terminalCleanupTimer = null;
+        }
+
         if (this._domPill) {
           this._domPill.classList.remove('visible');
-          setTimeout(() => {
+          this._terminalCleanupTimer = setTimeout(() => {
+            // Timer from transition A must never clean up transition B
+            if (this.state.transitionId !== terminalTxId) return;
             if (this.state.phase === 'settled' || this.state.phase === 'cancelled' || this.state.phase === 'error') {
-              this._domPill.classList.add('hidden');
+              if (this._domPill) this._domPill.classList.add('hidden');
               this.state.phase = 'idle';
               this.state.transitionId = null;
+              this._terminalCleanupTimer = null;
             }
           }, 350);
         }
+
         if (this._domUpNext) {
           this._domUpNext.classList.add('hidden');
         }
@@ -123,7 +166,12 @@
         return;
       }
 
-      // Mix Active
+      // Mix Active - Clear any pending terminal timer from older transitions
+      if (this._terminalCleanupTimer) {
+        clearTimeout(this._terminalCleanupTimer);
+        this._terminalCleanupTimer = null;
+      }
+
       const incomingTxId = detail.transitionId || detail.token || ('tx-' + Date.now());
       this.state.transitionId = incomingTxId;
       this.state.phase = 'mixing';
