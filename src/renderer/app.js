@@ -3145,12 +3145,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       const isTvkVisualizerVisible = state.isTvKaraokeOpen && tvkCanvas && tvkCanvas.offsetParent !== null && !document.hidden;
       const isBehindVizVisible = (document.body.classList.contains('bar-viz-behind') || isVizConnectedMode()) && localStorage.getItem('eclipse_bar_wave') !== '0' && !document.body.classList.contains('mini') && !document.hidden;
       const needBassPulse = !!(state.vfx && state.vfx.bassPulse);
+      const isTvkBassPulse = state.isTvKaraokeOpen && !document.body.classList.contains('perf') && getTvk().bassPulse;
             const activeGap = document.querySelector('.lyric-line.lyric-gap.active');
       if (activeGap && state.isPlaying && state.syncedLyrics) {
         updateActiveGapProgress(activeGap, el.nativeAudio ? el.nativeAudio.currentTime : 0);
       }
 
-      if (!document.body.classList.contains('perf') && (isVisualizerVisible || isTvkVisualizerVisible || isBehindVizVisible || needBassPulse || activeGap)) {
+      if (!document.body.classList.contains('perf') && (isVisualizerVisible || isTvkVisualizerVisible || isBehindVizVisible || needBassPulse || isTvkBassPulse || activeGap)) {
         if (!freqData && audioEngine && audioEngine.getAnalyserNode) {
           const an = audioEngine.getAnalyserNode();
           if (an && an.frequencyBinCount) {
@@ -3182,6 +3183,9 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
 
           let bassEnergy = (freqData[0] + freqData[1] + freqData[2] + freqData[3]) / (4 * 255);
+          if (isTvkBassPulse && window.KaraokeMotionController) {
+            window.KaraokeMotionController.triggerBassPulse(bassEnergy);
+          }
 
           if (needBassPulse) {
             const scaleMul = 1.0 + (bassEnergy * 0.035);
@@ -7452,8 +7456,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     size: 100,
     weight: 700,
     gap: 16,
-    anim: 'slide',
-    speed: 900
+    anim: 'focus',
+    speed: 900,
+    bassPulse: true
   };
 
   const TVK_FONTS = {
@@ -7484,7 +7489,8 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           weight: Number(parsed.weight) || TVK_DEFAULTS.weight,
           gap: (parsed.gap !== undefined && !isNaN(Number(parsed.gap))) ? Number(parsed.gap) : TVK_DEFAULTS.gap,
           anim: parsed.anim || TVK_DEFAULTS.anim,
-          speed: Number(parsed.speed) || TVK_DEFAULTS.speed
+          speed: Number(parsed.speed) || TVK_DEFAULTS.speed,
+          bassPulse: parsed.bassPulse !== undefined ? !!parsed.bassPulse : TVK_DEFAULTS.bassPulse
         };
       }
     } catch (_) {}
@@ -7567,7 +7573,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     const weight = Number(s.weight) || 700;
     const gap = (s.gap !== undefined && !isNaN(Number(s.gap))) ? Number(s.gap) : 16;
     const speed = Number(s.speed) || 900;
-    const anim = ['smooth', 'slide', 'fade', 'pop', 'none'].includes(s.anim) ? s.anim : 'slide';
+    const anim = ['focus', 'smooth', 'slide', 'fade', 'pop', 'none'].includes(s.anim) ? s.anim : 'focus';
 
     tv.style.setProperty('--tvk-font', font);
     tv.style.setProperty('--tvk-scale', String(scale));
@@ -7583,6 +7589,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     tv.classList.toggle('tvk-show-lyrics-visualizer', tvkVisLyricsOn);
     const visOpacity = parseInt(localStorage.getItem('eclipse_tvk_visualizer_opacity') || '85', 10);
     tv.style.setProperty('--tvk-vis-opacity', (Math.max(10, Math.min(100, visOpacity)) / 100).toFixed(2));
+    tv.classList.toggle('tvk-bass-pulse-enabled', !!s.bassPulse);
   }
 
   function syncTvkUI() {
@@ -7650,6 +7657,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     if (btnTvkVis) btnTvkVis.classList.toggle('active', tvkVisOn);
     const btnTvkVisSetting = document.getElementById('btn-tvk-visualizer-setting');
     if (btnTvkVisSetting) btnTvkVisSetting.classList.toggle('active', tvkVisOn);
+
+    const btnTvkBassPulse = document.getElementById('btn-tvk-bass-pulse');
+    if (btnTvkBassPulse) btnTvkBassPulse.classList.toggle('active', !!s.bassPulse);
 
     const tvkVisLyricsOn = localStorage.getItem('eclipse_tvk_visualizer_lyrics') !== 'false';
     const btnTvkVisLyrics = document.getElementById('btn-tvk-visualizer-lyrics');
@@ -7837,6 +7847,16 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         updateTvkVisualizerSetting(!cur);
       });
     }
+    const btnTvkBassPulse = document.getElementById('btn-tvk-bass-pulse');
+    if (btnTvkBassPulse) {
+      btnTvkBassPulse.addEventListener('click', () => {
+        const cur = getTvk();
+        cur.bassPulse = !cur.bassPulse;
+        saveTvk(cur);
+        applyTvk();
+        syncTvkUI();
+      });
+    }
     const btnTvkVisSetting = document.getElementById('btn-tvk-visualizer-setting');
     if (btnTvkVisSetting) {
       btnTvkVisSetting.addEventListener('click', () => {
@@ -7928,6 +7948,46 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       sliderBarVizSens.addEventListener('input', onSensInput);
       sliderBarVizSens.addEventListener('change', onSensInput);
     }
+
+    window.addEventListener('eclipse:karaoke-dominant-switch', (ev) => {
+      if (!state.isTvKaraokeOpen) return;
+      const toTrack = ev.detail && ev.detail.toTrack;
+      if (toTrack) {
+        const titleEl = el.tvKaraokeTitle || document.getElementById('tv-karaoke-title');
+        const artistEl = el.tvKaraokeArtist || document.getElementById('tv-karaoke-artist');
+        const coverEl = el.tvCover || document.getElementById('tv-cover');
+        if (titleEl) {
+          titleEl.style.opacity = '0';
+          titleEl.style.transform = 'translateY(6px)';
+          setTimeout(() => {
+            titleEl.textContent = toTrack.title || '';
+            titleEl.style.opacity = '1';
+            titleEl.style.transform = 'none';
+          }, 140);
+        }
+        if (artistEl) {
+          artistEl.style.opacity = '0';
+          artistEl.style.transform = 'translateY(6px)';
+          setTimeout(() => {
+            renderClickableArtists(artistEl, toTrack.artist || '');
+            artistEl.style.opacity = '1';
+            artistEl.style.transform = 'none';
+          }, 140);
+        }
+        if (coverEl) {
+          const thumb = getTrackThumbUrl(toTrack);
+          if (thumb) {
+            coverEl.style.opacity = '0';
+            coverEl.style.transform = 'scale(0.96)';
+            setTimeout(() => {
+              coverEl.src = thumb;
+              coverEl.style.opacity = '1';
+              coverEl.style.transform = 'scale(1)';
+            }, 140);
+          }
+        }
+      }
+    });
 
     if (btnReset) {
       btnReset.addEventListener('click', () => {

@@ -834,7 +834,13 @@ class AutoMixDJ {
 
       fadeState.interval = setInterval(() => {
         const elapsed = Date.now() - startTime;
-        const progress = elapsed / durationMs;
+        const progress = Math.min(1.0, elapsed / durationMs);
+
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('eclipse:automix-progress', {
+            detail: { progress, elapsedMs: elapsed, durationMs }
+          }));
+        }
 
         if (progress >= 1.0) {
           clearInterval(fadeState.interval);

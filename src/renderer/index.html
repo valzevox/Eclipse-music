@@ -3796,6 +3796,7 @@
         <div class="tvk-row">
           <span class="tvk-label">Animation</span>
           <select class="pill-select" id="tvk-anim" style="display:none">
+            <option value="focus">Focus Flow</option>
             <option value="smooth">Smooth</option>
             <option value="slide">Slide</option>
             <option value="fade">Fade</option>
@@ -3803,8 +3804,9 @@
             <option value="none">None</option>
           </select>
           <div class="tvk-pill-group" id="tvk-anim-group">
+            <button type="button" class="tvk-pill-btn active" data-value="focus">Focus Flow</button>
             <button type="button" class="tvk-pill-btn" data-value="smooth">Smooth</button>
-            <button type="button" class="tvk-pill-btn active" data-value="slide">Slide</button>
+            <button type="button" class="tvk-pill-btn" data-value="slide">Slide</button>
             <button type="button" class="tvk-pill-btn" data-value="fade">Fade</button>
             <button type="button" class="tvk-pill-btn" data-value="pop">Pop</button>
             <button type="button" class="tvk-pill-btn" data-value="none">None</button>
@@ -3820,6 +3822,10 @@
         <div class="tvk-row tvk-row-toggle">
           <span class="tvk-label">No-lyrics visualizer</span>
           <button type="button" class="effect-switch-btn active" id="btn-tvk-visualizer"><span class="thumb"></span></button>
+        </div>
+        <div class="tvk-row tvk-row-toggle">
+          <span class="tvk-label">Bass pulse</span>
+          <button type="button" class="effect-switch-btn active" id="btn-tvk-bass-pulse"><span class="thumb"></span></button>
         </div>
         <div class="tvk-row"><span data-i18n>Connected wave style</span><button type="button" class="effect-switch-btn" id="btn-tvk-viz-connected"><span class="thumb"></span></button></div>
         <div class="tvk-row tvk-row-toggle">
@@ -3966,6 +3972,7 @@
   <script src="automix/settings-controller.js"></script>
   <script src="automix/audio-graph.js"></script>
   <script src="automix-dj.js"></script>
+  <script src="karaoke-motion.js"></script>
   <script src="listen-together.js"></script>
   <script src="listening-receipt.js"></script>
   <script src="theme-presets.js"></script>

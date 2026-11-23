@@ -8863,6 +8863,30 @@ body.perf .tv-karaoke .tvk-panel { transition: none !important; }
   100% { transform: scale(1); }
 }
 
+.tv-karaoke[data-tvk-anim="focus"] .lyric-line {
+  opacity: calc(max(0.2, 0.95 - (var(--dist, 0) * 0.28)));
+  transform: scale(calc(max(0.88, 1 - (var(--dist, 0) * 0.035))));
+  filter: blur(calc(min(4.5px, var(--dist, 0) * 1.5px)));
+  transition: transform var(--tvk-speed, 400ms) cubic-bezier(0.2, 0.8, 0.2, 1),
+              opacity var(--tvk-speed, 400ms) cubic-bezier(0.2, 0.8, 0.2, 1),
+              filter var(--tvk-speed, 400ms) cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform, opacity, filter;
+}
+.tv-karaoke[data-tvk-anim="focus"] .lyric-line.active {
+  transform: scale(1.035);
+  opacity: 1;
+  filter: blur(0);
+  color: #fff;
+  text-shadow: 0 0 16px var(--accent-glow, rgba(168, 85, 247, 0.4));
+}
+.tv-karaoke[data-tvk-anim="focus"] .lyric-word.active-word {
+  transform: translateY(-2px) scale(1.02);
+  transition: transform 160ms cubic-bezier(0.2, 0.9, 0.2, 1), color 160ms ease, text-shadow 160ms ease;
+  display: inline-block;
+  color: #fff;
+  text-shadow: 0 0 12px var(--md-sys-color-primary, #a855f7);
+}
+
 .tv-karaoke[data-tvk-anim="smooth"] .lyric-line {
   transform: scale(0.92);
   opacity: 0.45;
@@ -11694,3 +11718,123 @@ body.is-automixing #tvk-seek-slider::-webkit-slider-runnable-track {
   text-overflow: ellipsis;
 }
 
+
+/* TV Karaoke AutoMix Motion Design & Pill / Up Next */
+.tvk-automix-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  padding: 5px 12px;
+  border-radius: 999px;
+  margin-top: 10px;
+  opacity: 0;
+  transform: translateY(-4px) scale(0.96);
+  transition: opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+  pointer-events: none;
+}
+.tvk-automix-pill.visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+.tvk-automix-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--md-sys-color-primary, #a855f7);
+  box-shadow: 0 0 8px var(--accent-glow, rgba(168, 85, 247, 0.6));
+  animation: tvkDotPulse 1.4s ease-in-out infinite;
+}
+@keyframes tvkDotPulse {
+  0%, 100% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.35); opacity: 1; }
+}
+.tvk-automix-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #fff;
+  text-transform: uppercase;
+}
+.tvk-automix-progress-bar {
+  width: 48px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+  position: relative;
+}
+.tvk-automix-progress-fill {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, var(--md-sys-color-primary, #a855f7), #ec4899);
+  border-radius: 2px;
+  transition: width 0.1s linear;
+}
+.tvk-up-next-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  padding: 6px 14px 6px 6px;
+  border-radius: 24px;
+  margin-top: 12px;
+  max-width: clamp(200px, 24vw, 360px);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.35s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.tvk-up-next-chip:not(.hidden) {
+  opacity: 1;
+  transform: translateY(0);
+}
+.tvk-up-next-thumb {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+.tvk-up-next-info {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  text-align: left;
+}
+.tvk-up-next-prefix {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.5);
+  line-height: 1.1;
+}
+.tvk-up-next-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+.tv-karaoke.is-automix-blend #tvk-ambient-bg {
+  filter: saturate(1.3) contrast(1.1);
+  transition: filter 0.6s ease;
+}
+.tv-karaoke.is-automix-dominance #tvk-ambient-bg {
+  filter: saturate(1.1) contrast(1.0);
+}
+body.perf .tvk-automix-pill, body.perf .tvk-up-next-chip, body.perf .tv-karaoke.is-automix-blend #tvk-ambient-bg {
+  transition: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tvk-automix-dot { animation: none !important; }
+}

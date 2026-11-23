@@ -1,0 +1,193 @@
+// src/renderer/karaoke-motion.js
+// Eclipse PC — Fullscreen Karaoke & AutoMix Cinematic Motion Engine
+
+(function () {
+  'use strict';
+
+  class KaraokeMotionController {
+    constructor() {
+      this.state = {
+        phase: 'idle', // 'idle' | 'preparing' | 'mixing' | 'dominance' | 'settled'
+        token: null,
+        fromTrack: null,
+        toTrack: null,
+        durationSec: 0,
+        progress: 0.0,
+        outBpm: 120,
+        inBpm: 120,
+        tempoRatio: 1.0,
+        incomingPositionSec: 0,
+        countdownBeats: null
+      };
+
+      this._subscribers = new Set();
+      this._domPill = null;
+      this._domUpNext = null;
+      this._lastBassTime = 0;
+      this._bassPulseScale = 1.0;
+      this._isSubscribed = false;
+    }
+
+    init() {
+      if (this._isSubscribed) return;
+      this._isSubscribed = true;
+
+      window.addEventListener('eclipse:automix-state', (ev) => {
+        this.handleAutomixState(ev.detail);
+      });
+
+      window.addEventListener('eclipse:automix-progress', (ev) => {
+        this.handleAutomixProgress(ev.detail);
+      });
+
+      this._ensureDomElements();
+    }
+
+    _ensureDomElements() {
+      const tvkMeta = document.getElementById('tv-karaoke-meta');
+      if (tvkMeta && !document.getElementById('tvk-automix-pill')) {
+        const pill = document.createElement('div');
+        pill.id = 'tvk-automix-pill';
+        pill.className = 'tvk-automix-pill hidden';
+        pill.innerHTML = `
+          <div class="tvk-automix-dot"></div>
+          <span class="tvk-automix-label">MIXING</span>
+          <div class="tvk-automix-progress-bar"><div class="tvk-automix-progress-fill"></div></div>
+        `;
+        tvkMeta.parentNode.insertBefore(pill, tvkMeta.nextSibling);
+        this._domPill = pill;
+      }
+
+      if (tvkMeta && !document.getElementById('tvk-up-next-chip')) {
+        const chip = document.createElement('div');
+        chip.id = 'tvk-up-next-chip';
+        chip.className = 'tvk-up-next-chip hidden';
+        chip.innerHTML = `
+          <img class="tvk-up-next-thumb" src="" alt="">
+          <div class="tvk-up-next-info">
+            <span class="tvk-up-next-prefix">Up Next</span>
+            <span class="tvk-up-next-title"></span>
+          </div>
+        `;
+        tvkMeta.appendChild(chip);
+        this._domUpNext = chip;
+      }
+    }
+
+    handleAutomixState(detail) {
+      if (!detail) return;
+      this._ensureDomElements();
+
+      const tvk = document.getElementById('tv-karaoke');
+      const active = !!detail.active;
+
+      if (!active) {
+        // Mix complete, aborted or settled
+        this.state.phase = 'settled';
+        this.state.progress = 1.0;
+        if (this._domPill) {
+          this._domPill.classList.remove('visible');
+          setTimeout(() => {
+            if (this.state.phase === 'settled') {
+              this._domPill.classList.add('hidden');
+              this.state.phase = 'idle';
+            }
+          }, 350);
+        }
+        if (this._domUpNext) {
+          this._domUpNext.classList.add('hidden');
+        }
+        if (tvk) {
+          tvk.classList.remove('is-automix-blend', 'is-automix-dominance');
+        }
+        this._notify();
+        return;
+      }
+
+      // Mix Active
+      this.state.phase = 'mixing';
+      this.state.toTrack = detail.nextTrack || null;
+      this.state.durationSec = detail.durationSec || 6.0;
+      this.state.progress = 0.0;
+      this.state.outBpm = detail.bpm || 120;
+      this.state.token = detail.token || `mix-${Date.now()}`;
+
+      if (tvk) tvk.classList.add('is-automix-blend');
+
+      if (this._domPill) {
+        this._domPill.classList.remove('hidden');
+        this._domPill.classList.add('visible');
+        const lbl = this._domPill.querySelector('.tvk-automix-label');
+        if (lbl) lbl.textContent = detail.mode === 'tempo_synced' ? 'BEAT MIX' : (detail.mode === 'dj_mix' ? 'DJ MIX' : 'AUTOMIX');
+      }
+
+      if (this._domUpNext && detail.nextTrack) {
+        this._domUpNext.classList.remove('hidden');
+        const img = this._domUpNext.querySelector('.tvk-up-next-thumb');
+        const title = this._domUpNext.querySelector('.tvk-up-next-title');
+        const prefix = this._domUpNext.querySelector('.tvk-up-next-prefix');
+        if (img) img.src = detail.nextTrack.thumbnail || detail.nextTrack.cover || '';
+        if (title) title.textContent = detail.nextTrack.title || '';
+        if (prefix) prefix.textContent = 'Mixing into';
+      }
+
+      this._notify();
+    }
+
+    handleAutomixProgress(detail) {
+      if (!detail) return;
+      const progress = Math.max(0, Math.min(1, Number(detail.progress) || 0));
+      this.state.progress = progress;
+
+      if (this._domPill) {
+        const fill = this._domPill.querySelector('.tvk-automix-progress-fill');
+        if (fill) fill.style.width = `${(progress * 100).toFixed(1)}%`;
+      }
+
+      const tvk = document.getElementById('tv-karaoke');
+      if (progress >= 0.60 && this.state.phase !== 'dominance') {
+        this.state.phase = 'dominance';
+        if (tvk) {
+          tvk.classList.remove('is-automix-blend');
+          tvk.classList.add('is-automix-dominance');
+        }
+        window.dispatchEvent(new CustomEvent('eclipse:karaoke-dominant-switch', {
+          detail: { toTrack: this.state.toTrack, progress }
+        }));
+      }
+
+      this._notify();
+    }
+
+    // Process real audio bass energy from analyser for Bass Pulse
+    triggerBassPulse(energy) {
+      const now = performance.now();
+      if (now - this._lastBassTime < 140) return; // 140-180ms decay gate
+
+      if (energy > 0.45) {
+        this._lastBassTime = now;
+        const pulseRatio = Math.min(0.06, (energy - 0.45) * 0.10); // 4-6% scale
+        const tvkBg = document.getElementById('tvk-ambient-bg');
+        if (tvkBg) {
+          tvkBg.style.transform = `scale(${4 * (1.0 + pulseRatio)}) translateZ(0)`;
+          setTimeout(() => {
+            if (tvkBg) tvkBg.style.transform = 'scale(4) translateZ(0)';
+          }, 160);
+        }
+      }
+    }
+
+    subscribe(fn) {
+      this._subscribers.add(fn);
+      return () => this._subscribers.delete(fn);
+    }
+
+    _notify() {
+      for (const fn of this._subscribers) {
+        try { fn(this.state); } catch (_) {}
+      }
+    }
+  }
+
+  window.KaraokeMotionController = new KaraokeMotionController();
+})();
