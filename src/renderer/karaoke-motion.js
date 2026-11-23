@@ -7,17 +7,12 @@
   class KaraokeMotionController {
     constructor() {
       this.state = {
-        phase: 'idle', // 'idle' | 'preparing' | 'mixing' | 'dominance' | 'settled' | 'cancelled' | 'error'
+        phase: 'idle', // 'idle' | 'mixing' | 'dominance' | 'settled' | 'cancelled' | 'error'
         transitionId: null,
-        fromTrack: null,
         toTrack: null,
         durationSec: 0,
         progress: 0.0,
-        outBpm: 120,
-        inBpm: 120,
-        tempoRatio: 1.0,
-        incomingPositionSec: 0,
-        countdownBeats: null
+        outBpm: 120
       };
 
       this._subscribers = new Set();
@@ -109,15 +104,15 @@
 
       if (!active) {
         const activeId = this.state.transitionId || null;
-        const incomingId = detail.transitionId || null;
+        const incomingId = (detail.transitionId && String(detail.transitionId).trim()) || null;
 
-        // Terminal event lacking ownership token MUST NOT terminate an active transition with ID
-        if (activeId && !incomingId) {
+        // Terminal event is invalid if controller is idle or lacks an active transition
+        if (!activeId || this.state.phase === 'idle') {
           return;
         }
 
-        // Stale or different transitionId
-        if (activeId && incomingId && incomingId !== activeId) {
+        // Terminal event without valid token or mismatching active transition MUST be ignored
+        if (!incomingId || incomingId !== activeId) {
           return;
         }
 
@@ -126,10 +121,10 @@
           return;
         }
 
-        if (detail.aborted) {
-          this.state.phase = 'cancelled';
-        } else if (detail.failed) {
+        if (detail.failed) {
           this.state.phase = 'error';
+        } else if (detail.aborted) {
+          this.state.phase = 'cancelled';
         } else {
           this.state.phase = 'settled';
           this.state.progress = 1.0;
@@ -206,12 +201,14 @@
 
     handleAutomixProgress(detail) {
       if (!detail) return;
-      // Guard against stale progress from older transitions
-      if (detail.transitionId && this.state.transitionId && detail.transitionId !== this.state.transitionId) {
-        return;
-      }
       if (this.state.phase !== 'mixing' && this.state.phase !== 'dominance') {
         return; // Transition not active
+      }
+
+      // Fail-closed guard: progress event MUST provide a non-empty token matching active transition
+      const incomingTxId = (detail.transitionId && String(detail.transitionId).trim()) || null;
+      if (!incomingTxId || !this.state.transitionId || incomingTxId !== this.state.transitionId) {
+        return;
       }
 
       const progress = Math.max(0, Math.min(1, Number(detail.progress) || 0));

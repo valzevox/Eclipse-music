@@ -432,9 +432,256 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
     assert.strictEqual(capturedEvent.transitionId, 'tx-producer-test-999', 'event.transitionId must match captured token');
     assert.strictEqual(capturedEvent.active, false);
     assert.strictEqual(capturedEvent.aborted, true);
+    assert.strictEqual(capturedEvent.failed, false, 'Cancellation reason must have failed=false');
     assert.strictEqual(capturedEvent.reason, 'user_skipped');
 
     env.window.removeEventListener('eclipse:automix-state', onState);
+  });
+
+  test('P2 Outcome Classification: distinguishes cancelled (pause/seek/skip/mode) from error', () => {
+    delete require.cache[require.resolve('../src/renderer/automix-dj.js')];
+    const AutoMixDJ = require('../src/renderer/automix-dj.js');
+    const dj = new AutoMixDJ();
+
+    const cancellationCases = ['pause', 'seek', 'skip', 'manual', 'user_cancelled', 'user_skipped', 'queue_replaced', 'mode_change'];
+    for (const reason of cancellationCases) {
+      let eventDetail = null;
+      const onState = (ev) => { eventDetail = ev.detail; };
+      env.window.addEventListener('eclipse:automix-state', onState);
+
+      dj.isCrossfading = true;
+      dj._currentFade = {
+        transitionId: `tx-${reason}`,
+        interval: null,
+        outgoingAudio: { volume: 1, pause() {} },
+        incomingAudio: { volume: 0, pause() {}, currentTime: 0 }
+      };
+
+      dj.abortCrossfade(reason);
+      assert.ok(eventDetail, `Event must be dispatched for ${reason}`);
+      assert.strictEqual(eventDetail.aborted, true, `${reason} must be marked aborted=true`);
+      assert.strictEqual(eventDetail.failed, false, `${reason} must be marked failed=false`);
+
+      // Verify controller transitions to 'cancelled'
+      const controller = new KaraokeMotionController();
+      controller.init();
+      controller.state.phase = 'mixing';
+      controller.state.transitionId = `tx-${reason}`;
+      controller.handleAutomixState(eventDetail);
+      assert.strictEqual(controller.state.phase, 'cancelled');
+
+      env.window.removeEventListener('eclipse:automix-state', onState);
+    }
+
+    // Verify true error case
+    let errorDetail = null;
+    const onErrorState = (ev) => { errorDetail = ev.detail; };
+    env.window.addEventListener('eclipse:automix-state', onErrorState);
+
+    dj.isCrossfading = true;
+    dj._currentFade = {
+      transitionId: 'tx-err',
+      interval: null,
+      outgoingAudio: { volume: 1, pause() {} },
+      incomingAudio: { volume: 0, pause() {}, currentTime: 0 }
+    };
+
+    dj.abortCrossfade('error');
+    assert.ok(errorDetail);
+    assert.strictEqual(errorDetail.aborted, false, 'error must not be marked aborted=true');
+    assert.strictEqual(errorDetail.failed, true, 'error must be marked failed=true');
+
+    const errController = new KaraokeMotionController();
+    errController.init();
+    errController.state.phase = 'mixing';
+    errController.state.transitionId = 'tx-err';
+    errController.handleAutomixState(errorDetail);
+    assert.strictEqual(errController.state.phase, 'error', 'controller must transition to error phase');
+
+    env.window.removeEventListener('eclipse:automix-state', onErrorState);
+  });
+
+  test('P2 Fail-Closed Tokens: progress without valid matching token is rejected', () => {
+    const controller = new KaraokeMotionController();
+    controller.init();
+
+    controller.state.phase = 'mixing';
+    controller.state.transitionId = 'tx-active-b';
+    controller.state.progress = 0.2;
+
+    // 1. null token
+    controller.handleAutomixProgress({ transitionId: null, progress: 0.8 });
+    assert.strictEqual(controller.state.progress, 0.2, 'Null token progress must be rejected');
+
+    // 2. undefined token
+    controller.handleAutomixProgress({ progress: 0.8 });
+    assert.strictEqual(controller.state.progress, 0.2, 'Undefined token progress must be rejected');
+
+    // 3. empty/whitespace token
+    controller.handleAutomixProgress({ transitionId: '   ', progress: 0.8 });
+    assert.strictEqual(controller.state.progress, 0.2, 'Whitespace token progress must be rejected');
+
+    // 4. mismatch token
+    controller.handleAutomixProgress({ transitionId: 'tx-other', progress: 0.8 });
+    assert.strictEqual(controller.state.progress, 0.2, 'Mismatched token progress must be rejected');
+
+    // 5. valid matching token
+    controller.handleAutomixProgress({ transitionId: 'tx-active-b', progress: 0.85 });
+    assert.strictEqual(controller.state.progress, 0.85, 'Matching token progress must be accepted');
+  });
+
+  test('P2 Terminal Idempotency: terminal event when idle or with mismatch token is rejected', () => {
+    const controller = new KaraokeMotionController();
+    controller.init();
+
+    assert.strictEqual(controller.state.phase, 'idle');
+    assert.strictEqual(controller.state.transitionId, null);
+
+    // Stale terminal event arriving while idle
+    controller.handleAutomixState({ active: false, transitionId: 'tx-stale-after-idle', aborted: true });
+    assert.strictEqual(controller.state.phase, 'idle', 'Controller must remain idle when terminal event arrives in idle');
+
+    // Start transition
+    controller.handleAutomixState({ active: true, transitionId: 'tx-live', nextTrack: { title: 'Live' } });
+    assert.strictEqual(controller.state.phase, 'mixing');
+
+    // Stale terminal event for another transition arriving during live transition
+    controller.handleAutomixState({ active: false, transitionId: 'tx-stale-other', aborted: true });
+    assert.strictEqual(controller.state.phase, 'mixing', 'Controller must ignore terminal event from different transition');
+    assert.strictEqual(controller.state.transitionId, 'tx-live');
+  });
+
+  test('P1 Dominance Rollback: abort after 60% restores original metadata and invalidates timer', () => {
+    const titleEl = env.document.getElementById('tv-karaoke-title');
+    const artistEl = env.document.getElementById('tv-karaoke-artist');
+    const coverEl = env.document.getElementById('tv-cover');
+
+    titleEl.textContent = 'Track A';
+    artistEl.textContent = 'Artist A';
+    coverEl.src = 'https://example.com/cover-a.jpg';
+
+    // Simulate app.js rollback listener logic
+    let dominantGeneration = 0;
+    let tvkMetadataSnapshot = null;
+    let isTvKaraokeOpen = true;
+
+    const onDominant = (ev) => {
+      if (!isTvKaraokeOpen) return;
+      const toTrack = ev.detail && ev.detail.toTrack;
+      const transitionId = ev.detail && ev.detail.transitionId;
+      if (toTrack) {
+        tvkMetadataSnapshot = {
+          transitionId: transitionId || null,
+          title: titleEl.textContent,
+          artist: artistEl.textContent,
+          coverSrc: coverEl.src
+        };
+        dominantGeneration += 1;
+        const currentGen = dominantGeneration;
+        setTimeout(() => {
+          if (dominantGeneration !== currentGen) return;
+          titleEl.textContent = toTrack.title || '';
+          artistEl.textContent = toTrack.artist || '';
+          coverEl.src = toTrack.thumbnail || '';
+        }, 140);
+      }
+    };
+
+    const onAutomixState = (ev) => {
+      const detail = ev && ev.detail;
+      if (!detail || detail.active) return;
+      if (detail.completed) {
+        if (tvkMetadataSnapshot && detail.transitionId && tvkMetadataSnapshot.transitionId === detail.transitionId) {
+          tvkMetadataSnapshot = null;
+        }
+        return;
+      }
+      if ((detail.aborted || detail.failed) && tvkMetadataSnapshot) {
+        const incomingTxId = detail.transitionId || null;
+        if (incomingTxId && tvkMetadataSnapshot.transitionId && incomingTxId !== tvkMetadataSnapshot.transitionId) {
+          return;
+        }
+        dominantGeneration += 1;
+        titleEl.textContent = tvkMetadataSnapshot.title || '';
+        artistEl.textContent = tvkMetadataSnapshot.artist || '';
+        coverEl.src = tvkMetadataSnapshot.coverSrc || '';
+        tvkMetadataSnapshot = null;
+      }
+    };
+
+    env.window.addEventListener('eclipse:karaoke-dominant-switch', onDominant);
+    env.window.addEventListener('eclipse:automix-state', onAutomixState);
+
+    // 1. Dominance switch triggers at 65%
+    env.window.dispatchEvent(new CustomEvent('eclipse:karaoke-dominant-switch', {
+      detail: {
+        transitionId: 'tx-abort-test',
+        toTrack: { title: 'Track B', artist: 'Artist B', thumbnail: 'https://example.com/cover-b.jpg' },
+        progress: 0.65
+      }
+    }));
+
+    // Pre-abort snapshot was taken
+    assert.ok(tvkMetadataSnapshot);
+    assert.strictEqual(tvkMetadataSnapshot.title, 'Track A');
+
+    // 2. Abort arrives BEFORE 140ms timeout expires (e.g. at 30ms)
+    env.window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+      detail: {
+        active: false,
+        transitionId: 'tx-abort-test',
+        aborted: true,
+        failed: false,
+        reason: 'seek'
+      }
+    }));
+
+    // Metadata is immediately restored to Track A
+    assert.strictEqual(titleEl.textContent, 'Track A');
+    assert.strictEqual(artistEl.textContent, 'Artist A');
+    assert.strictEqual(coverEl.src, 'https://example.com/cover-a.jpg');
+
+    // 3. Wait 160ms for original 140ms timeout; must NOT overwrite Track A with Track B!
+    return new Promise(resolve => {
+      setTimeout(() => {
+        assert.strictEqual(titleEl.textContent, 'Track A', 'Pending dominant timer must be invalidated by abort');
+        assert.strictEqual(artistEl.textContent, 'Artist A');
+        assert.strictEqual(coverEl.src, 'https://example.com/cover-a.jpg');
+        env.window.removeEventListener('eclipse:karaoke-dominant-switch', onDominant);
+        env.window.removeEventListener('eclipse:automix-state', onAutomixState);
+        resolve();
+      }, 160);
+    });
+  });
+
+  test('P3 Bass Fallback: bin computation maps 40-160Hz correctly without DC bins', () => {
+    // Helper replicating app.js bass calculation
+    function computeBassEnergy(freqData, sampleRate = 44100) {
+      if (!freqData.length) return 0;
+      const binWidth = sampleRate / (freqData.length * 2);
+      const minBin = Math.max(1, Math.floor(40 / binWidth));
+      const maxBin = Math.min(freqData.length - 1, Math.ceil(160 / binWidth));
+      let sum = 0;
+      let count = 0;
+      for (let b = minBin; b <= maxBin; b++) {
+        sum += freqData[b];
+        count++;
+      }
+      return { energy: count > 0 ? (sum / (count * 255)) : 0, minBin, maxBin };
+    }
+
+    const testBuf = new Uint8Array(1024);
+    // Put DC offset at bin 0 and heavy energy at 60Hz
+    testBuf[0] = 255;
+    const res = computeBassEnergy(testBuf, 44100);
+    // bin 0 must NEVER be included (minBin >= 1)
+    assert.ok(res.minBin >= 1, 'minBin must be at least 1 to exclude DC offset');
+    assert.strictEqual(res.energy, 0, 'DC offset at bin 0 must not trigger bass energy');
+
+    // Put energy at bin 3 (which corresponds to ~64Hz for 44100/2048)
+    testBuf[3] = 255;
+    const resWithBass = computeBassEnergy(testBuf, 44100);
+    assert.ok(resWithBass.energy > 0, 'Energy in 40-160Hz band must be captured');
   });
 
   test('Lifecycle: controller.dispose() cleans up listeners, DOM refs and pending timers', () => {

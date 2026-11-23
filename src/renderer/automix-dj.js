@@ -660,6 +660,10 @@ class AutoMixDJ {
     } catch (_) {}
 
     const suppressionMgr = _getDJSuppressionManager();
+    const cancellationReasons = ['pause', 'seek', 'skip', 'manual', 'user_cancelled', 'user_skipped', 'queue_replaced', 'mode_change'];
+    const isCancelled = cancellationReasons.includes(reason);
+    const isError = reason === 'error' || !isCancelled;
+
     if (typeof window !== 'undefined') {
       setTimeout(() => {
         if (suppressionMgr && suppressToken !== null) {
@@ -668,7 +672,13 @@ class AutoMixDJ {
       }, 80);
       const activeTxId = (fade && fade.transitionId) || null;
       window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
-        detail: { active: false, aborted: true, failed: (reason !== 'user_cancelled' && reason !== 'skip' && reason !== 'manual'), reason, transitionId: activeTxId }
+        detail: {
+          active: false,
+          aborted: isCancelled,
+          failed: isError,
+          reason,
+          transitionId: activeTxId
+        }
       }));
     } else if (suppressionMgr && suppressToken !== null) {
       setTimeout(() => {

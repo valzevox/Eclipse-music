@@ -494,6 +494,7 @@
 
               console.log(`[EclipseBridge] AutoMix (${window.autoMixDjInstance.mode}) crossfade (${remaining.toFixed(1)}s remaining, fade: ${plannedFadeDuration.toFixed(1)}s, BPM ${window.autoMixDjInstance.bpm} -> ${targetBpm}, ratio: ${plannedTempoRatio.toFixed(3)}, synced: ${plannedTempoSynced})...`);
               let crossfadeSucceeded = false;
+              let fadeFailureReason = null;
               try {
                 crossfadeSucceeded = (await window.autoMixDjInstance.executeCrossfade(nativeAudio, auxAudio, Math.min(plannedFadeDuration, remaining - 0.25), {
                   outgoingBpm: currentTrackBpm || window.autoMixDjInstance.bpm || 120,
@@ -505,9 +506,21 @@
               } catch (fadeErr) {
                 console.warn('[EclipseBridge] Crossfade interrupted or failed; aborting handover to keep outgoing track playing:', fadeErr?.message || fadeErr);
                 crossfadeSucceeded = false;
+                fadeFailureReason = fadeErr?.message || 'error';
               } finally {
+                const isError = !crossfadeSucceeded && (fadeFailureReason === 'error' || (fadeFailureReason && fadeFailureReason.includes('failed')));
+                const isAborted = !crossfadeSucceeded && !isError;
                 window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
-                  detail: { active: false, transitionId: currentTransitionId, nextTrack: null, durationSec: 0, completed: crossfadeSucceeded, aborted: !crossfadeSucceeded, failed: !crossfadeSucceeded }
+                  detail: {
+                    active: false,
+                    transitionId: currentTransitionId,
+                    nextTrack: null,
+                    durationSec: 0,
+                    completed: crossfadeSucceeded,
+                    aborted: isAborted,
+                    failed: isError,
+                    reason: crossfadeSucceeded ? 'completed' : (fadeFailureReason || 'aborted')
+                  }
                 }));
               }
 

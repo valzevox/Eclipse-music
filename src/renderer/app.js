@@ -3183,8 +3183,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
 
           let bassEnergy = 0;
-                    if (audioEngine && audioEngine.ctx && freqData.length) {
-                      const sampleRate = audioEngine.ctx.sampleRate || 44100;
+                    if (freqData.length) {
+                      const sampleRate = (audioEngine && audioEngine.ctx && audioEngine.ctx.sampleRate) || 44100;
                       const binWidth = sampleRate / (freqData.length * 2);
                       const minBin = Math.max(1, Math.floor(40 / binWidth));
                       const maxBin = Math.min(freqData.length - 1, Math.ceil(160 / binWidth));
@@ -3195,8 +3195,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                         count++;
                       }
                       bassEnergy = count > 0 ? (sum / (count * 255)) : 0;
-                    } else {
-                      bassEnergy = (freqData[0] + freqData[1] + freqData[2] + freqData[3]) / (4 * 255);
                     }
           if (isTvkBassPulse && window.KaraokeMotionController) {
             window.KaraokeMotionController.triggerBassPulse(bassEnergy);
@@ -28234,15 +28232,27 @@ function bindCoverHoldZoom(wrapEl) {
     window.KaraokeMotionController.init();
   }
   let dominantGeneration = 0;
+  let tvkMetadataSnapshot = null;
+
   window.addEventListener('eclipse:karaoke-dominant-switch', (ev) => {
     if (!state.isTvKaraokeOpen) return;
     const toTrack = ev.detail && ev.detail.toTrack;
+    const transitionId = ev.detail && ev.detail.transitionId;
     if (toTrack) {
-      dominantGeneration += 1;
-      const currentGen = dominantGeneration;
       const titleEl = el.tvKaraokeTitle || document.getElementById('tv-karaoke-title');
       const artistEl = el.tvKaraokeArtist || document.getElementById('tv-karaoke-artist');
       const coverEl = el.tvCover || document.getElementById('tv-cover');
+
+      // Capture pre-dominant metadata snapshot for rollback if transition is aborted
+      tvkMetadataSnapshot = {
+        transitionId: transitionId || null,
+        title: titleEl ? titleEl.textContent : '',
+        artist: (state.currentTrack && state.currentTrack.artist) || (artistEl ? artistEl.textContent : ''),
+        coverSrc: coverEl ? coverEl.src : ''
+      };
+
+      dominantGeneration += 1;
+      const currentGen = dominantGeneration;
       if (titleEl) {
         titleEl.style.opacity = '0';
         titleEl.style.transform = 'translateY(6px)';
@@ -28276,6 +28286,56 @@ function bindCoverHoldZoom(wrapEl) {
           }, 140);
         }
       }
+    }
+  });
+
+  // Rollback TV Karaoke metadata if AutoMix transition was aborted or failed after dominance
+  window.addEventListener('eclipse:automix-state', (ev) => {
+    const detail = ev && ev.detail;
+    if (!detail || detail.active) return;
+
+    if (detail.completed) {
+      if (tvkMetadataSnapshot && detail.transitionId && tvkMetadataSnapshot.transitionId === detail.transitionId) {
+        tvkMetadataSnapshot = null;
+      }
+      return;
+    }
+
+    if ((detail.aborted || detail.failed) && tvkMetadataSnapshot) {
+      const incomingTxId = detail.transitionId || null;
+      // Stale terminal event for a different transition MUST NOT rollback
+      if (incomingTxId && tvkMetadataSnapshot.transitionId && incomingTxId !== tvkMetadataSnapshot.transitionId) {
+        return;
+      }
+
+      // Invalidate any pending setTimeout(..., 140) from dominant switch
+      dominantGeneration += 1;
+
+      const titleEl = el.tvKaraokeTitle || document.getElementById('tv-karaoke-title');
+      const artistEl = el.tvKaraokeArtist || document.getElementById('tv-karaoke-artist');
+      const coverEl = el.tvCover || document.getElementById('tv-cover');
+
+      if (titleEl) {
+        titleEl.textContent = tvkMetadataSnapshot.title || '';
+        titleEl.style.opacity = '1';
+        titleEl.style.transform = 'none';
+      }
+      if (artistEl) {
+        if (tvkMetadataSnapshot.artist) {
+          renderClickableArtists(artistEl, tvkMetadataSnapshot.artist);
+        } else {
+          artistEl.textContent = '';
+        }
+        artistEl.style.opacity = '1';
+        artistEl.style.transform = 'none';
+      }
+      if (coverEl && tvkMetadataSnapshot.coverSrc) {
+        coverEl.src = tvkMetadataSnapshot.coverSrc;
+        coverEl.style.opacity = '1';
+        coverEl.style.transform = 'scale(1)';
+      }
+
+      tvkMetadataSnapshot = null;
     }
   });
   if (typeof m3cInit === 'function') m3cInit();
