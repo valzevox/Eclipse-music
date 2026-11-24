@@ -122,6 +122,13 @@ async function executeGoogleLogout({
     };
   }
 
+  // Capture OAuth refresh token BEFORE cleanLocalSession unlinks the OAuth credential file
+  let revokeToken = '';
+  try {
+    const auth = readOAuthData();
+    revokeToken = auth && auth.refreshToken ? auth.refreshToken : '';
+  } catch (_) {}
+
   // Only after backend successfully verified and persisted cleared accounts to disk, clean local session
   try {
     await cleanLocalSession();
@@ -132,13 +139,7 @@ async function executeGoogleLogout({
     };
   }
 
-  // Best effort OAuth revocation
-  let revokeToken = '';
-  try {
-    const auth = readOAuthData();
-    revokeToken = auth && auth.refreshToken ? auth.refreshToken : '';
-  } catch (_) {}
-
+  // Best effort OAuth revocation using the pre-captured token
   if (revokeToken && typeof revokeOAuthToken === 'function') {
     try {
       await revokeOAuthToken(revokeToken);

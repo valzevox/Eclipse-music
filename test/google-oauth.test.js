@@ -368,4 +368,53 @@ test('executeGoogleLogout enforces strict fail-closed durability and preserves l
   assert.equal(resSuccess.success, true);
   assert.equal(localSessionCleaned, true, 'Local session is cleaned only after verified server durability');
   assert.equal(oauthTokenRevoked, true, 'OAuth token revocation is triggered');
+
+  // 6. Regression P2: cleanLocalSession removes OAuth file/token BEFORE revokeOAuthToken runs.
+  // Proves revokeOAuthToken receives the pre-captured token even after readOAuthData becomes null.
+  resetState();
+  let fakeOAuthStorage = { refreshToken: 'captured-pre-cleanup-token' };
+  let capturedRevokeArg = null;
+  const resCaptureOrder = await executeGoogleLogout({
+    serverPort: 38472,
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, cleared: true })
+    }),
+    readOAuthData: () => fakeOAuthStorage,
+    cleanLocalSession: async () => {
+      // Simulate unlinking / deleting GOOGLE_OAUTH_FILE during local session cleanup
+      fakeOAuthStorage = null;
+      localSessionCleaned = true;
+    },
+    revokeOAuthToken: async (tok) => {
+      capturedRevokeArg = tok;
+      oauthTokenRevoked = true;
+    }
+  });
+  assert.equal(resCaptureOrder.success, true);
+  assert.equal(localSessionCleaned, true);
+  assert.equal(oauthTokenRevoked, true);
+  assert.equal(capturedRevokeArg, 'captured-pre-cleanup-token', 'Revoke must use captured token even if file was deleted during cleanup');
+
+  // 7. If cleanLocalSession throws, logout must fail and return error
+  resetState();
+  const resCleanFail = await executeGoogleLogout({
+    serverPort: 38472,
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, cleared: true })
+    }),
+    readOAuthData: () => ({ refreshToken: 'tok' }),
+    cleanLocalSession: async () => {
+      throw new Error('EPERM: operation not permitted, unlink');
+    },
+    revokeOAuthToken: async () => {
+      oauthTokenRevoked = true;
+    }
+  });
+  assert.equal(resCleanFail.success, false);
+  assert.match(resCleanFail.error, /operation not permitted/);
+  assert.equal(oauthTokenRevoked, false, 'Revocation must not proceed if local cleanup fails');
 });
