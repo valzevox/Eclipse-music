@@ -133,6 +133,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   browserLoginGetProfiles: () => ipcRenderer.invoke('browser-login:get-profiles'),
   browserLoginStartPairing: () => ipcRenderer.invoke('browser-login:start-pairing'),
   browserLoginCancelPairing: () => ipcRenderer.invoke('browser-login:cancel-pairing'),
+  browserLoginConfirmCandidate: (pendingToken, candidateIndex) => ipcRenderer.invoke('browser-login:confirm-candidate', { pendingToken, candidateIndex }),
   browserLoginImportProfile: (profile) => ipcRenderer.invoke('browser-login:import-profile', profile),
   browserLoginOpenExtensionManager: (browser) => ipcRenderer.invoke('browser-login:open-extension-manager', browser),
   browserLoginExportExtension: () => ipcRenderer.invoke('browser-login:export-extension'),

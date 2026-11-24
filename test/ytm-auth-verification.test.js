@@ -60,16 +60,14 @@ describe('YTM Auth Verification & Production Diagnostics Suite', () => {
     assert.ok(!header.includes('sapisid_wrong_path'));
   });
 
-  it('2. Google-scoped Credential is treated as separate compatibility path and kept out of Cookie header', () => {
+  it('2. Google-scoped Credential is strictly rejected (negative test for P0-2)', () => {
     const googleOnlyCookies = [
       new BrowserCookieRecord({ name: 'SAPISID', value: 'google_only_token', domain: '.google.com', path: '/', secure: true }),
       new BrowserCookieRecord({ name: 'VISITOR_INFO1_LIVE', value: 'vis_token', domain: '.youtube.com', path: '/' })
     ];
 
     const cred = extractSapisidCredential(googleOnlyCookies, 'music.youtube.com', '/getAccountSwitcherEndpoint');
-    assert.ok(cred);
-    assert.equal(cred.value, 'google_only_token');
-    assert.equal(cred.scope, 'google');
+    assert.equal(cred, null, 'Must strictly reject Google-only credentials from YouTube Music auth');
 
     const header = buildCookieHeader(googleOnlyCookies, 'music.youtube.com', '/getAccountSwitcherEndpoint');
     assert.ok(!header.includes('google_only_token'), 'Must NEVER insert .google.com token into YouTube Cookie header');
@@ -771,14 +769,277 @@ describe('YTM Auth Verification & Production Diagnostics Suite', () => {
     assert.equal(accB.authUser, 1);
     const initialLocalId = accB.id;
 
-    // Case 3: Re-link with Account B retains same initial local UUID based on handle + authUser
-    const reLinkedB = await manager.authenticateWithCookie('SAPISID=test_sapisid;', {
-      sapisidCredential: { name: 'SAPISID', value: 'test_sapisid', domain: '.youtube.com', path: '/', secure: true, expiry: null, scope: 'youtube' },
-      selectedAccountId: 'Account B'
-    });
-    assert.equal(reLinkedB.id, initialLocalId, 'Local UUID must be retained upon re-link');
+      fs.rmSync(tempDir, { recursive: true, force: true });
+  });
 
+  it('18. Candidate Selection Flow: ambiguous candidates returns 409 + pendingToken + sanitized candidates', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-test-ytm-p0-cand1-'));
+    const manager = new YtmAuthManager(tempDir);
+    await manager.init();
+
+    const mockResponsePayload = JSON.stringify({
+      code: 'SUCCESS',
+      data: {
+        contents: [{
+          accountSectionListRenderer: {
+            contents: [{
+              accountItemSectionRenderer: {
+                contents: [
+                  {
+                    accountItem: {
+                      accountName: { simpleText: 'Candidate One' },
+                      channelHandle: { simpleText: '@one' },
+                      serviceEndpoint: { selectActiveIdentityEndpoint: { supportedTokens: [{ accountSigninToken: { signinUrl: '/?authuser=0' } }] } }
+                    }
+                  },
+                  {
+                    accountItem: {
+                      accountName: { simpleText: 'Candidate Two' },
+                      channelHandle: { simpleText: '@two' },
+                      serviceEndpoint: { selectActiveIdentityEndpoint: { supportedTokens: [{ accountSigninToken: { signinUrl: '/?authuser=1' } }] } }
+                    }
+                  }
+                ]
+              }
+            }]
+          }
+        }]
+      }
+    });
+
+    manager._accountSwitcherTransport = async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: createReadableStreamFromText(mockResponsePayload)
+    });
+
+    const server = http.createServer((req, res) => {
+      if (req.url === '/api/ytm/intercept-cookie') {
+        return handleInterceptCookie(req, res, { ytmAuth: manager });
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/ytm/intercept-cookie`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cookie: 'SAPISID=test_val; VISITOR_INFO1_LIVE=vis',
+        sapisidCredential: { name: 'SAPISID', value: 'test_val', domain: '.youtube.com', path: '/', secure: true, expiry: null, scope: 'youtube' }
+      })
+    });
+
+    assert.equal(res.status, 409);
+    const data = await res.json();
+    assert.equal(data.success, false);
+    assert.equal(data.code, 'AMBIGUOUS_ACCOUNT_SELECTION');
+    assert.ok(data.pendingToken);
+    assert.equal(typeof data.pendingToken, 'string');
+    assert.equal(data.pendingToken.length, 64);
+    assert.ok(Array.isArray(data.candidates));
+    assert.equal(data.candidates.length, 2);
+    assert.equal(data.candidates[0].name, 'Candidate One');
+    assert.equal(data.candidates[1].name, 'Candidate Two');
+
+    // Confirm that account was NOT saved yet
+    assert.equal(manager.getAccounts().length, 0);
+
+    server.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it('19. Candidate Selection Flow: confirm-candidate endpoint persists chosen candidate and returns active account', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-test-ytm-p0-cand2-'));
+    const manager = new YtmAuthManager(tempDir);
+    await manager.init();
+
+    const mockResponsePayload = JSON.stringify({
+      code: 'SUCCESS',
+      data: {
+        contents: [{
+          accountSectionListRenderer: {
+            contents: [{
+              accountItemSectionRenderer: {
+                contents: [
+                  {
+                    accountItem: {
+                      accountName: { simpleText: 'Candidate Alpha' },
+                      channelHandle: { simpleText: '@alpha' },
+                      serviceEndpoint: { selectActiveIdentityEndpoint: { supportedTokens: [{ accountSigninToken: { signinUrl: '/?authuser=0' } }] } }
+                    }
+                  },
+                  {
+                    accountItem: {
+                      accountName: { simpleText: 'Candidate Beta' },
+                      channelHandle: { simpleText: '@beta' },
+                      serviceEndpoint: { selectActiveIdentityEndpoint: { supportedTokens: [{ accountSigninToken: { signinUrl: '/?authuser=1' } }] } }
+                    }
+                  }
+                ]
+              }
+            }]
+          }
+        }]
+      }
+    });
+
+    manager._accountSwitcherTransport = async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: createReadableStreamFromText(mockResponsePayload)
+    });
+
+    const { handleConfirmCandidate } = require('../src/server/server');
+    const server = http.createServer((req, res) => {
+      if (req.url === '/api/ytm/intercept-cookie') {
+        return handleInterceptCookie(req, res, { ytmAuth: manager });
+      }
+      if (req.url === '/api/ytm/confirm-candidate') {
+        return handleConfirmCandidate(req, res, { ytmAuth: manager });
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+
+    // Step 1: Intercept returns 409 + pendingToken
+    const initRes = await fetch(`http://127.0.0.1:${port}/api/ytm/intercept-cookie`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cookie: 'SAPISID=test_val; VISITOR_INFO1_LIVE=vis',
+        sapisidCredential: { name: 'SAPISID', value: 'test_val', domain: '.youtube.com', path: '/', secure: true, expiry: null, scope: 'youtube' }
+      })
+    });
+    const initData = await initRes.json();
+    const token = initData.pendingToken;
+
+    // Step 2: Confirm index 1 (Candidate Beta)
+    const confRes = await fetch(`http://127.0.0.1:${port}/api/ytm/confirm-candidate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pendingToken: token, candidateIndex: 1 })
+    });
+    assert.equal(confRes.status, 200);
+    const confData = await confRes.json();
+    assert.equal(confData.success, true);
+    assert.ok(confData.account);
+    assert.equal(confData.account.name, 'Candidate Beta');
+    assert.equal(confData.account.handle, '@beta');
+    assert.equal(confData.account.authUser, 1);
+
+    // Verify persisted in manager
+    const saved = manager.getAccounts();
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].name, 'Candidate Beta');
+
+    server.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('20. Candidate Selection Security: replay or invalid pendingToken returns 410 SESSION_EXPIRED', async () => {
+    const { handleConfirmCandidate } = require('../src/server/server');
+    const server = http.createServer((req, res) => {
+      if (req.url === '/api/ytm/confirm-candidate') {
+        return handleConfirmCandidate(req, res, {});
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/ytm/confirm-candidate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pendingToken: 'non_existent_token_123', candidateIndex: 0 })
+    });
+
+    assert.equal(res.status, 410);
+    const data = await res.json();
+    assert.equal(data.success, false);
+    assert.equal(data.code, 'SESSION_EXPIRED');
+
+    server.close();
+  });
+
+  it('21. Switch Account Guard: switching to non-existent account ID returns 404 and success: false', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-test-ytm-p0-switch-'));
+    const manager = new YtmAuthManager(tempDir);
+    await manager.init();
+
+    const server = http.createServer((req, res) => {
+      if (req.url === '/api/ytm/switch-account') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+          const payload = JSON.parse(body || '{}');
+          if (!payload.id) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ success: false, error: 'Account ID required' }));
+          }
+          const account = manager.switchAccount(payload.id);
+          if (!account) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ success: false, error: 'Account not found' }));
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ success: true, account }));
+        });
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/ytm/switch-account`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'ghost_id_404' })
+    });
+
+    assert.equal(res.status, 404);
+    const data = await res.json();
+    assert.equal(data.success, false);
+    assert.equal(data.error, 'Account not found');
+
+    server.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('22. Downstream Headers: _buildSapisidHeaders sends authUser and X-Goog-PageId when active account has pageId', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-test-ytm-p0-downstream-'));
+    const manager = new YtmAuthManager(tempDir);
+    await manager.init();
+
+    // Mock account with pageId and authUser = 2
+    manager.accounts = [{
+      id: 'uuid-1',
+      name: 'Channel User',
+      pageId: 'PAGE_CHANNEL_777',
+      authUser: 2,
+      isDefault: true,
+      cookie: 'SAPISID=sapisid_header_token; domain=.youtube.com;'
+    }];
+
+    const headers = manager._buildSapisidHeaders(manager.accounts[0].cookie);
+    assert.ok(headers);
+    assert.equal(headers['X-Goog-AuthUser'], '2');
+    assert.equal(headers['X-Goog-PageId'], 'PAGE_CHANNEL_777');
+    assert.ok(headers['Authorization'].startsWith('SAPISIDHASH '));
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
 });

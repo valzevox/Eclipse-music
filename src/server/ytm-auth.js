@@ -624,21 +624,17 @@ class YtmAuthManager {
       throw err;
     }
 
-    // P0-3: If multiple candidates exist, return candidate list for user choice
-    // If explicit requestedAccountIndex or requestedPageId provided in options, honor it
-    let chosen = null;
-    if (options.selectedAccountId) {
+    // P0-3: If explicit selectedCandidate is passed from pending candidate confirmation, use it directly!
+    let chosen = options.selectedCandidate || null;
+
+    if (!chosen && options.selectedAccountId) {
       chosen = candidateAccounts.find(c => c.pageId === options.selectedAccountId || c.name === options.selectedAccountId);
     }
 
+    // P0-1: If candidateAccounts has more than 1 candidate, ALWAYS throw AMBIGUOUS_ACCOUNT_SELECTION
+    // unless explicit candidate selection was requested!
     if (!chosen) {
-      const selectedCandidates = candidateAccounts.filter(c => c.isSelected);
-      if (selectedCandidates.length === 1) {
-        chosen = selectedCandidates[0];
-      } else if (candidateAccounts.length === 1) {
-        chosen = candidateAccounts[0];
-      } else if (selectedCandidates.length > 1 || candidateAccounts.length > 1) {
-        // Expose all candidates in AMBIGUOUS_ACCOUNT_SELECTION so UI can present modal picker
+      if (candidateAccounts.length > 1) {
         const err = new Error('Multiple accounts returned. Please select an active account.');
         err.code = 'AMBIGUOUS_ACCOUNT_SELECTION';
         err.stage = 'identity_resolution';
@@ -655,9 +651,6 @@ class YtmAuthManager {
         err.requestFingerprint = requestFingerprint;
         throw err;
       }
-    }
-
-    if (!chosen) {
       chosen = candidateAccounts[0];
     }
 
@@ -785,7 +778,15 @@ class YtmAuthManager {
     if (existingIndex >= 0) {
       localAccountId = this.accounts[existingIndex].id;
     } else {
-      localAccountId = crypto.randomUUID ? crypto.randomUUID() : ('ecl_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 9));
+      localAccountId = (typeof crypto.randomUUID === 'function')
+        ? crypto.randomUUID()
+        : (() => {
+            const buf = crypto.randomBytes(16);
+            buf[6] = (buf[6] & 0x0f) | 0x40; // Version 4
+            buf[8] = (buf[8] & 0x3f) | 0x80; // Variant 10xx
+            const hex = buf.toString('hex');
+            return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+          })();
     }
 
     const newAccount = {
@@ -972,14 +973,19 @@ class YtmAuthManager {
     if (!sapisid) return null;
     const ts = Math.floor(Date.now() / 1000);
     const hash = crypto.createHash('sha1').update(`${ts} ${sapisid} ${origin}`).digest('hex');
-    return {
+    const defaultAcc = this.getDefaultAccount();
+    const headers = {
       'Cookie': cookieString,
       'Authorization': `SAPISIDHASH ${ts}_${hash}`,
       'Origin': origin,
       'X-Origin': origin,
-      'X-Goog-AuthUser': '0',
+      'X-Goog-AuthUser': String(defaultAcc?.authUser ?? 0),
       'Content-Type': 'application/json'
     };
+    if (defaultAcc?.pageId) {
+      headers['X-Goog-PageId'] = String(defaultAcc.pageId).trim();
+    }
+    return headers;
   }
 
   async _callInnerTubeMutation(endpoint, bodyPayload = {}) {

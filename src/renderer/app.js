@@ -23240,14 +23240,14 @@ function bindCoverHoldZoom(wrapEl) {
       if (result && result.success) {
         onLoginSuccess(result.account);
       } else if (result && result.details && Array.isArray(result.details.candidates) && result.details.candidates.length > 1) {
-        showCandidateSelectionModal(result.details.candidates);
+        showCandidateSelectionModal(result.details.candidates, result.details.pendingToken);
       } else {
         showBrowserLoginError(result.error || result.reason || 'Pairing was rejected or timed out', result.details || null);
         resetPairingUI();
       }
     });
 
-  function showCandidateSelectionModal(candidates) {
+  function showCandidateSelectionModal(candidates, pendingToken) {
     if (!browserLoginError) return;
     browserLoginError.innerHTML = '';
 
@@ -23294,22 +23294,48 @@ function bindCoverHoldZoom(wrapEl) {
 
       itemBtn.addEventListener('click', async () => {
         itemBtn.disabled = true;
-        if (state.serverPort) {
+        itemBtn.style.opacity = '0.5';
+
+        // Secure confirmation via single-use pending selection session
+        if (pendingToken && window.electronAPI && typeof window.electronAPI.browserLoginConfirmCandidate === 'function') {
           try {
-            const resp = await fetch(`http://127.0.0.1:${state.serverPort}/api/ytm/switch-account`, {
+            const confirmRes = await window.electronAPI.browserLoginConfirmCandidate(pendingToken, c.index);
+            if (confirmRes && confirmRes.success && confirmRes.account) {
+              onLoginSuccess(confirmRes.account);
+              return;
+            } else {
+              showBrowserLoginError(confirmRes?.error || 'Lựa chọn tài khoản thất bại', null);
+              return;
+            }
+          } catch (err) {
+            showBrowserLoginError(err.message || 'Lỗi kết nối xác nhận tài khoản', null);
+            return;
+          }
+        }
+
+        // Direct backend call fallback if electronAPI helper unavailable
+        if (pendingToken && state.serverPort) {
+          try {
+            const resp = await fetch(`http://127.0.0.1:${state.serverPort}/api/ytm/confirm-candidate`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ id: c.pageId || c.name })
+              body: JSON.stringify({ pendingToken, candidateIndex: c.index })
             });
             const data = await resp.json();
             if (data && data.success && data.account) {
               onLoginSuccess(data.account);
               return;
+            } else {
+              showBrowserLoginError(data?.error || 'Lựa chọn tài khoản thất bại', null);
+              return;
             }
-          } catch (_) {}
+          } catch (err) {
+            showBrowserLoginError(err.message || 'Lỗi kết nối xác nhận tài khoản', null);
+            return;
+          }
         }
-        // Fallback default activation
-        onLoginSuccess(c);
+
+        showBrowserLoginError('Không tìm thấy phiên lựa chọn tài khoản hợp lệ. Vui lòng thử lại.', null);
       });
 
       listEl.appendChild(itemBtn);

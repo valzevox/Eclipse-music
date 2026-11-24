@@ -68,7 +68,8 @@ function hasYtLoginCookies() {
 
 function getYtAuthHeaders(origin = 'https://www.youtube.com') {
   try {
-    const raw = getActiveSessionCookie();
+    const rawAcc = typeof ytmAuth.getRawActiveAccount === 'function' ? ytmAuth.getRawActiveAccount() : null;
+    const raw = (rawAcc && rawAcc.cookie) || getActiveSessionCookie();
     if (!raw) return null;
     const cookiePairs = [];
     let sapisid = '';
@@ -108,13 +109,17 @@ function getYtAuthHeaders(origin = 'https://www.youtube.com') {
     if (!sapisid || !cookiePairs.length) return null;
     const ts = Math.floor(Date.now() / 1000);
     const hash = crypto.createHash('sha1').update(`${ts} ${sapisid} ${origin}`).digest('hex');
-    return {
+    const headers = {
       'Cookie': cookiePairs.join('; '),
       'Authorization': `SAPISIDHASH ${ts}_${hash}`,
       'Origin': origin,
       'X-Origin': origin,
-      'X-Goog-AuthUser': '0'
+      'X-Goog-AuthUser': String(rawAcc?.authUser ?? 0)
     };
+    if (rawAcc?.pageId) {
+      headers['X-Goog-PageId'] = String(rawAcc.pageId).trim();
+    }
+    return headers;
   } catch (_) {
     return null;
   }
@@ -9976,7 +9981,15 @@ if (parsedUrl.pathname === '/api/ytm/intercept-cookie' && req.method === 'POST')
     req.on('end', () => {
       try {
         const payload = JSON.parse(body || '{}');
+        if (!payload || !payload.id) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ success: false, error: 'Account ID required' }));
+        }
         const account = ytmAuth.switchAccount(payload.id);
+        if (!account) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ success: false, error: 'Account not found' }));
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ success: true, account }));
       } catch (e) {
@@ -9985,6 +9998,10 @@ if (parsedUrl.pathname === '/api/ytm/intercept-cookie' && req.method === 'POST')
       }
     });
     return;
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/confirm-candidate' && req.method === 'POST') {
+    return handleConfirmCandidate(req, res, { ytmAuth });
   }
 
   if (parsedUrl.pathname === '/api/ytm/clear-accounts' && req.method === 'POST') {
@@ -10913,7 +10930,7 @@ function startServer(port = PORT) {
   });
 }
 
-const SAPISID_ALLOWED_DOMAIN_REGEX = /^(?:music\.youtube\.com|\.?youtube\.com|\.?google\.com)$/i;
+const SAPISID_ALLOWED_DOMAIN_REGEX = /^(?:music\.youtube\.com|\.?youtube\.com)$/i;
 
 function validateBackendSapisidCredential(rawCred) {
   if (!rawCred || typeof rawCred !== 'object') return null;
@@ -10956,8 +10973,67 @@ function validateBackendSapisidCredential(rawCred) {
     path: pathVal,
     secure,
     expiry,
-    scope: cleanDom.includes('google.com') ? 'google' : 'youtube'
+    scope: 'youtube'
   };
+}
+
+// In-memory single-use pending candidate sessions for ambiguous account selection
+const pendingCandidateSessions = new Map();
+const PENDING_SESSION_TTL_MS = 120000; // 2 minutes
+
+function sweepPendingCandidateSessions() {
+  const now = Date.now();
+  for (const [token, sess] of pendingCandidateSessions.entries()) {
+    if (sess.expiresAt < now) {
+      pendingCandidateSessions.delete(token);
+    }
+  }
+}
+
+async function handleConfirmCandidate(req, res, deps = {}) {
+  const authInstance = deps.ytmAuth || ytmAuth;
+  let body = '';
+  req.on('data', chunk => body += chunk);
+  req.on('end', async () => {
+    try {
+      sweepPendingCandidateSessions();
+      const payload = JSON.parse(body || '{}');
+      const { pendingToken, candidateIndex } = payload;
+
+      if (!pendingToken || typeof pendingToken !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: 'Missing or invalid pendingToken' }));
+      }
+
+      const session = pendingCandidateSessions.get(pendingToken);
+      if (!session || session.expiresAt < Date.now()) {
+        pendingCandidateSessions.delete(pendingToken);
+        res.writeHead(410, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, code: 'SESSION_EXPIRED', error: 'Pending selection session expired or not found' }));
+      }
+
+      // Single-use: delete immediately to prevent replay
+      pendingCandidateSessions.delete(pendingToken);
+
+      const idx = Number(candidateIndex);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= session.candidates.length) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: 'Invalid candidate index' }));
+      }
+
+      const chosenCandidate = session.candidates[idx];
+      const account = await authInstance.addAccountFromCookie(session.cookie, {
+        sapisidCredential: session.sapisidCredential,
+        selectedCandidate: chosenCandidate
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: true, account }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+  });
 }
 
 async function handleInterceptCookie(req, res, deps = {}) {
@@ -10986,6 +11062,8 @@ async function handleInterceptCookie(req, res, deps = {}) {
       return res.end(JSON.stringify({ success: true, account }));
     } catch (e) {
       let statusCode = 502;
+      let pendingToken = undefined;
+
       if (e.code === 'MISSING_COOKIE' || e.code === 'MISSING_SAPISID' || e.code === 'INVALID_CREDENTIAL') {
         statusCode = 400;
       } else if (e.upstreamStatus === 401 || e.status === 401) {
@@ -10994,6 +11072,19 @@ async function handleInterceptCookie(req, res, deps = {}) {
         statusCode = 403;
       } else if (e.code === 'AMBIGUOUS_ACCOUNT_SELECTION' || e.status === 409) {
         statusCode = 409;
+        // Generate cryptographically secure 32-byte single-use token
+        sweepPendingCandidateSessions();
+        pendingToken = crypto.randomBytes(32).toString('hex');
+        try {
+          const payload = JSON.parse(body || '{}');
+          pendingCandidateSessions.set(pendingToken, {
+            cookie: payload.cookie || '',
+            sapisidCredential: payload.sapisidCredential || null,
+            candidates: Array.isArray(e.candidates) ? e.candidates : [],
+            createdAt: Date.now(),
+            expiresAt: Date.now() + PENDING_SESSION_TTL_MS
+          });
+        } catch (_) {}
       } else {
         statusCode = 502;
       }
@@ -11007,6 +11098,7 @@ async function handleInterceptCookie(req, res, deps = {}) {
         success: false,
         code: errorCode,
         stage: errorStage,
+        pendingToken,
         candidates: e.candidates || undefined,
         upstreamStatus: e.upstreamStatus || undefined,
         upstreamDiagnostic: e.upstreamDiagnostic || undefined,
@@ -11022,7 +11114,7 @@ async function handleInterceptCookie(req, res, deps = {}) {
   
 function stopServer() { return new Promise((resolve) => { if (!server || !server.listening) return resolve(); server.close(() => resolve()); }); }
 
-module.exports = { stopServer, matchAndResolveTrack, handleLyrics, handleAudioProxy, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchSyncLrc, parseKaraokeToWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc, cleanSearchResults, handleInterceptCookie, validateBackendSapisidCredential };
+module.exports = { stopServer, matchAndResolveTrack, handleLyrics, handleAudioProxy, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchSyncLrc, parseKaraokeToWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc, cleanSearchResults, handleInterceptCookie, handleConfirmCandidate, validateBackendSapisidCredential, pendingCandidateSessions };
 
 if (require.main === module) {
   startServer();

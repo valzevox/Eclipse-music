@@ -96,6 +96,7 @@ class BrowserLoginService {
       const details = {
         code,
         stage: data?.stage || 'unknown',
+        pendingToken: data?.pendingToken || null,
         candidates: data?.candidates || null,
         upstreamStatus: data?.upstreamStatus || res.status,
         upstreamDiagnostic: data?.upstreamDiagnostic || null,

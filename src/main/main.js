@@ -1902,6 +1902,25 @@ ipcMain.on('window-minimize', () => {
         return { success: true };
       });
 
+      ipcMain.handle('browser-login:confirm-candidate', async (event, { pendingToken, candidateIndex }) => {
+        try {
+          const authUrl = `http://127.0.0.1:${serverPort || 38472}/api/ytm/confirm-candidate`;
+          const res = await fetch(authUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pendingToken, candidateIndex }),
+            signal: AbortSignal.timeout(15000)
+          });
+          const data = await res.json();
+          if (!res.ok || !data.success) {
+            return { success: false, error: data.error || ('HTTP ' + res.status) };
+          }
+          return { success: true, account: data.account };
+        } catch (err) {
+          return { success: false, error: err.message };
+        }
+      });
+
       ipcMain.handle('browser-login:import-profile', async (event, profile) => {
         try {
           if (!profile || !profile.profilePath) {

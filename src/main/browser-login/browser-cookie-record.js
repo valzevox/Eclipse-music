@@ -151,7 +151,7 @@ function buildNetscapeJar(records, targetHost = 'music.youtube.com') {
   return lines.join(eol) + eol;
 }
 
-const SAPISID_ALLOWED_DOMAIN_REGEX = /^(?:music\.youtube\.com|\.?youtube\.com|\.?google\.com)$/i;
+const SAPISID_ALLOWED_DOMAIN_REGEX = /^(?:music\.youtube\.com|\.?youtube\.com)$/i;
 
 /**
  * Extracts SAPISID or __Secure-3PAPISID credential without polluting
@@ -162,7 +162,8 @@ const SAPISID_ALLOWED_DOMAIN_REGEX = /^(?:music\.youtube\.com|\.?youtube\.com|\.
  *  - non-expired record
  *  - secure flag (secure === true)
  *  - valid request-host ('music.youtube.com') and request-path ('/getAccountSwitcherEndpoint')
- *  - narrow SAPISID allowed domain policy (.youtube.com, music.youtube.com, or .google.com)
+ *  - narrow SAPISID allowed domain policy (.youtube.com or music.youtube.com only)
+ * Rejects Google-scoped credentials (.google.com, accounts.google.com).
  * Returns { name, value, domain, path, secure, expiry, scope } or null.
  */
 function extractSapisidCredential(records, targetHost = 'music.youtube.com', targetPath = '/getAccountSwitcherEndpoint') {
@@ -180,18 +181,11 @@ function extractSapisidCredential(records, targetHost = 'music.youtube.com', tar
     const cleanDom = r.domain.toLowerCase().replace(/^\./, '');
     if (!SAPISID_ALLOWED_DOMAIN_REGEX.test(cleanDom)) continue;
 
-    // Strict host and path matching for YouTube-scoped credential
+    // Strict host and path matching for YouTube-scoped credential only
     if (r.matchesHost(targetHost) && r.matchesPath(targetPath)) {
       candidates.push({
         priority: r.name === 'SAPISID' ? 1 : 2,
         scope: 'youtube',
-        record: r
-      });
-    } else if (cleanDom === 'google.com' || cleanDom.endsWith('.google.com')) {
-      // Separate compatibility path for Google-scoped credential
-      candidates.push({
-        priority: r.name === 'SAPISID' ? 3 : 4,
-        scope: 'google',
         record: r
       });
     }
