@@ -1914,6 +1914,8 @@ ipcMain.on('window-minimize', () => {
         }
       });
 
+      let lastExportedExtensionPath = null;
+
       function resolveBrowserExecutable(browser) {
         const norm = String(browser || '').toLowerCase().trim();
         const defs = {
@@ -1994,13 +1996,35 @@ ipcMain.on('window-minimize', () => {
             return { success: false, error: `Browser executable not found for ${norm}.` };
           }
 
-          execFile(resolved.exe, [resolved.extUrl], { shell: false }, (err) => {
-            if (err) {
-              console.warn(`[browser-login] Failed to launch ${norm} extension manager:`, err.message);
+          return await new Promise((resolve) => {
+            let settled = false;
+            let child;
+            try {
+              child = spawn(resolved.exe, [resolved.extUrl], {
+                shell: false,
+                detached: true,
+                stdio: 'ignore',
+                windowsHide: true
+              });
+            } catch (err) {
+              return resolve({ success: false, error: err.message });
             }
-          });
 
-          return { success: true };
+            child.once('spawn', () => {
+              if (!settled) {
+                settled = true;
+                try { child.unref(); } catch (_) {}
+                resolve({ success: true });
+              }
+            });
+
+            child.once('error', (err) => {
+              if (!settled) {
+                settled = true;
+                resolve({ success: false, error: err.message });
+              }
+            });
+          });
         } catch (err) {
           return { success: false, error: err.message };
         }
@@ -2061,8 +2085,35 @@ ipcMain.on('window-minimize', () => {
           }
 
           fs.copyFileSync(sourceZip, saveResult.filePath);
+          lastExportedExtensionPath = saveResult.filePath;
           shell.showItemInFolder(saveResult.filePath);
           return { success: true, filePath: saveResult.filePath };
+        } catch (err) {
+          return { success: false, error: err.message };
+        }
+      });
+
+      ipcMain.handle('browser-login:reveal-exported-extension', async () => {
+        try {
+          if (!lastExportedExtensionPath) {
+            return { success: false, error: 'No exported extension found. Please download the extension first.' };
+          }
+
+          if (!fs.existsSync(lastExportedExtensionPath)) {
+            return { success: false, error: 'Exported extension file no longer exists. Please download it again.' };
+          }
+
+          const stat = fs.statSync(lastExportedExtensionPath);
+          if (!stat.isFile()) {
+            return { success: false, error: 'Exported path is not a file.' };
+          }
+
+          if (!lastExportedExtensionPath.toLowerCase().endsWith('.zip')) {
+            return { success: false, error: 'Exported path is not a valid zip archive.' };
+          }
+
+          shell.showItemInFolder(lastExportedExtensionPath);
+          return { success: true, filePath: lastExportedExtensionPath };
         } catch (err) {
           return { success: false, error: err.message };
         }

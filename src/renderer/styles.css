@@ -12037,6 +12037,18 @@ body.perf .tv-karaoke[data-tvk-anim="focus"] .lyric-word.active-word {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  transition: border-color var(--transition-short, 0.2s), box-shadow var(--transition-short, 0.2s);
+}
+
+.pairing-stage.stage-highlight {
+  border-color: var(--md-sys-color-primary);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--md-sys-color-primary) 35%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pairing-stage {
+    transition: none !important;
+  }
 }
 
 .pairing-stage-header {

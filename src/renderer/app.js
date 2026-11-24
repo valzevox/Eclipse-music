@@ -22911,8 +22911,16 @@ function bindCoverHoldZoom(wrapEl) {
   if (btnExportExtension) btnExportExtension.addEventListener('click', handleExportExtension);
   if (btnReexportExtension) btnReexportExtension.addEventListener('click', handleExportExtension);
   if (btnOpenExtensionFolder) {
-    btnOpenExtensionFolder.addEventListener('click', () => {
-      if (window.electronAPI && window.electronAPI.showItemInFolder && extensionSavedFilePath) {
+    btnOpenExtensionFolder.addEventListener('click', async () => {
+      if (window.electronAPI && window.electronAPI.browserLoginRevealExportedExtension) {
+        const res = await window.electronAPI.browserLoginRevealExportedExtension();
+        if (res && !res.success) {
+          showBrowserLoginError(res.error || 'Exported extension file no longer exists. Please download it again.');
+          if (typeof showToast === 'function') {
+            showToast(res.error || 'Exported extension file no longer exists. Please download it again.', 'error');
+          }
+        }
+      } else if (window.electronAPI && window.electronAPI.showItemInFolder && extensionSavedFilePath) {
         window.electronAPI.showItemInFolder(extensionSavedFilePath);
       }
     });
@@ -22963,7 +22971,20 @@ function bindCoverHoldZoom(wrapEl) {
             btnConnect.addEventListener('click', async () => {
               if (p.requiresExtension) {
                 switchBrowserLoginTab('extension');
-                startExtensionPairingFlow();
+                if (typeof showToast === 'function') {
+                  showToast('Please complete the installation steps and confirm all prerequisites before pairing.', 'info');
+                }
+                const stageSetup = document.getElementById('stage-browser-setup');
+                if (stageSetup) {
+                  const prefersReduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+                  try {
+                    stageSetup.scrollIntoView({ behavior: prefersReduced ? 'auto' : 'smooth', block: 'center' });
+                  } catch (_) {}
+                  stageSetup.classList.add('stage-highlight');
+                  setTimeout(() => {
+                    stageSetup.classList.remove('stage-highlight');
+                  }, 1800);
+                }
               } else {
                 btnConnect.disabled = true;
                 btnConnect.textContent = 'Connecting...';
@@ -23028,6 +23049,22 @@ function bindCoverHoldZoom(wrapEl) {
   }
 
   async function startExtensionPairingFlow() {
+    // Re-validate all four prerequisites at every entry point
+    const isStage2Confirmed = !!(chkExtExtracted && chkExtExtracted.checked && chkExtLoaded && chkExtLoaded.checked && chkExtPinned && chkExtPinned.checked);
+    const isStage3Ready = !!(chkYtmSignedin && chkYtmSignedin.checked);
+    if (!isStage2Confirmed || !isStage3Ready) {
+      switchBrowserLoginTab('extension');
+      const missingMsg = !isStage2Confirmed
+        ? 'Please extract, load, and pin Eclipse Connect, then check all confirmations in Stage 2.'
+        : 'Please sign into YouTube Music in your browser profile and check the confirmation in Stage 3.';
+      showBrowserLoginError(missingMsg);
+      if (typeof showToast === 'function') {
+        showToast(missingMsg, 'warning');
+      }
+      updateStartPairingState();
+      return;
+    }
+
     resetPairingUI();
     if (btnStartExtensionPairing) {
       btnStartExtensionPairing.disabled = true;
