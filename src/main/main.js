@@ -1605,8 +1605,15 @@ ipcMain.on('window-minimize', () => {
         if (!safeStorage.isEncryptionAvailable()) {
           throw new Error('Secure storage is unavailable on this system');
         }
-        fs.mkdirSync(DATA_DIR, { recursive: true });
-        fs.writeFileSync(GOOGLE_OAUTH_FILE, safeStorage.encryptString(JSON.stringify(data)));
+        fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+        const tmpPath = GOOGLE_OAUTH_FILE + '.' + process.pid + '.' + Date.now() + '.tmp';
+        fs.writeFileSync(tmpPath, safeStorage.encryptString(JSON.stringify(data)), { mode: 0o600 });
+        try {
+          fs.renameSync(tmpPath, GOOGLE_OAUTH_FILE);
+        } catch (_) {
+          fs.writeFileSync(GOOGLE_OAUTH_FILE, safeStorage.encryptString(JSON.stringify(data)), { mode: 0o600 });
+          try { fs.unlinkSync(tmpPath); } catch (_) {}
+        }
       }
 
       async function getGoogleAccessToken() {
