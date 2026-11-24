@@ -25,10 +25,11 @@ const BrowserProfileStatus = Object.freeze({
 });
 
 class BrowserLoginException extends Error {
-  constructor(reason, message) {
+  constructor(reason, message, details = null) {
     super(message || reason);
     this.name = 'BrowserLoginException';
     this.reason = reason;
+    this.details = details && typeof details === 'object' ? details : null;
   }
 }
 

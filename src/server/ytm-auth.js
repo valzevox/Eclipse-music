@@ -340,19 +340,6 @@ class YtmAuthManager {
       });
     }
 
-    // 3. Fallback for mock responses or simple text bodies
-    if (typeof res.text === 'function') {
-      const text = await res.text();
-      const byteLen = Buffer.byteLength(text, 'utf8');
-      if (byteLen > maxBytes) {
-        const err = new Error(`Upstream response exceeded limit of ${maxBytes} bytes`);
-        err.code = 'UPSTREAM_PAYLOAD_TOO_LARGE';
-        err.stage = 'stream_reading';
-        throw err;
-      }
-      return text;
-    }
-
     const err = new Error('ReadableStream not available for bounded response reading');
     err.code = 'STREAM_UNAVAILABLE';
     err.stage = 'stream_reading';
@@ -409,14 +396,35 @@ class YtmAuthManager {
 
     // Build secret-free request fingerprint
     const cookiePairs = cookieString.split(';').map(c => c.trim()).filter(Boolean);
-    const exactCookieNames = cookiePairs.map(c => c.split('=')[0].trim());
+    const outgoingCookieMap = new Map();
+    const exactCookieNames = [];
+    for (const pair of cookiePairs) {
+      const eqIdx = pair.indexOf('=');
+      if (eqIdx !== -1) {
+        const cName = pair.slice(0, eqIdx).trim();
+        const cVal = pair.slice(eqIdx + 1).trim();
+        exactCookieNames.push(cName);
+        outgoingCookieMap.set(cName, cVal);
+      } else {
+        exactCookieNames.push(pair);
+      }
+    }
+
     const hasYouTubeSapisidInCookieHeader = exactCookieNames.includes('SAPISID') || exactCookieNames.includes('__Secure-3PAPISID');
+    const selectedCredName = explicitSapisidCred?.name || null;
+    const selectedCredValue = explicitSapisidCred?.value || null;
+    const isExactCredentialInCookieHeader = Boolean(
+      selectedCredName &&
+      selectedCredValue &&
+      outgoingCookieMap.has(selectedCredName) &&
+      outgoingCookieMap.get(selectedCredName) === selectedCredValue
+    );
 
     const requestFingerprint = {
       selectedCredentialName: explicitSapisidCred?.name || 'NONE',
       selectedCredentialDomain: explicitSapisidCred?.domain || 'UNKNOWN',
       selectedCredentialScope: explicitSapisidCred?.scope || (explicitSapisidCred?.domain?.includes('google.com') ? 'google' : 'youtube'),
-      isCredentialInCookieHeader: exactCookieNames.includes(explicitSapisidCred?.name),
+      isCredentialInCookieHeader: isExactCredentialInCookieHeader,
       hasYouTubeSapisidInCookieHeader,
       outgoingCookieNames: exactCookieNames,
       hasAuthorizationHeader: Boolean(authHeader),

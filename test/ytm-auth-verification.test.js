@@ -17,6 +17,7 @@ const { WEB_REMIX_CLIENT } = require('../src/server/ytm-client-config');
 const YtmAuthManager = require('../src/server/ytm-auth');
 const { handleInterceptCookie, validateBackendSapisidCredential } = require('../src/server/server');
 const { BrowserLoginService } = require('../src/main/browser-login/browser-login-service');
+const { BrowserLoginException, BrowserLoginFailure } = require('../src/main/browser-login/browser-login-errors');
 
 function createReadableStreamFromText(text, chunkSize = 1024) {
   const encoder = new TextEncoder();
@@ -316,6 +317,169 @@ describe('YTM Auth Verification & Production Diagnostics Suite', () => {
       const accounts = manager2.getAccounts();
       assert.equal(accounts.length, 1);
       assert.equal(accounts[0].id, 'PAGE_PROD_999');
+    } finally {
+      server.close();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('9. Bounded stream reader fails with STREAM_UNAVAILABLE when only text() is exposed', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-test-ytm-textonly-'));
+    const manager = new YtmAuthManager(tempDir);
+    await manager.init();
+
+    let textCalled = false;
+    const mockRes = {
+      ok: false,
+      status: 400,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => {
+        textCalled = true;
+        return JSON.stringify({ error: 'should not be called' });
+      }
+    };
+
+    let caughtErr = null;
+    try {
+      await manager._readBoundedStream(mockRes, 8192);
+    } catch (e) {
+      caughtErr = e;
+    }
+
+    assert.ok(caughtErr, 'Must fail when ReadableStream is unavailable');
+    assert.equal(caughtErr.code, 'STREAM_UNAVAILABLE');
+    assert.equal(textCalled, false, 'res.text() must never be invoked');
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('10. Backend credential validator rejects missing path, malformed expiry and non-positive timestamps', () => {
+    // Missing path
+    assert.equal(validateBackendSapisidCredential({ name: 'SAPISID', value: 'val', domain: '.youtube.com', secure: true }), null);
+    // Path not starting with /
+    assert.equal(validateBackendSapisidCredential({ name: 'SAPISID', value: 'val', domain: '.youtube.com', secure: true, path: 'getAccount' }), null);
+    // Malformed expiry strings, NaN, Infinity, negative
+    assert.equal(validateBackendSapisidCredential({ name: 'SAPISID', value: 'val', domain: '.youtube.com', secure: true, path: '/', expiry: 'never' }), null);
+    assert.equal(validateBackendSapisidCredential({ name: 'SAPISID', value: 'val', domain: '.youtube.com', secure: true, path: '/', expiry: NaN }), null);
+    assert.equal(validateBackendSapisidCredential({ name: 'SAPISID', value: 'val', domain: '.youtube.com', secure: true, path: '/', expiry: Infinity }), null);
+    assert.equal(validateBackendSapisidCredential({ name: 'SAPISID', value: 'val', domain: '.youtube.com', secure: true, path: '/', expiry: -100 }), null);
+    assert.equal(validateBackendSapisidCredential({ name: 'SAPISID', value: 'val', domain: '.youtube.com', secure: true, path: '/', expiry: Math.floor(Date.now() / 1000) - 10 }), null);
+
+    // Valid session credential (expiry === null)
+    const validSession = validateBackendSapisidCredential({ name: 'SAPISID', value: 'val', domain: '.youtube.com', secure: true, path: '/', expiry: null });
+    assert.ok(validSession);
+    assert.equal(validSession.expiry, null);
+
+    // Valid future expiry
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    const validExp = validateBackendSapisidCredential({ name: 'SAPISID', value: 'val', domain: '.youtube.com', secure: true, path: '/', expiry: future });
+    assert.ok(validExp);
+    assert.equal(validExp.expiry, future);
+  });
+
+  it('11. Fingerprint matching checks exact credential value, not just cookie name', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-test-ytm-fpval-'));
+    const manager = new YtmAuthManager(tempDir);
+    await manager.init();
+
+    let capturedFingerprint = null;
+    manager._accountSwitcherTransport = async (url, opts) => {
+      return {
+        ok: false,
+        status: 400,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        body: createReadableStreamFromText(JSON.stringify({ error: { code: 400, message: 'Bad request' } }))
+      };
+    };
+
+    // Case A: Selected credential has value 'secret_val_1', but Cookie Header has 'SAPISID=secret_val_2'
+    const sapisidCred = {
+      name: 'SAPISID',
+      value: 'secret_val_1',
+      domain: '.youtube.com',
+      path: '/getAccountSwitcherEndpoint',
+      secure: true,
+      expiry: null,
+      scope: 'youtube'
+    };
+
+    try {
+      await manager.authenticateWithCookie('SAPISID=secret_val_2; VISITOR_INFO1_LIVE=vis', { sapisidCredential: sapisidCred });
+      assert.fail('Should reject');
+    } catch (err) {
+      capturedFingerprint = err.requestFingerprint;
+      assert.ok(capturedFingerprint);
+      assert.equal(capturedFingerprint.isCredentialInCookieHeader, false, 'Different value must evaluate to false');
+      assert.equal(capturedFingerprint.hasYouTubeSapisidInCookieHeader, true);
+    }
+
+    // Case B: Selected credential matches exactly
+    try {
+      await manager.authenticateWithCookie('SAPISID=secret_val_1; VISITOR_INFO1_LIVE=vis', { sapisidCredential: sapisidCred });
+      assert.fail('Should reject');
+    } catch (err) {
+      assert.equal(err.requestFingerprint.isCredentialInCookieHeader, true, 'Matching value must evaluate to true');
+    }
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('12. End-to-End: Upstream HTTP 400 diagnostics propagate through BrowserLoginService into BrowserLoginException details', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-test-ytm-diag-propagation-'));
+    const manager = new YtmAuthManager(tempDir);
+    await manager.init();
+
+    // Mock Account Switcher returning HTTP 400 with structured JSON diagnostic
+    manager._accountSwitcherTransport = async (url, opts) => {
+      return {
+        ok: false,
+        status: 400,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        body: createReadableStreamFromText(JSON.stringify({
+          error: {
+            code: 400,
+            status: 'INVALID_ARGUMENT',
+            message: 'API format version mismatch',
+            errors: [{ reason: 'badRequest', location: 'X-Goog-Api-Format-Version' }]
+          }
+        }))
+      };
+    };
+
+    const server = http.createServer((req, res) => {
+      if (req.url === '/api/ytm/intercept-cookie') {
+        return handleInterceptCookie(req, res, { ytmAuth: manager });
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+
+    const service = new BrowserLoginService({ ytmAuthUrl: `http://127.0.0.1:${port}/api/ytm/intercept-cookie` });
+    const records = [
+      new BrowserCookieRecord({ name: 'SAPISID', value: 'secret_test_sapisid', domain: '.youtube.com', path: '/', secure: true }),
+      new BrowserCookieRecord({ name: 'VISITOR_INFO1_LIVE', value: 'vis_123', domain: '.youtube.com' })
+    ];
+
+    try {
+      await service.authenticateWithRecords(records);
+      assert.fail('Should throw BrowserLoginException');
+    } catch (err) {
+      assert.ok(err instanceof BrowserLoginException, 'Must be instance of BrowserLoginException');
+      assert.equal(err.reason, BrowserLoginFailure.SESSION_REJECTED);
+      assert.ok(err.message.includes('ACCOUNT_SWITCHER_HTTP_REJECTED'));
+      assert.ok(err.message.includes('HTTP 400'));
+
+      // Validate details object propagation
+      assert.ok(err.details, 'details property must be attached');
+      assert.equal(err.details.upstreamStatus, 400);
+      assert.equal(err.details.code, 'ACCOUNT_SWITCHER_HTTP_REJECTED');
+      assert.equal(err.details.stage, 'endpoint_response');
+      assert.equal(err.details.upstreamDiagnostic.reasons[0].reason, 'badRequest');
+      assert.equal(err.details.upstreamDiagnostic.message, 'API format version mismatch');
+      assert.equal(err.details.requestFingerprint.selectedCredentialScope, 'youtube');
+      assert.equal(err.details.requestFingerprint.isCredentialInCookieHeader, true);
     } finally {
       server.close();
       fs.rmSync(tempDir, { recursive: true, force: true });

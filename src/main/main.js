@@ -1884,9 +1884,9 @@ ipcMain.on('window-minimize', () => {
             (err) => {
               try {
                 if (sender && !sender.isDestroyed()) {
-                  sender.send('browser-login:pairing-result', { success: false, error: err.message, reason: err.reason });
+                  sender.send('browser-login:pairing-result', { success: false, error: err.message, reason: err.reason, details: err.details || null });
                 } else if (mainWindow && !mainWindow.isDestroyed()) {
-                  mainWindow.webContents.send('browser-login:pairing-result', { success: false, error: err.message, reason: err.reason });
+                  mainWindow.webContents.send('browser-login:pairing-result', { success: false, error: err.message, reason: err.reason, details: err.details || null });
                 }
               } catch (_) {}
             }
@@ -1911,7 +1911,7 @@ ipcMain.on('window-minimize', () => {
           const authResult = await browserLoginService.importFromGeckoProfile(profile.profilePath);
           return { success: true, account: authResult.account };
         } catch (err) {
-          return { success: false, error: err.message, reason: err.reason };
+          return { success: false, error: err.message, reason: err.reason, details: err.details || null };
         }
       });
 

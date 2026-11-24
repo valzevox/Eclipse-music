@@ -10920,16 +10920,31 @@ function validateBackendSapisidCredential(rawCred) {
   const name = String(rawCred.name || '').trim();
   const value = String(rawCred.value || '').trim();
   const dom = String(rawCred.domain || '').trim().toLowerCase();
-  const pathVal = String(rawCred.path || '/').trim();
+
+  // Require path to be an explicitly supplied non-empty string starting with "/"
+  if (typeof rawCred.path !== 'string' || !rawCred.path.trim().startsWith('/')) return null;
+  const pathVal = rawCred.path.trim();
+
   const secure = rawCred.secure === true;
+  if (!secure) return null;
+
   const now = Math.floor(Date.now() / 1000);
-  const expiry = Number.isFinite(Number(rawCred.expiry)) && Number(rawCred.expiry) > 0 ? Math.floor(Number(rawCred.expiry)) : null;
+  let expiry = null;
+
+  // Accept expiry === null only for an actual session cookie
+  if (rawCred.expiry === null) {
+    expiry = null;
+  } else if (typeof rawCred.expiry === 'number' && Number.isFinite(rawCred.expiry) && !isNaN(rawCred.expiry)) {
+    const expSec = Math.floor(rawCred.expiry);
+    if (expSec <= now) return null;
+    expiry = expSec;
+  } else {
+    // Reject undefined, empty string, invalid strings, NaN, Infinity, negative values
+    return null;
+  }
 
   if (name !== 'SAPISID' && name !== '__Secure-3PAPISID') return null;
   if (!value) return null;
-  if (!secure) return null;
-  if (!pathVal.startsWith('/')) return null;
-  if (expiry && expiry <= now) return null;
 
   const cleanDom = dom.replace(/^\./, '');
   if (!SAPISID_ALLOWED_DOMAIN_REGEX.test(cleanDom)) return null;

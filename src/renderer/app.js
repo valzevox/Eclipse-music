@@ -23099,9 +23099,40 @@ function bindCoverHoldZoom(wrapEl) {
     }
   }
 
-  function showBrowserLoginError(msg) {
+  function showBrowserLoginError(msg, details = null) {
     if (!browserLoginError) return;
-    browserLoginError.textContent = msg;
+    browserLoginError.innerHTML = '';
+
+    const msgEl = document.createElement('div');
+    msgEl.className = 'browser-login-error-msg';
+    msgEl.textContent = msg;
+    browserLoginError.appendChild(msgEl);
+
+    if (details && typeof details === 'object') {
+      const diagEl = document.createElement('div');
+      diagEl.className = 'browser-login-error-diagnostics';
+      diagEl.style.marginTop = '8px';
+      diagEl.style.padding = '8px';
+      diagEl.style.background = 'rgba(0, 0, 0, 0.4)';
+      diagEl.style.borderRadius = '6px';
+      diagEl.style.fontSize = '11px';
+      diagEl.style.fontFamily = 'monospace';
+      diagEl.style.wordBreak = 'break-all';
+
+      const summaryParts = [];
+      if (details.upstreamStatus) summaryParts.push('Status: ' + details.upstreamStatus);
+      if (details.upstreamDiagnostic && details.upstreamDiagnostic.reason) summaryParts.push('Reason: ' + details.upstreamDiagnostic.reason);
+      if (details.upstreamDiagnostic && details.upstreamDiagnostic.message) summaryParts.push('Message: ' + details.upstreamDiagnostic.message);
+      if (details.requestFingerprint) {
+        summaryParts.push('Scope: ' + (details.requestFingerprint.selectedCredentialScope || 'unknown'));
+        summaryParts.push('Matched: ' + details.requestFingerprint.isCredentialInCookieHeader);
+        summaryParts.push('Cookies: [' + (details.requestFingerprint.outgoingCookieNames || []).join(', ') + ']');
+      }
+
+      diagEl.textContent = summaryParts.join(' | ') || JSON.stringify(details);
+      browserLoginError.appendChild(diagEl);
+    }
+
     browserLoginError.classList.remove('hidden');
   }
 
@@ -23198,7 +23229,7 @@ function bindCoverHoldZoom(wrapEl) {
       if (result && result.success) {
         onLoginSuccess(result.account);
       } else {
-        showBrowserLoginError(result.error || result.reason || 'Pairing was rejected or timed out');
+        showBrowserLoginError(result.error || result.reason || 'Pairing was rejected or timed out', result.details || null);
         resetPairingUI();
       }
     });

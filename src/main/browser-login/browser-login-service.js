@@ -90,12 +90,22 @@ class BrowserLoginService {
     }
 
     if (!res.ok) {
-      const code = data?.code || 'HTTP_' + res.status;
-      const stage = data?.stage ? ` [stage: ${data.stage}]` : '';
-      const safeError = data?.error ? String(data.error).replace(/(?:SAPISID|__Secure-3PAPISID|SID|SSID)=[^;\s]+/gi, '[REDACTED]') : `HTTP ${res.status}`;
+      const code = data?.code || ('HTTP_' + res.status);
+      const stage = data?.stage ? ' [stage: ' + data.stage + ']' : '';
+      const safeError = data?.error ? String(data.error).replace(/(?:SAPISID|__Secure-3PAPISID|SID|SSID)=[^;\s]+/gi, '[REDACTED]') : ('HTTP ' + res.status);
+      const details = {
+        code,
+        stage: data?.stage || 'unknown',
+        upstreamStatus: data?.upstreamStatus || res.status,
+        upstreamDiagnostic: data?.upstreamDiagnostic || null,
+        diagnosticReadError: data?.diagnosticReadError || null,
+        requestFingerprint: data?.requestFingerprint || null,
+        fallbackError: data?.fallbackError || null
+      };
       throw new BrowserLoginException(
         BrowserLoginFailure.SESSION_REJECTED,
-        `YTM verification rejected (${code}${stage}): ${safeError}`
+        'YTM verification rejected (' + code + stage + '): ' + safeError,
+        details
       );
     }
 
