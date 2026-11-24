@@ -46,6 +46,13 @@ function decryptAccount(buffer) {
   return JSON.parse(decompressed.toString('utf8'));
 }
 const { LIBRARY_DIR, DATA_DIR, resolveBinary, tutorialDone, markTutorialDone, readStartupConfig, writeStartupConfig, cookieJarHasYtLogin } = require('../shared/platform');
+const { getTempCookieManager } = require('../shared/temp-cookie-manager');
+const mainTempCookieMgr = getTempCookieManager(DATA_DIR);
+try {
+  mainTempCookieMgr.sweepStaleCookieJars();
+  const legacyJar = path.join(DATA_DIR, 'yt-cookies.txt');
+  if (fs.existsSync(legacyJar)) fs.unlinkSync(legacyJar);
+} catch (_) {}
 const { getLauncherInfo, installLauncher } = require('./launcher');
 const { getSystemAudioOutputInfo } = require('../shared/audio-output');
 const { log, tail, LOG_DIR } = require('../shared/logger');
@@ -1489,83 +1496,22 @@ ipcMain.on('window-minimize', () => {
         });
       });
 
-      const YT_COOKIES_FILE = path.join(DATA_DIR, 'yt-cookies.txt');
       const YT_LOGOUT_FLAG = path.join(DATA_DIR, '.yt-logged-out');
       const GOOGLE_OAUTH_FILE = path.join(DATA_DIR, 'google-oauth.enc');
       let youtubeCookieImportPromise = null;
 
-      function hasValidYtCookiesFile(file = YT_COOKIES_FILE) {
-        try {
-          if (!fs.existsSync(file)) return false;
-          return cookieJarHasYtLogin(fs.readFileSync(file, 'utf8'));
-        } catch (_) {
-          return false;
-        }
-      }
-
-      async function exportSessionCookiesToFile() {
-        try {
-          fs.mkdirSync(DATA_DIR, { recursive: true });
-          const s = session.fromPartition('persist:eclipse-google');
-          const allCookies = await s.cookies.get({});
-          const lines = ['# Netscape HTTP Cookie File'];
-          for (const c of allCookies) {
-            if (!c || !c.domain || !c.name) continue;
-            if (!c.domain.includes('google.com') && !c.domain.includes('youtube.com')) continue;
-            const dom = c.domain.startsWith('.') ? c.domain : '.' + c.domain;
-            const includeSub = dom.startsWith('.') ? 'TRUE' : 'FALSE';
-            const cPath = c.path || '/';
-            const sec = c.secure ? 'TRUE' : 'FALSE';
-            const exp = c.expirationDate ? Math.floor(c.expirationDate) : 0;
-            lines.push(`${dom}\t${includeSub}\t${cPath}\t${sec}\t${exp}\t${c.name}\t${c.value || ''}`);
-          }
-          if (lines.length > 1) {
-            fs.writeFileSync(YT_COOKIES_FILE, lines.join('\n') + '\n', 'utf8');
-            try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
-            return true;
-          }
-        } catch (_) {}
+      function hasValidYtCookiesFile() {
         return false;
       }
 
+      async function exportSessionCookiesToFile() {
+        // Zero persistent plaintext cookie file: cookies remain in Electron partition and ytm-accounts.enc
+        try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
+        return true;
+      }
+
       async function importYoutubeCookiesToSession() {
-        if (youtubeCookieImportPromise) return youtubeCookieImportPromise;
-        youtubeCookieImportPromise = (async () => {
-          const txt = fs.readFileSync(YT_COOKIES_FILE, 'utf8');
-          const googleSession = session.fromPartition('persist:eclipse-google');
-          const existingSap = await googleSession.cookies.get({ name: 'SAPISID' }).catch(() => []);
-        if (Array.isArray(existingSap) && existingSap.some(c => c && c.value)) return;
-          const rows = txt.split(/\r?\n/);
-          for (const row of rows) {
-            const line = row.startsWith('#HttpOnly_') ? row.slice(10) : row;
-            if (!line || line.startsWith('#')) continue;
-            const fields = line.split('\t');
-            if (fields.length < 7) continue;
-            const [domain, , cookiePath, secure, expires, name, ...valueParts] = fields;
-            if (!domain || !name || valueParts.length === 0) continue;
-            const host = domain.replace(/^\./, '');
-            if (host !== 'google.com' && !host.endsWith('.google.com') &&
-                host !== 'youtube.com' && !host.endsWith('.youtube.com')) continue;
-            const details = {
-              url: `https://${host}${cookiePath.startsWith('/') ? cookiePath : '/'}`,
-              name,
-              value: valueParts.join('\t'),
-              domain,
-              path: cookiePath || '/',
-              secure: secure.toUpperCase() === 'TRUE',
-              httpOnly: row.startsWith('#HttpOnly_')
-            };
-            const expiration = Number(expires);
-            if (Number.isFinite(expiration) && expiration > 0) details.expirationDate = expiration;
-            if (name.startsWith('__Host-')) delete details.domain;
-          try { await googleSession.cookies.set(details); } catch (_) {}
-          }
-        })();
-        try {
-          await youtubeCookieImportPromise;
-        } finally {
-          youtubeCookieImportPromise = null;
-        }
+        return;
       }
 
       function getCandidateBrowserSpecs() {
@@ -1605,7 +1551,7 @@ ipcMain.on('window-minimize', () => {
             if (fs.existsSync(tmpTestCookie)) {
               const tmpTxt = fs.readFileSync(tmpTestCookie, 'utf8');
               if (cookieJarHasYtLogin(tmpTxt)) {
-                fs.writeFileSync(YT_COOKIES_FILE, tmpTxt, 'utf8');
+                // persistent YT_COOKIES_FILE eliminated
                 await importYoutubeCookiesToSession();
                 try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
                 return true;
@@ -1634,7 +1580,7 @@ ipcMain.on('window-minimize', () => {
                 ], { timeout: 15000, windowsHide: true }, () => resolve());
               });
               if (hasValidYtCookiesFile(tmpJar)) {
-                fs.copyFileSync(tmpJar, YT_COOKIES_FILE);
+                // persistent YT_COOKIES_FILE eliminated
                 await importYoutubeCookiesToSession();
                 try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
                 return true;
@@ -1985,7 +1931,7 @@ ipcMain.on('window-minimize', () => {
 
           capturedGoogleCookieHeader = cookieHeaderStr;
           fs.mkdirSync(DATA_DIR, { recursive: true });
-          fs.writeFileSync(YT_COOKIES_FILE, netscapeLines.join('\n'), 'utf8');
+          // persistent YT_COOKIES_FILE eliminated
           try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
           try { if (fs.existsSync(GOOGLE_OAUTH_FILE)) fs.unlinkSync(GOOGLE_OAUTH_FILE); } catch (_) {}
 
@@ -2047,7 +1993,7 @@ ipcMain.on('window-minimize', () => {
             fs.mkdirSync(DATA_DIR, { recursive: true });
             fs.writeFileSync(YT_LOGOUT_FLAG, '1', 'utf8');
             if (fs.existsSync(GOOGLE_OAUTH_FILE)) fs.unlinkSync(GOOGLE_OAUTH_FILE);
-            if (fs.existsSync(YT_COOKIES_FILE)) fs.unlinkSync(YT_COOKIES_FILE);
+            const legacyJar = path.join(DATA_DIR, 'yt-cookies.txt'); if (fs.existsSync(legacyJar)) fs.unlinkSync(legacyJar); mainTempCookieMgr.sweepStaleCookieJars();
             const s = session.fromPartition('persist:eclipse-google');
             await s.clearStorageData();
           },

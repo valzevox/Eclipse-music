@@ -23,6 +23,10 @@ const { DATA_DIR, CACHE_DIR, CUSTOM_LYRICS_DIR, LYRICS_DIR, THUMBNAILS_DIR, META
 // Services for Phases 1-8
 const YtmAuthManager = require('./ytm-auth');
 const ytmAuth = new YtmAuthManager(DATA_DIR);
+const { getTempCookieManager } = require('../shared/temp-cookie-manager');
+const tempCookieMgr = getTempCookieManager(DATA_DIR);
+// Clean up any orphan temporary jars on server startup
+try { tempCookieMgr.sweepStaleCookieJars(); } catch (_) {}
 const ytmCharts = require('./ytm-charts');
 const ytmArtistFull = require('./ytm-artist-full');
 const ytmDiscovery = require('./ytm-discovery');
@@ -38,25 +42,25 @@ function getActiveServerPort() {
   }
   return currentActivePort || PORT;
 }
-const YT_COOKIES_FILE = path.join(DATA_DIR, 'yt-cookies.txt');
 
-// A browser cookie export can contain .google.com session cookies without the
-// user actually being signed in to YouTube. Passing those to yt-dlp makes the
-// YouTube extractor fail with "The page needs to be reloaded.", so only treat
-// the cookies as usable when YouTube itself has a login cookie.
-let ytCookieCache = { mtime: -1, valid: false };
+// Memory-only session cookie cache from authenticated backend account or active session
+let memorySessionCookie = '';
+function setActiveSessionCookie(cookieStr) {
+  memorySessionCookie = String(cookieStr || '').trim();
+}
+function getActiveSessionCookie() {
+  if (memorySessionCookie) return memorySessionCookie;
+  try {
+    const rawAcc = typeof ytmAuth.getRawActiveAccount === 'function' ? ytmAuth.getRawActiveAccount() : null;
+    if (rawAcc && rawAcc.cookie) return rawAcc.cookie;
+  } catch (_) {}
+  return '';
+}
+
 function hasYtLoginCookies() {
   try {
-    if (!fs.existsSync(YT_COOKIES_FILE)) {
-      ytCookieCache = { mtime: -1, valid: false };
-      return false;
-    }
-    const stat = fs.statSync(YT_COOKIES_FILE);
-    if (stat.mtimeMs === ytCookieCache.mtime) return ytCookieCache.valid;
-    const txt = fs.readFileSync(YT_COOKIES_FILE, 'utf8');
-    const valid = cookieJarHasYtLogin(txt);
-    ytCookieCache = { mtime: stat.mtimeMs, valid };
-    return valid;
+    const c = getActiveSessionCookie();
+    return !!c && cookieJarHasYtLogin(c);
   } catch (_) {
     return false;
   }
@@ -64,19 +68,35 @@ function hasYtLoginCookies() {
 
 function getYtAuthHeaders(origin = 'https://www.youtube.com') {
   try {
-    if (!fs.existsSync(YT_COOKIES_FILE)) return null;
-    const raw = fs.readFileSync(YT_COOKIES_FILE, 'utf8');
+    const raw = getActiveSessionCookie();
+    if (!raw) return null;
     const cookiePairs = [];
     let sapisid = '';
-    for (const line of raw.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const parts = trimmed.split('\t');
-      if (parts.length >= 7) {
-        const domain = parts[0];
-        const name = parts[5];
-        const val = parts[6];
-        if (domain.includes('youtube.com')) {
+
+    if (raw.includes('\t')) {
+      for (const line of raw.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const parts = trimmed.split('\t');
+        if (parts.length >= 7) {
+          const domain = parts[0];
+          const name = parts[5];
+          const val = parts[6];
+          if (domain.includes('youtube.com')) {
+            cookiePairs.push(`${name}=${val}`);
+            if (name === 'SAPISID' || (!sapisid && name === '__Secure-3PAPISID')) {
+              sapisid = val;
+            }
+          }
+        }
+      }
+    } else {
+      const pairs = raw.split(';');
+      for (const pair of pairs) {
+        const idx = pair.indexOf('=');
+        if (idx > 0) {
+          const name = pair.slice(0, idx).trim();
+          const val = pair.slice(idx + 1).trim();
           cookiePairs.push(`${name}=${val}`);
           if (name === 'SAPISID' || (!sapisid && name === '__Secure-3PAPISID')) {
             sapisid = val;
@@ -84,6 +104,7 @@ function getYtAuthHeaders(origin = 'https://www.youtube.com') {
         }
       }
     }
+
     if (!sapisid || !cookiePairs.length) return null;
     const ts = Math.floor(Date.now() / 1000);
     const hash = crypto.createHash('sha1').update(`${ts} ${sapisid} ${origin}`).digest('hex');
@@ -1762,12 +1783,12 @@ function executeYtDlp(args, timeoutMs = 15000, opts = {}) {
     const cleanEnv = Object.assign({}, process.env);
     let finalArgs = Array.isArray(args) ? [...args] : [];
     const prependFlags = [];
-    let cookieJarPath = null;
+    let tempJarInfo = null;
     const cleanupCookieJar = () => {
-      if (!cookieJarPath) return;
-      const p = cookieJarPath;
-      cookieJarPath = null;
-      try { fs.unlinkSync(p); } catch (_) {}
+      if (!tempJarInfo) return;
+      const jar = tempJarInfo;
+      tempJarInfo = null;
+      try { tempCookieMgr.cleanupJar(jar); } catch (_) {}
     };
     if (!finalArgs.includes('--force-ipv4')) prependFlags.push('--force-ipv4');
     if (!finalArgs.includes('--geo-bypass')) prependFlags.push('--geo-bypass');
@@ -1776,18 +1797,15 @@ function executeYtDlp(args, timeoutMs = 15000, opts = {}) {
     }
     if (!finalArgs.includes('--remote-components')) prependFlags.push('--remote-components', 'ejs:github');
     if (!opts.noCookies && hasYtLoginCookies() && !finalArgs.includes('--cookies')) {
-      // Several yt-dlp processes can run at once (playback, prefetch, download).
-      // Give each one a private copy of the jar so they cannot rewrite the
-      // shared cookie file concurrently and corrupt the YouTube session.
       try {
-        cookieJarPath = path.join(DATA_DIR, `.yt-cookies-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp`);
-        fs.copyFileSync(YT_COOKIES_FILE, cookieJarPath);
-        prependFlags.push('--cookies', cookieJarPath);
+        const sessionCookie = getActiveSessionCookie();
+        tempJarInfo = tempCookieMgr.createTemporaryCookieJar(sessionCookie);
+        if (tempJarInfo && tempJarInfo.jarPath) {
+          prependFlags.push('--cookies', tempJarInfo.jarPath);
+        }
       } catch (_) {
         cleanupCookieJar();
-        prependFlags.push('--cookies', YT_COOKIES_FILE);
       }
-
     }
     if (prependFlags.length > 0) {
       finalArgs.unshift(...prependFlags);
@@ -1809,6 +1827,9 @@ function executeYtDlp(args, timeoutMs = 15000, opts = {}) {
     const cmd = ytDlpCommand(finalArgs);
     const YTDLP_PATH = cmd.bin;
     const proc = spawn(YTDLP_PATH, cmd.args, { windowsHide: true, env: cleanEnv });
+    if (tempJarInfo) {
+      tempCookieMgr.attachToProcess(tempJarInfo, proc);
+    }
     if (opts && typeof opts.onChild === 'function') {
       try { opts.onChild(proc); } catch (_) {}
     }
@@ -3905,7 +3926,7 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
       }
       const cParam = (parsed.searchParams.get('c') || '').toUpperCase();
       forward['user-agent'] = googleVideoUserAgent(parsed);
-      if ((cParam === 'WEB' || cParam === 'WEB_REMIX' || cParam === 'TVHTML5') && fs.existsSync(YT_COOKIES_FILE)) {
+      if ((cParam === 'WEB' || cParam === 'WEB_REMIX' || cParam === 'TVHTML5') && hasYtLoginCookies()) {
         const authHdrs = getYtAuthHeaders();
         if (authHdrs && authHdrs.Cookie) forward['cookie'] = authHdrs.Cookie;
       }
