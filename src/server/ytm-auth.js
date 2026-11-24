@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { Innertube } = require('youtubei.js');
+const { WEB_REMIX_CLIENT } = require('./ytm-client-config');
 const logger = fs.existsSync(path.join(__dirname, 'logger.js')) ? require('./logger') : console;
 
 const electronSafeStorage = (typeof process !== 'undefined' && process.versions && process.versions.electron) ? require('electron').safeStorage : null;
@@ -254,60 +255,399 @@ class YtmAuthManager {
     return 'https://accounts.google.com/ServiceLogin?service=youtube&continue=https://music.youtube.com';
   }
 
-  // Intercept cookies string from redirect (contains SAPISID, SID, SSID, etc.)
-  async addAccountFromCookie(cookieString) {
-    if (!cookieString || typeof cookieString !== 'string') {
-      throw new Error('Invalid cookie payload');
-    }
+  /**
+   * Generates standard SAPISIDHASH authorization string for YouTube Music.
+   * Format: SAPISIDHASH <timestamp>_<sha1(timestamp + " " + sapisid + " " + origin)>
+   */
+  generateSapisidHash(sapisid, origin = WEB_REMIX_CLIENT.origin) {
+    if (!sapisid || typeof sapisid !== 'string') return null;
+    const ts = Math.floor(Date.now() / 1000);
+    const hash = crypto.createHash('sha1').update(`${ts} ${sapisid.trim()} ${origin}`).digest('hex');
+    return `SAPISIDHASH ${ts}_${hash}`;
+  }
 
-    // Initialize InnerTube with authenticated cookie
-    let yt;
-    try {
-      yt = await Innertube.create({
-        cookie: cookieString
-      });
-    } catch (e) {
-      logger.log('error', `ytm-auth: Innertube session initialization failed: ${e.message}`);
-      throw new Error('Could not establish YouTube Music session with provided cookie');
-    }
+  /**
+   * Reads a response stream incrementally with a strict byte ceiling.
+   * Cancels the underlying stream immediately if maxBytes is exceeded.
+   */
+  async _readBoundedStream(res, maxBytes = 1048576) {
+    if (!res) throw new Error('Response object required');
 
-    // Extract Account Info
-    let accountInfo = null;
-    try {
-      accountInfo = await yt.account.getInfo();
-    } catch (e) {
-      logger.log('error', `ytm-auth: getInfo failed: ${e.message}`);
-      throw new Error(`Failed to retrieve YouTube account profile: ${e.message}`);
-    }
+    // 1. Web ReadableStream (standard fetch in Node.js 18+)
+    if (res.body && typeof res.body.getReader === 'function') {
+      const reader = res.body.getReader();
+      const chunks = [];
+      let totalBytes = 0;
+      const decoder = new TextDecoder('utf-8');
 
-    if (!accountInfo) {
-      throw new Error('No YouTube account profile returned from InnerTube');
-    }
-
-    // Extract name, avatar, channel id
-    let channelId = '';
-    let name = '';
-    let handle = '';
-    let avatarUrl = '';
-
-    if (accountInfo.contents && accountInfo.contents.length > 0) {
-      const primary = accountInfo.contents[0];
-      channelId = primary.endpoint?.browse_endpoint?.browse_id || primary.id || '';
-      name = primary.title?.text || primary.name || '';
-      if (primary.thumbnail?.length > 0) {
-        avatarUrl = primary.thumbnail[0].url || '';
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            totalBytes += value.byteLength;
+            if (totalBytes > maxBytes) {
+              try { await reader.cancel('Response body limit exceeded'); } catch (_) {}
+              const err = new Error(`Upstream response exceeded limit of ${maxBytes} bytes`);
+              err.code = 'UPSTREAM_PAYLOAD_TOO_LARGE';
+              err.stage = 'stream_reading';
+              throw err;
+            }
+            chunks.push(decoder.decode(value, { stream: true }));
+          }
+        }
+        chunks.push(decoder.decode());
+        return chunks.join('');
+      } catch (err) {
+        if (err.code === 'UPSTREAM_PAYLOAD_TOO_LARGE') throw err;
+        const streamErr = new Error(`Failed to read response stream: ${err.message}`);
+        streamErr.code = 'STREAM_READ_ERROR';
+        streamErr.stage = 'stream_reading';
+        throw streamErr;
       }
     }
 
-    if (!channelId || channelId === 'unknown') {
-      throw new Error('Authenticated YouTube account profile does not contain a valid channel or account ID');
+    // 2. Node.js Readable stream fallback
+    if (res.body && typeof res.body.on === 'function') {
+      return new Promise((resolve, reject) => {
+        const chunks = [];
+        let total = 0;
+        let done = false;
+        res.body.on('data', chunk => {
+          if (done) return;
+          total += chunk.length;
+          if (total > maxBytes) {
+            done = true;
+            try { res.body.destroy(); } catch (_) {}
+            const err = new Error(`Upstream response exceeded limit of ${maxBytes} bytes`);
+            err.code = 'UPSTREAM_PAYLOAD_TOO_LARGE';
+            err.stage = 'stream_reading';
+            return reject(err);
+          }
+          chunks.push(chunk);
+        });
+        res.body.on('end', () => {
+          if (!done) resolve(Buffer.concat(chunks).toString('utf8'));
+        });
+        res.body.on('error', err => {
+          if (!done) {
+            const streamErr = new Error(`Failed to read response stream: ${err.message}`);
+            streamErr.code = 'STREAM_READ_ERROR';
+            streamErr.stage = 'stream_reading';
+            reject(streamErr);
+          }
+        });
+      });
     }
 
+    // 3. Fallback for mock responses or simple text bodies
+    if (typeof res.text === 'function') {
+      const text = await res.text();
+      const byteLen = Buffer.byteLength(text, 'utf8');
+      if (byteLen > maxBytes) {
+        const err = new Error(`Upstream response exceeded limit of ${maxBytes} bytes`);
+        err.code = 'UPSTREAM_PAYLOAD_TOO_LARGE';
+        err.stage = 'stream_reading';
+        throw err;
+      }
+      return text;
+    }
+
+    const err = new Error('ReadableStream not available for bounded response reading');
+    err.code = 'STREAM_UNAVAILABLE';
+    err.stage = 'stream_reading';
+    throw err;
+  }
+
+  /**
+   * Primary verification via native Account Switcher:
+   * GET https://music.youtube.com/getAccountSwitcherEndpoint
+   */
+  async verifySessionWithAccountSwitcher(cookieString, explicitSapisid = null) {
+    if (!cookieString || typeof cookieString !== 'string') {
+      const err = new Error('No cookie string provided');
+      err.code = 'MISSING_COOKIE';
+      err.stage = 'validation';
+      throw err;
+    }
+
+    let sapisid = explicitSapisid;
+    if (!sapisid) {
+      const match = cookieString.match(/(?:^|;\s*)(?:SAPISID|__Secure-3PAPISID)=([^;]+)/);
+      sapisid = match ? match[1].trim() : null;
+    }
+
+    if (!sapisid) {
+      const err = new Error('Missing SAPISID authentication credential');
+      err.code = 'MISSING_SAPISID';
+      err.stage = 'credential_check';
+      throw err;
+    }
+
+    const authHeader = this.generateSapisidHash(sapisid, WEB_REMIX_CLIENT.origin);
+    const headers = {
+      'Authorization': authHeader,
+      'Cookie': cookieString,
+      'Origin': WEB_REMIX_CLIENT.origin,
+      'Referer': WEB_REMIX_CLIENT.referer,
+      'X-Origin': WEB_REMIX_CLIENT.origin,
+      'X-Goog-AuthUser': '0',
+      'X-Goog-Api-Format-Version': WEB_REMIX_CLIENT.apiFormatVersion,
+      'X-YouTube-Client-Name': WEB_REMIX_CLIENT.xYouTubeClientName,
+      'X-YouTube-Client-Version': WEB_REMIX_CLIENT.clientVersion,
+      'User-Agent': WEB_REMIX_CLIENT.defaultUserAgent,
+      'Accept': '*/*'
+    };
+
+    let res;
+    try {
+      const fetchFn = typeof this._accountSwitcherTransport === 'function' ? this._accountSwitcherTransport : globalThis.fetch;
+      res = await fetchFn(`${WEB_REMIX_CLIENT.origin}/getAccountSwitcherEndpoint`, {
+        method: 'GET',
+        headers,
+        signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined
+      });
+    } catch (netErr) {
+      const err = new Error(`Network failure contacting Account Switcher: ${netErr.message}`);
+      err.code = 'AUTH_REQUEST_FAILED';
+      err.stage = 'network';
+      throw err;
+    }
+
+    if (!res || !res.ok) {
+      const status = res ? res.status : 0;
+      // Read at most 8 KB for upstream error body
+      let errorBodySample = '';
+      try {
+        if (res) errorBodySample = await this._readBoundedStream(res, 8192);
+      } catch (_) {}
+
+      const err = new Error(`Account Switcher rejected session with HTTP ${status}`);
+      err.code = 'ACCOUNT_SWITCHER_HTTP_REJECTED';
+      err.stage = 'endpoint_response';
+      err.upstreamStatus = status;
+      err.status = (status === 401 || status === 403) ? status : 502;
+      throw err;
+    }
+
+    let rawText;
+    try {
+      // Read at most 1 MB for success body
+      rawText = await this._readBoundedStream(res, 1048576);
+    } catch (readErr) {
+      readErr.status = 502;
+      throw readErr;
+    }
+
+    // Safely strip anti-XSSI prefix )]}' if present
+    let jsonText = (rawText || '').trim();
+    if (jsonText.startsWith(")]}'")) {
+      jsonText = jsonText.slice(4).trim();
+    }
+
+    let payload;
+    try {
+      payload = JSON.parse(jsonText);
+    } catch (parseErr) {
+      const err = new Error('Failed to parse Account Switcher JSON response');
+      err.code = 'MALFORMED_AUTH_RESPONSE';
+      err.stage = 'json_parsing';
+      err.status = 502;
+      throw err;
+    }
+
+    if (!payload || payload.code !== 'SUCCESS') {
+      const codeVal = payload ? payload.code : 'EMPTY_RESPONSE';
+      const err = new Error(`Account Switcher returned status code: ${codeVal}`);
+      err.code = 'VERIFICATION_CODE_REJECTED';
+      err.stage = 'verification_code';
+      err.status = 502;
+      throw err;
+    }
+
+    // Exact Account Switcher JSON Path: payload.data.contents
+    const sections = payload.data?.contents || [];
+    const candidateAccounts = [];
+
+    for (const section of sections) {
+      const secListContents = section?.accountSectionListRenderer?.contents || [];
+      for (const itemSection of secListContents) {
+        const itemContents = itemSection?.accountItemSectionRenderer?.contents || [];
+        for (const entry of itemContents) {
+          const accountItem = entry?.accountItem || entry?.accountItemRenderer;
+          if (!accountItem) continue;
+
+          const accountName = accountItem.accountName?.simpleText || accountItem.accountName?.runs?.[0]?.text || '';
+          const handle = accountItem.channelHandle?.simpleText || accountItem.email?.simpleText || '';
+          const avatarUrl = accountItem.accountPhoto?.thumbnails?.[0]?.url || '';
+          const isSelected = Boolean(accountItem.isSelected);
+          const hasChannel = Boolean(accountItem.hasChannel);
+
+          // Correct nested token extraction:
+          // accountItem.serviceEndpoint.selectActiveIdentityEndpoint.supportedTokens
+          const tokens = accountItem.serviceEndpoint?.selectActiveIdentityEndpoint?.supportedTokens || [];
+          const pageId = accountItem.onBehalfOfParameter ||
+            tokens.find(t => t?.pageIdToken)?.pageIdToken?.pageId ||
+            null;
+
+          const signinUrl = tokens.find(t => t?.accountSigninToken)?.accountSigninToken?.signinUrl || '';
+          const authUserMatch = signinUrl.match(/[?&]authuser=(\d+)/);
+          const authUser = authUserMatch ? Number(authUserMatch[1]) : 0;
+
+          candidateAccounts.push({
+            name: accountName,
+            handle: handle,
+            avatarUrl: avatarUrl,
+            pageId: pageId,
+            authUser: authUser,
+            isSelected: isSelected,
+            hasChannel: hasChannel
+          });
+        }
+      }
+    }
+
+    // Account selection rules
+    const selectedCandidates = candidateAccounts.filter(c => c.isSelected);
+    let chosen = null;
+
+    if (selectedCandidates.length > 1) {
+      const err = new Error('Multiple accounts marked as active in Account Switcher');
+      err.code = 'AMBIGUOUS_ACCOUNT_SELECTION';
+      err.stage = 'identity_resolution';
+      err.status = 409;
+      throw err;
+    } else if (selectedCandidates.length === 1) {
+      chosen = selectedCandidates[0];
+    } else {
+      // 0 candidates explicitly marked isSelected
+      if (candidateAccounts.length === 1) {
+        chosen = candidateAccounts[0];
+      } else if (candidateAccounts.length > 1) {
+        const err = new Error('Multiple accounts returned without a clear active selection');
+        err.code = 'AMBIGUOUS_ACCOUNT_SELECTION';
+        err.stage = 'identity_resolution';
+        err.status = 409;
+        throw err;
+      }
+    }
+
+    if (!chosen) {
+      const err = new Error('Account Switcher did not return valid account identity entries');
+      err.code = 'NO_ACCOUNT_RETURNED';
+      err.stage = 'identity_extraction';
+      err.status = 502;
+      throw err;
+    }
+
+    // Stable identity requirement: pageId must be genuine; never fabricate ID from hash or name
+    if (!chosen.pageId) {
+      const err = new Error('Authenticated account does not contain a stable pageId');
+      err.code = 'NO_ACCOUNT_RETURNED';
+      err.stage = 'identity_validation';
+      err.status = 502;
+      throw err;
+    }
+
+    return {
+      id: chosen.pageId,
+      name: chosen.name || 'YouTube Music User',
+      handle: chosen.handle || '',
+      avatarUrl: chosen.avatarUrl || '',
+      pageId: chosen.pageId,
+      authUser: chosen.authUser ?? 0,
+      sapisid: sapisid
+    };
+  }
+
+  // Intercept cookies string from redirect (contains SAPISID, SID, SSID, etc.)
+  async addAccountFromCookie(cookieString, options = {}) {
+    if (!cookieString || typeof cookieString !== 'string') {
+      const err = new Error('Invalid cookie payload');
+      err.code = 'MISSING_COOKIE';
+      err.stage = 'validation';
+      err.status = 400;
+      throw err;
+    }
+
+    const explicitSapisid = options.sapisidCredential?.value || options.explicitSapisid || null;
+
+    // Phase 3: Primary verification via getAccountSwitcherEndpoint
+    let verifiedProfile = null;
+    try {
+      verifiedProfile = await this.verifySessionWithAccountSwitcher(cookieString, explicitSapisid);
+    } catch (asErr) {
+      // Do NOT run fallback on explicit authentication rejection (HTTP 401 / 403)
+      if (asErr.upstreamStatus === 401 || asErr.upstreamStatus === 403 || asErr.status === 401 || asErr.status === 403 || asErr.code === 'AMBIGUOUS_ACCOUNT_SELECTION') {
+        logger.log('warn', `ytm-auth: Account Switcher rejected session explicitly (${asErr.code || 'UNKNOWN'}). Fallback aborted.`);
+        throw asErr;
+      }
+
+      logger.log('warn', `ytm-auth: Account Switcher verification failed (${asErr.code || 'UNKNOWN'}): ${asErr.message}. Attempting Innertube fallback.`);
+      
+      // Secondary fallback to Innertube only for eligible network/transient failures
+      let yt;
+      try {
+        yt = await Innertube.create({ cookie: cookieString });
+      } catch (e) {
+        logger.log('error', `ytm-auth: Innertube session initialization failed: ${e.message}`);
+        asErr.fallbackError = { code: 'INNERTUBE_INIT_FAILED', message: e.message };
+        throw asErr;
+      }
+
+      let accountInfo = null;
+      try {
+        accountInfo = await yt.account.getInfo();
+      } catch (e) {
+        logger.log('error', `ytm-auth: getInfo failed: ${e.message}`);
+        asErr.fallbackError = { code: 'ACCOUNT_LOOKUP_FAILED', message: e.message };
+        throw asErr;
+      }
+
+      if (!accountInfo) {
+        asErr.fallbackError = { code: 'NO_ACCOUNT_RETURNED', message: 'No YouTube account profile returned from InnerTube' };
+        throw asErr;
+      }
+
+      let channelId = '';
+      let name = '';
+      let handle = '';
+      let avatarUrl = '';
+
+      if (accountInfo.contents && accountInfo.contents.length > 0) {
+        const primary = accountInfo.contents[0];
+        channelId = primary.endpoint?.browse_endpoint?.browse_id || primary.id || '';
+        name = primary.title?.text || primary.name || '';
+        if (primary.thumbnail?.length > 0) {
+          avatarUrl = primary.thumbnail[0].url || '';
+        }
+      }
+
+      if (!channelId || channelId === 'unknown') {
+        asErr.fallbackError = { code: 'NO_ACCOUNT_RETURNED', message: 'Profile does not contain valid channel ID' };
+        throw asErr;
+      }
+
+      verifiedProfile = {
+        id: channelId,
+        name: name || 'YouTube User',
+        handle: handle,
+        avatarUrl: avatarUrl,
+        pageId: null,
+        authUser: 0,
+        sapisid: null
+      };
+      this.activeClient = yt;
+    }
+
+    const channelId = verifiedProfile.id;
     const newAccount = {
       id: channelId,
-      name: name || 'YouTube User',
-      handle: handle,
-      avatarUrl: avatarUrl,
+      name: verifiedProfile.name || 'YouTube User',
+      handle: verifiedProfile.handle || '',
+      avatarUrl: verifiedProfile.avatarUrl || '',
+      pageId: verifiedProfile.pageId || null,
+      authUser: verifiedProfile.authUser ?? 0,
       cookie: cookieString,
       isDefault: this.accounts.length === 0,
       lastSync: Date.now()
@@ -324,15 +664,16 @@ class YtmAuthManager {
     const saveOk = await this.saveAccounts();
     if (!saveOk) {
       if (existingIndex >= 0) {
-        // rollback if possible, or reload from disk
         await this.loadAccounts();
       } else {
         this.accounts.pop();
       }
-      throw new Error('Failed to persist authenticated YouTube account to disk');
+      const err = new Error('Failed to persist authenticated YouTube account to disk');
+      err.code = 'PERSISTENCE_FAILED';
+      err.stage = 'persistence';
+      throw err;
     }
 
-    this.activeClient = yt;
     return this.getSanitizedAccount(newAccount);
   }
 
@@ -343,6 +684,8 @@ class YtmAuthManager {
       name: acc.name,
       handle: acc.handle,
       avatarUrl: acc.avatarUrl,
+      pageId: acc.pageId || null,
+      authUser: acc.authUser ?? 0,
       isDefault: !!acc.isDefault,
       lastSync: acc.lastSync
     }));
@@ -465,8 +808,8 @@ class YtmAuthManager {
     return sanitized;
   }
 
-  async authenticateWithCookie(cookieString) {
-    return await this.addAccountFromCookie(cookieString);
+  async authenticateWithCookie(cookieString, options = {}) {
+    return await this.addAccountFromCookie(cookieString, options);
   }
 
   switchAccount(id) {

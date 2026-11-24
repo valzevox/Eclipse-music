@@ -187,7 +187,7 @@ test('YtmAuthManager enforces valid account profile and safe persistence', async
     // 4. Reject cookie that fails Innertube session or getInfo (dummy cookie)
     await assert.rejects(
       async () => authManager.addAccountFromCookie('SAPISID=fake_value_1234; SID=fake_sid'),
-      /(Failed to retrieve YouTube account profile|Could not establish YouTube Music session)/
+      /(Failed to retrieve YouTube account profile|Could not establish YouTube Music session|Account Switcher rejected session with HTTP)/
     );
 
     // Verify storage remained untouched and uncorrupted
@@ -199,7 +199,7 @@ test('YtmAuthManager enforces valid account profile and safe persistence', async
     authManager.accounts = [{ id: 'existing_account', name: 'Existing' }];
     await assert.rejects(
       async () => authManager.addAccountFromCookie('SAPISID=fake_fail; SID=fake_sid'),
-      /(Failed to persist authenticated YouTube account to disk|Failed to retrieve YouTube account profile|Could not establish YouTube Music session)/
+      /(Failed to persist authenticated YouTube account to disk|Failed to retrieve YouTube account profile|Could not establish YouTube Music session|Account Switcher rejected session with HTTP)/
     );
   } finally {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}

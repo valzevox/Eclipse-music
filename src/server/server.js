@@ -9973,12 +9973,58 @@ if (parsedUrl.pathname === '/api/ytm/login-url') {
       try {
         const payload = JSON.parse(body || '{}');
         const cookie = payload.cookie || '';
-        const account = await ytmAuth.authenticateWithCookie(cookie);
+        const rawCred = payload.sapisidCredential || null;
+
+        // Re-validate credential structure on backend
+        let validatedCred = null;
+        if (rawCred && typeof rawCred === 'object') {
+          const name = String(rawCred.name || '').trim();
+          const value = String(rawCred.value || '').trim();
+          const dom = String(rawCred.domain || '').trim().toLowerCase();
+          if ((name === 'SAPISID' || name === '__Secure-3PAPISID') && value.length > 0) {
+            const cleanDom = dom.replace(/^\./, '');
+            if (cleanDom === 'youtube.com' || cleanDom === 'music.youtube.com' || cleanDom.endsWith('.youtube.com') || cleanDom === 'google.com' || cleanDom.endsWith('.google.com')) {
+              validatedCred = { name, value, domain: dom };
+            }
+          }
+        }
+
+        const account = await ytmAuth.authenticateWithCookie(cookie, { sapisidCredential: validatedCred });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ success: true, account }));
       } catch (e) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ success: false, error: e.message }));
+        // Strict HTTP Status mapping:
+        // 400: Invalid local payload / missing cookie / missing SAPISID
+        // 401: Explicit upstream HTTP 401
+        // 403: Explicit upstream HTTP 403
+        // 409: Ambiguous account selection (AMBIGUOUS_ACCOUNT_SELECTION)
+        // 502: Malformed upstream JSON, anti-XSSI failure, upstream 5xx, network failure, timeout, or payload too large
+        let statusCode = 502;
+        if (e.code === 'MISSING_COOKIE' || e.code === 'MISSING_SAPISID' || e.code === 'INVALID_CREDENTIAL') {
+          statusCode = 400;
+        } else if (e.upstreamStatus === 401 || e.status === 401) {
+          statusCode = 401;
+        } else if (e.upstreamStatus === 403 || e.status === 403) {
+          statusCode = 403;
+        } else if (e.code === 'AMBIGUOUS_ACCOUNT_SELECTION' || e.status === 409) {
+          statusCode = 409;
+        } else {
+          statusCode = 502;
+        }
+
+        const errorCode = e.code || 'UNKNOWN_ERROR';
+        const errorStage = e.stage || 'verification';
+        // Clean error message: strip any cookie or credential substring
+        const safeMessage = String(e.message || 'Authentication failed')
+          .replace(/(?:SAPISID|__Secure-3PAPISID|SID|SSID|LOGIN_INFO)=[^;\s&]+/gi, '$1=[REDACTED]');
+        res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({
+          success: false,
+          code: errorCode,
+          stage: errorStage,
+          error: safeMessage,
+          fallbackError: e.fallbackError || undefined
+        }));
       }
     });
     return;
