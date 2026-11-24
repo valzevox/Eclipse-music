@@ -311,3 +311,48 @@ test('18: index.html DOM initialization order — browser-login-dialog occurs BE
     assert.equal(matches.length, 1, `Element ID "${id}" must exist exactly once in index.html`);
   }
 });
+
+test('19: modal-backdrop class and visible/hidden state transition', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, '../src/renderer/index.html'), 'utf8');
+  const appJs = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '../src/renderer/styles.css'), 'utf8');
+
+  // 1. #browser-login-dialog must use modal-backdrop hidden
+  assert.ok(
+    html.includes('id="browser-login-dialog" class="modal-backdrop hidden"'),
+    'browser-login-dialog must have class "modal-backdrop hidden"'
+  );
+  // Must NOT have display: none inline style
+  assert.ok(
+    !html.includes('id="browser-login-dialog" class="modal-backdrop hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(12px); display: none;'),
+    'browser-login-dialog must not have inline display: none'
+  );
+
+  // 2. openBrowserLoginModal must remove hidden and add visible
+  assert.ok(
+    appJs.includes("browserLoginDialog.classList.remove('hidden')") &&
+    appJs.includes("browserLoginDialog.classList.add('visible')"),
+    'openBrowserLoginModal must remove hidden and add visible'
+  );
+
+  // 3. closeBrowserLoginModal must remove visible and add hidden
+  assert.ok(
+    appJs.includes("browserLoginDialog.classList.remove('visible')") &&
+    appJs.includes("browserLoginDialog.classList.add('hidden')"),
+    'closeBrowserLoginModal must remove visible and add hidden'
+  );
+
+  // 4. CSS contains .modal-backdrop.visible .dialog-card restoring opacity: 1 and transform: scale(1)
+  assert.ok(
+    css.includes('.modal-backdrop.visible .dialog-card') ||
+    css.includes('.modal-backdrop.visible .settings-card,') ||
+    css.includes('.modal-backdrop.visible .modal-card'),
+    'CSS must contain .modal-backdrop.visible .dialog-card selector'
+  );
+  assert.ok(
+    css.includes('transform: scale(1);') && css.includes('opacity: 1;'),
+    'CSS must transition to transform: scale(1) and opacity: 1'
+  );
+});

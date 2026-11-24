@@ -22768,14 +22768,14 @@ function bindCoverHoldZoom(wrapEl) {
       }
       return;
     }
-    browserLoginDialog.style.display = 'flex';
     browserLoginDialog.classList.remove('hidden');
+    browserLoginDialog.classList.add('visible');
     refreshBrowserProfilesUI();
   }
 
   function closeBrowserLoginModal() {
     if (!browserLoginDialog) return;
-    browserLoginDialog.style.display = 'none';
+    browserLoginDialog.classList.remove('visible');
     browserLoginDialog.classList.add('hidden');
     if (window.electronAPI && window.electronAPI.browserLoginCancelPairing) {
       window.electronAPI.browserLoginCancelPairing().catch(() => {});
