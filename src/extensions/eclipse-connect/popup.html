@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Eclipse Connect</title>
+  <style>
+    body {
+      width: 280px;
+      margin: 0;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background: #0f0f13;
+      color: #f0f0f5;
+      font-size: 13px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #a855f7;
+    }
+    .desc {
+      color: #94a3b8;
+      font-size: 12px;
+      line-height: 1.4;
+      margin-bottom: 16px;
+    }
+    .input-group {
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      font-size: 11px;
+      color: #94a3b8;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      background: #1e1b2e;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+      padding: 8px;
+      color: #fff;
+      font-size: 12px;
+      outline: none;
+    }
+    input:focus {
+      border-color: #a855f7;
+    }
+    .btn {
+      width: 100%;
+      background: #a855f7;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn:hover {
+      background: #9333ea;
+    }
+    .btn:disabled {
+      background: #475569;
+      cursor: not-allowed;
+    }
+    .status {
+      margin-top: 12px;
+      font-size: 12px;
+      text-align: center;
+      line-height: 1.4;
+    }
+    .status.success { color: #4ade80; }
+    .status.error { color: #f87171; }
+    .status.loading { color: #38bdf8; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">Eclipse Connect</div>
+  </div>
+  <div class="desc">
+    Pair your current browser's YouTube Music session with the Eclipse desktop app.
+  </div>
+
+  <div class="input-group">
+    <label>Pairing Port</label>
+    <input type="number" id="port" placeholder="e.g. 54321">
+  </div>
+
+  <div class="input-group">
+    <label>One-Time Nonce</label>
+    <input type="text" id="nonce" placeholder="Paste 64-character nonce">
+  </div>
+
+  <button class="btn" id="btn-pair">Connect to Eclipse</button>
+  <div class="status" id="status"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

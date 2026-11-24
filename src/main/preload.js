@@ -130,6 +130,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   googleImportCookieText: (cookieText) => ipcRenderer.invoke('google-import-cookie-text', cookieText),
   googleLogout: () => ipcRenderer.invoke('google-logout'),
   googleAuthStatus: () => ipcRenderer.invoke('google-auth-status'),
+  browserLoginGetProfiles: () => ipcRenderer.invoke('browser-login:get-profiles'),
+  browserLoginStartPairing: () => ipcRenderer.invoke('browser-login:start-pairing'),
+  browserLoginCancelPairing: () => ipcRenderer.invoke('browser-login:cancel-pairing'),
+  browserLoginImportProfile: (profile) => ipcRenderer.invoke('browser-login:import-profile', profile),
+  onBrowserLoginPairingResult: (cb) => {
+    const sub = (e, d) => cb(d);
+    ipcRenderer.on('browser-login:pairing-result', sub);
+    return () => ipcRenderer.removeListener('browser-login:pairing-result', sub);
+  },
   googleImportLibrary: (opts) => ipcRenderer.invoke('google-import-library', opts),
   fetchYouTubeAlbumTracks: (albumId) => ipcRenderer.invoke('fetch-youtube-album-tracks', albumId),
   savePlaylistsJson: (payload) => ipcRenderer.invoke('save-playlists-json', payload),

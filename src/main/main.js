@@ -47,6 +47,8 @@ function decryptAccount(buffer) {
 }
 const { LIBRARY_DIR, DATA_DIR, resolveBinary, tutorialDone, markTutorialDone, readStartupConfig, writeStartupConfig } = require('../shared/platform');
 const { getTempCookieManager } = require('../shared/temp-cookie-manager');
+const { BrowserLoginService } = require('./browser-login/browser-login-service');
+const { BrowserLoginTarget } = require('./browser-login/browser-login-targets');
 const mainTempCookieMgr = getTempCookieManager(DATA_DIR);
 try {
   mainTempCookieMgr.sweepStaleCookieJars();
@@ -1694,7 +1696,6 @@ ipcMain.on('window-minimize', () => {
           }
           capturedGoogleCookieHeader = cookieStr;
           try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
-          try { if (fs.existsSync(GOOGLE_OAUTH_FILE)) fs.unlinkSync(GOOGLE_OAUTH_FILE); } catch (_) {}
           return true;
         } catch (err) {
           console.warn('[auth] verifyAndPersistYtSession network/timeout error:', err && err.message);
@@ -1846,11 +1847,65 @@ ipcMain.on('window-minimize', () => {
           fs.mkdirSync(DATA_DIR, { recursive: true });
           // persistent YT_COOKIES_FILE eliminated
           try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
-          try { if (fs.existsSync(GOOGLE_OAUTH_FILE)) fs.unlinkSync(GOOGLE_OAUTH_FILE); } catch (_) {}
 
           return { success: true, loggedIn: true };
         } catch (err) {
           return { success: false, error: err && err.message ? err.message : 'Failed to import cookie' };
+        }
+      });
+
+      const browserLoginService = new BrowserLoginService({
+        ytmAuthUrl: `http://127.0.0.1:${serverPort || 38472}/api/ytm/intercept-cookie`
+      });
+
+      ipcMain.handle('browser-login:get-profiles', async () => {
+        try {
+          return { success: true, profiles: await browserLoginService.getProfiles(BrowserLoginTarget.YOUTUBE) };
+        } catch (err) {
+          return { success: false, error: err.message, profiles: [] };
+        }
+      });
+
+      ipcMain.handle('browser-login:start-pairing', async (event) => {
+        try {
+          browserLoginService.ytmAuthUrl = `http://127.0.0.1:${serverPort || 38472}/api/ytm/intercept-cookie`;
+          const sessionInfo = await browserLoginService.startPairingSession(
+            (authResult) => {
+              try {
+                if (win && !win.isDestroyed()) {
+                  win.webContents.send('browser-login:pairing-result', { success: true, account: authResult.account });
+                }
+              } catch (_) {}
+            },
+            (err) => {
+              try {
+                if (win && !win.isDestroyed()) {
+                  win.webContents.send('browser-login:pairing-result', { success: false, error: err.message, reason: err.reason });
+                }
+              } catch (_) {}
+            }
+          );
+          return { success: true, ...sessionInfo };
+        } catch (err) {
+          return { success: false, error: err.message };
+        }
+      });
+
+      ipcMain.handle('browser-login:cancel-pairing', async () => {
+        browserLoginService.cancelPairingSession();
+        return { success: true };
+      });
+
+      ipcMain.handle('browser-login:import-profile', async (event, profile) => {
+        try {
+          if (!profile || !profile.profilePath) {
+            return { success: false, error: 'Invalid browser profile parameter' };
+          }
+          browserLoginService.ytmAuthUrl = `http://127.0.0.1:${serverPort || 38472}/api/ytm/intercept-cookie`;
+          const authResult = await browserLoginService.importFromGeckoProfile(profile.profilePath);
+          return { success: true, account: authResult.account };
+        } catch (err) {
+          return { success: false, error: err.message, reason: err.reason };
         }
       });
 

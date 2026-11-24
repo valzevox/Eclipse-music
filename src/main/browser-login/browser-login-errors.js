@@ -1,0 +1,39 @@
+'use strict';
+
+const BrowserLoginFailure = Object.freeze({
+  NO_BROWSER_PROFILES: 'NO_BROWSER_PROFILES',
+  NO_YOUTUBE_COOKIES: 'NO_YOUTUBE_COOKIES',
+  PROFILE_ACCESS_DENIED: 'PROFILE_ACCESS_DENIED',
+  UNSUPPORTED_ENCRYPTION: 'UNSUPPORTED_ENCRYPTION',
+  COOKIE_FORMAT_INVALID: 'COOKIE_FORMAT_INVALID',
+  SESSION_REJECTED: 'SESSION_REJECTED',
+  ACCOUNT_PROFILE_UNAVAILABLE: 'ACCOUNT_PROFILE_UNAVAILABLE',
+  ACCOUNT_PERSISTENCE_FAILED: 'ACCOUNT_PERSISTENCE_FAILED',
+  PAIRING_EXPIRED: 'PAIRING_EXPIRED',
+  PAIRING_REPLAYED: 'PAIRING_REPLAYED',
+  PAIRING_CANCELLED: 'PAIRING_CANCELLED',
+  ORIGIN_REJECTED: 'ORIGIN_REJECTED',
+  INVALID_DATA: 'INVALID_DATA'
+});
+
+const BrowserProfileStatus = Object.freeze({
+  COOKIES_FOUND: 'COOKIES_FOUND',
+  NO_COOKIES: 'NO_COOKIES',
+  PERMISSION_REQUIRED: 'PERMISSION_REQUIRED',
+  UNREADABLE: 'UNREADABLE',
+  UNSUPPORTED: 'UNSUPPORTED'
+});
+
+class BrowserLoginException extends Error {
+  constructor(reason, message) {
+    super(message || reason);
+    this.name = 'BrowserLoginException';
+    this.reason = reason;
+  }
+}
+
+module.exports = {
+  BrowserLoginFailure,
+  BrowserProfileStatus,
+  BrowserLoginException
+};

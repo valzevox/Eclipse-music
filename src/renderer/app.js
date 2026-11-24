@@ -22725,37 +22725,218 @@ function bindCoverHoldZoom(wrapEl) {
     });
   }
 
-  if (btnGoogleLogin) {
-    btnGoogleLogin.addEventListener('click', async () => {
-      if (googleLoginStatus) {
-        googleLoginStatus.textContent = 'Logging in...';
-        googleLoginStatus.style.color = 'var(--md-sys-color-on-surface-variant)';
-      }
-      try {
-        if (window.electronAPI && window.electronAPI.googleLogin) {
-          const res = await window.electronAPI.googleLogin();
-          googleConnected = !!(res && res.loggedIn);
+  // Browser Login & Extension Pairing Dialog (SimpMusic Architecture)
+  const browserLoginDialog = document.getElementById('browser-login-dialog');
+  const btnCloseBrowserLogin = document.getElementById('btn-close-browser-login');
+  const btnRefreshBrowserProfiles = document.getElementById('btn-refresh-browser-profiles');
+  const browserProfilesList = document.getElementById('browser-profiles-list');
+  const extensionPairingInfo = document.getElementById('extension-pairing-info');
+  const extensionPairingBadge = document.getElementById('extension-pairing-badge');
+  const pairingPortVal = document.getElementById('pairing-port-val');
+  const pairingNonceVal = document.getElementById('pairing-nonce-val');
+  const btnCopyPairingNonce = document.getElementById('btn-copy-pairing-nonce');
+  const btnStartExtensionPairing = document.getElementById('btn-start-extension-pairing');
+  const btnCancelExtensionPairing = document.getElementById('btn-cancel-extension-pairing');
+  const btnOpenEdgeExt = document.getElementById('btn-open-edge-ext');
+  const btnOpenChromeExt = document.getElementById('btn-open-chrome-ext');
+  const browserLoginError = document.getElementById('browser-login-error');
+
+  function openBrowserLoginModal() {
+    if (!browserLoginDialog) return;
+    browserLoginDialog.style.display = 'flex';
+    browserLoginDialog.classList.remove('hidden');
+    refreshBrowserProfilesUI();
+  }
+
+  function closeBrowserLoginModal() {
+    if (!browserLoginDialog) return;
+    browserLoginDialog.style.display = 'none';
+    browserLoginDialog.classList.add('hidden');
+    if (window.electronAPI && window.electronAPI.browserLoginCancelPairing) {
+      window.electronAPI.browserLoginCancelPairing().catch(() => {});
+    }
+    resetPairingUI();
+  }
+
+  function resetPairingUI() {
+    if (extensionPairingInfo) extensionPairingInfo.classList.add('hidden');
+    if (btnStartExtensionPairing) {
+      btnStartExtensionPairing.disabled = false;
+      btnStartExtensionPairing.classList.remove('hidden');
+    }
+    if (btnCancelExtensionPairing) btnCancelExtensionPairing.classList.add('hidden');
+    if (extensionPairingBadge) {
+      extensionPairingBadge.textContent = 'Ready';
+      extensionPairingBadge.style.color = '#94a3b8';
+      extensionPairingBadge.style.background = 'rgba(148,163,184,0.15)';
+    }
+    if (browserLoginError) {
+      browserLoginError.textContent = '';
+      browserLoginError.classList.add('hidden');
+    }
+  }
+
+  async function refreshBrowserProfilesUI() {
+    if (!browserProfilesList) return;
+    browserProfilesList.innerHTML = '<div style="text-align: center; color: #64748b; font-size: 13px; padding: 12px;">Discovering browser profiles...</div>';
+    try {
+      if (window.electronAPI && window.electronAPI.browserLoginGetProfiles) {
+        const res = await window.electronAPI.browserLoginGetProfiles();
+        if (res && res.success && Array.isArray(res.profiles) && res.profiles.length > 0) {
+          browserProfilesList.innerHTML = '';
+          for (const p of res.profiles) {
+            const card = document.createElement('div');
+            card.style.cssText = 'background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center;';
+            const info = document.createElement('div');
+            info.innerHTML = `<div style="font-size: 13px; font-weight: 600; color: #f1f5f9;">${p.browser} <span style="font-size: 11px; font-weight: normal; color: #94a3b8;">(${p.profileName})</span></div>
+              <div style="font-size: 11px; color: ${p.status === 'COOKIES_FOUND' ? '#4ade80' : '#94a3b8'}; margin-top: 2px;">${p.requiresExtension ? 'Extension pairing available' : (p.status === 'COOKIES_FOUND' ? 'YouTube session detected' : p.status)}</div>`;
+            card.appendChild(info);
+
+            const btnConnect = document.createElement('button');
+            btnConnect.className = 'btn-outline-pill';
+            btnConnect.style.cssText = 'padding: 5px 12px; font-size: 11px;';
+            btnConnect.textContent = p.requiresExtension ? 'Pair via Extension' : 'Connect';
+            btnConnect.addEventListener('click', async () => {
+              if (p.requiresExtension) {
+                startExtensionPairingFlow();
+              } else {
+                btnConnect.disabled = true;
+                btnConnect.textContent = 'Connecting...';
+                try {
+                  const impRes = await window.electronAPI.browserLoginImportProfile(p);
+                  if (impRes && impRes.success) {
+                    onLoginSuccess(impRes.account);
+                  } else {
+                    showBrowserLoginError(impRes.error || 'Failed to import session from profile');
+                    btnConnect.disabled = false;
+                    btnConnect.textContent = 'Connect';
+                  }
+                } catch (e) {
+                  showBrowserLoginError(e.message);
+                  btnConnect.disabled = false;
+                  btnConnect.textContent = 'Connect';
+                }
+              }
+            });
+            card.appendChild(btnConnect);
+            browserProfilesList.appendChild(card);
+          }
+        } else {
+          browserProfilesList.innerHTML = '<div style="text-align: center; color: #94a3b8; font-size: 12px; padding: 12px;">No Gecko profiles (Firefox/Zen) found. Use the Eclipse Extension below for Edge/Chrome.</div>';
         }
-      } catch (e) {}
-      updateGoogleAuthUI();
-      if (googleConnected && state.serverPort) {
-        try {
-          const accRes = await fetch(`http://127.0.0.1:${state.serverPort}/api/ytm/accounts`);
-          const accData = await accRes.json();
-          const active = accData && accData.activeAccount;
-          if (active && active.name && googleLoginStatus) {
-            googleLoginStatus.textContent = `Connected: ${active.name}`;
-          }
-          if (typeof showToast === 'function') {
-            showToast(active && active.name ? `Đã kết nối YouTube Music: ${active.name}` : 'Đã kết nối YouTube Music', 'success');
-          }
-          fetch(`http://127.0.0.1:${state.serverPort}/api/ytm/library`).catch(() => {});
-          if (btnConfirmLinkImport) {
-            btnConfirmLinkImport.disabled = false;
-            btnConfirmLinkImport.click();
-          }
-        } catch (_) {}
       }
+    } catch (e) {
+      browserProfilesList.innerHTML = `<div style="color: #f87171; font-size: 12px; padding: 8px;">Discovery error: ${e.message}</div>`;
+    }
+  }
+
+  async function startExtensionPairingFlow() {
+    resetPairingUI();
+    if (btnStartExtensionPairing) btnStartExtensionPairing.classList.add('hidden');
+    if (btnCancelExtensionPairing) btnCancelExtensionPairing.classList.remove('hidden');
+    if (extensionPairingBadge) {
+      extensionPairingBadge.textContent = 'Listening...';
+      extensionPairingBadge.style.color = '#c084fc';
+      extensionPairingBadge.style.background = 'rgba(168,85,247,0.2)';
+    }
+
+    try {
+      if (window.electronAPI && window.electronAPI.browserLoginStartPairing) {
+        const res = await window.electronAPI.browserLoginStartPairing();
+        if (res && res.success) {
+          if (pairingPortVal) pairingPortVal.textContent = res.port;
+          if (pairingNonceVal) {
+            pairingNonceVal.textContent = res.nonce;
+            pairingNonceVal.title = res.nonce;
+          }
+          if (extensionPairingInfo) extensionPairingInfo.classList.remove('hidden');
+        } else {
+          showBrowserLoginError(res.error || 'Could not start pairing server');
+          resetPairingUI();
+        }
+      }
+    } catch (e) {
+      showBrowserLoginError(e.message);
+      resetPairingUI();
+    }
+  }
+
+  function showBrowserLoginError(msg) {
+    if (!browserLoginError) return;
+    browserLoginError.textContent = msg;
+    browserLoginError.classList.remove('hidden');
+  }
+
+  function onLoginSuccess(account) {
+    googleConnected = true;
+    updateGoogleAuthUI();
+    if (googleLoginStatus) {
+      googleLoginStatus.textContent = account && account.name ? `Connected: ${account.name}` : 'Connected';
+    }
+    if (typeof showToast === 'function') {
+      showToast(account && account.name ? `Đã kết nối YouTube Music: ${account.name}` : 'Đã kết nối YouTube Music', 'success');
+    }
+    closeBrowserLoginModal();
+    // Fetch user library metadata without auto-confirming or clicking import
+    if (state.serverPort) {
+      fetch(`http://127.0.0.1:${state.serverPort}/api/ytm/library`).catch(() => {});
+    }
+  }
+
+  if (btnCloseBrowserLogin) btnCloseBrowserLogin.addEventListener('click', closeBrowserLoginModal);
+  if (browserLoginDialog) {
+    browserLoginDialog.addEventListener('click', (e) => {
+      if (e.target === browserLoginDialog) closeBrowserLoginModal();
+    });
+  }
+  if (btnRefreshBrowserProfiles) btnRefreshBrowserProfiles.addEventListener('click', refreshBrowserProfilesUI);
+  if (btnStartExtensionPairing) btnStartExtensionPairing.addEventListener('click', startExtensionPairingFlow);
+  if (btnCancelExtensionPairing) btnCancelExtensionPairing.addEventListener('click', () => {
+    if (window.electronAPI && window.electronAPI.browserLoginCancelPairing) {
+      window.electronAPI.browserLoginCancelPairing().catch(() => {});
+    }
+    resetPairingUI();
+  });
+  if (btnCopyPairingNonce && pairingNonceVal) {
+    btnCopyPairingNonce.addEventListener('click', () => {
+      const nonce = pairingNonceVal.textContent;
+      if (nonce && nonce !== '--') {
+        navigator.clipboard.writeText(nonce).then(() => {
+          btnCopyPairingNonce.textContent = 'Copied!';
+          setTimeout(() => { btnCopyPairingNonce.textContent = 'Copy'; }, 2000);
+        }).catch(() => {});
+      }
+    });
+  }
+  if (btnOpenEdgeExt) {
+    btnOpenEdgeExt.addEventListener('click', () => {
+      if (window.electronAPI && window.electronAPI.openExternal) {
+        window.electronAPI.openExternal('edge://extensions');
+      }
+    });
+  }
+  if (btnOpenChromeExt) {
+    btnOpenChromeExt.addEventListener('click', () => {
+      if (window.electronAPI && window.electronAPI.openExternal) {
+        window.electronAPI.openExternal('chrome://extensions');
+      }
+    });
+  }
+
+  if (window.electronAPI && window.electronAPI.onBrowserLoginPairingResult) {
+    window.electronAPI.onBrowserLoginPairingResult((result) => {
+      if (result && result.success) {
+        onLoginSuccess(result.account);
+      } else {
+        showBrowserLoginError(result.error || result.reason || 'Pairing was rejected or timed out');
+        resetPairingUI();
+      }
+    });
+  }
+
+  if (btnGoogleLogin) {
+    btnGoogleLogin.addEventListener('click', () => {
+      openBrowserLoginModal();
     });
   }
 
