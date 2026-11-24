@@ -17,6 +17,7 @@ const {
 } = require('../src/main/browser-login/browser-cookie-record');
 const { BrowserPairingServer } = require('../src/main/browser-login/browser-pairing-server');
 const { BrowserLoginFailure } = require('../src/main/browser-login/browser-login-errors');
+const { createBrowserExtensionManager } = require('../src/main/browser-login/browser-extension-manager');
 
 test('1 & 2: BrowserLoginTarget.YOUTUBE resolves strictly to music.youtube.com', () => {
   assert.equal(BrowserLoginTarget.YOUTUBE, 'YOUTUBE');
@@ -414,55 +415,50 @@ test('20: Extension ZIP generation and packaging contents verification', () => {
   assert.ok(manifest.permissions.includes('cookies'), 'Manifest must have cookies permission');
 });
 
-test('21: Browser manager IPC validation and browser resolution logic', () => {
+test('21: Browser manager IPC validation and browser resolution logic via BrowserExtensionManager', async () => {
   const fs = require('fs');
   const path = require('path');
   const mainJs = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
+  const extMgrJs = fs.readFileSync(path.join(__dirname, '../src/main/browser-login/browser-extension-manager.js'), 'utf8');
 
-  // Verify IPC handler registered
+  // Verify IPC handler registered and wired in main.js
   assert.ok(mainJs.includes("'browser-login:open-extension-manager'"), 'Must register open-extension-manager IPC');
-  assert.ok(mainJs.includes('resolveBrowserExecutable(norm)'), 'Must call resolveBrowserExecutable');
+  assert.ok(mainJs.includes('browserExtensionManager.openExtensionManager'), 'Must call browserExtensionManager.openExtensionManager');
+
+  // Verify resolveBrowserExecutable in manager module
+  assert.ok(extMgrJs.includes('resolveBrowserExecutable(norm)'), 'Must call resolveBrowserExecutable');
 
   // Verify browser validation logic: rejects unsupported browsers
-  const validBrowsers = ['chrome', 'edge', 'brave'];
-  const testInput = (browser) => {
-    const norm = String(browser || '').toLowerCase().trim();
-    if (!validBrowsers.includes(norm)) {
-      return { success: false, error: `Invalid browser: ${browser}. Supported: chrome, edge, brave.` };
-    }
-    return { success: true };
-  };
+  const manager = createBrowserExtensionManager({});
+  assert.equal((await manager.openExtensionManager('firefox')).success, false);
+  assert.equal((await manager.openExtensionManager('safari')).success, false);
+  assert.equal((await manager.openExtensionManager('')).success, false);
 
-  assert.equal(testInput('firefox').success, false);
-  assert.equal(testInput('safari').success, false);
-  assert.equal(testInput('').success, false);
-  assert.equal(testInput('chrome').success, true);
-  assert.equal(testInput('edge').success, true);
-  assert.equal(testInput('brave').success, true);
-
-  // Verify spawn uses shell: false and detached
+  // Verify spawn options and lifecycle logic in manager
   assert.ok(
-    mainJs.includes('spawn(resolved.exe, [resolved.extUrl], {') &&
-    mainJs.includes('shell: false') &&
-    mainJs.includes('detached: true'),
+    extMgrJs.includes('deps.spawn(resolved.exe, [resolved.extUrl], {') &&
+    extMgrJs.includes('shell: false') &&
+    extMgrJs.includes('detached: true'),
     'Browser launcher must spawn with shell: false and detached: true'
   );
   assert.ok(
-    mainJs.includes("child.once('spawn'") && mainJs.includes("child.once('error'"),
+    extMgrJs.includes("child.once('spawn'") && extMgrJs.includes("child.once('error'"),
     'Browser launcher must resolve on spawn event and handle error event'
   );
 });
 
-test('22: Export extension IPC handles cancel, write, validation', () => {
+test('22: Export extension IPC handles cancel, write, validation via BrowserExtensionManager', () => {
   const fs = require('fs');
   const path = require('path');
   const mainJs = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
+  const extMgrJs = fs.readFileSync(path.join(__dirname, '../src/main/browser-login/browser-extension-manager.js'), 'utf8');
 
   assert.ok(mainJs.includes("'browser-login:export-extension'"), 'Must register export-extension IPC');
-  assert.ok(mainJs.includes('dialog.showSaveDialog'), 'Must use dialog.showSaveDialog');
-  assert.ok(mainJs.includes('shell.showItemInFolder'), 'Must call shell.showItemInFolder upon save');
-  assert.ok(mainJs.includes('manifest.manifest_version !== 3'), 'Must validate MV3 manifest inside zip');
-  assert.ok(mainJs.includes('saveResult.canceled'), 'Must handle user cancelation gracefully');
+  assert.ok(mainJs.includes('browserExtensionManager.exportExtension'), 'Must delegate to browserExtensionManager.exportExtension');
+  assert.ok(extMgrJs.includes('deps.dialog.showSaveDialog'), 'Must use dialog.showSaveDialog');
+  assert.ok(extMgrJs.includes('deps.shell.showItemInFolder'), 'Must call shell.showItemInFolder upon save');
+  assert.ok(extMgrJs.includes('manifest.manifest_version !== 3'), 'Must validate MV3 manifest inside zip');
+  assert.ok(extMgrJs.includes('saveResult.canceled'), 'Must handle user cancelation gracefully');
 });
 
 test('23: 3 stages rendered, 6 instructions present, prerequisites gating Start Pairing', () => {
@@ -532,45 +528,43 @@ test('25: Timeout 120s expiry and cancel clearing session', () => {
   );
 });
 
-test('26 (P1-1 Behavioral): browser-login:reveal-exported-extension IPC logic', () => {
+test('26 (P1-1 Behavioral): browser-login:reveal-exported-extension IPC logic via BrowserExtensionManager', async () => {
   const fs = require('fs');
   const path = require('path');
   const os = require('os');
 
-  // Verify IPC handler behavior logic directly
-  function handleRevealExtension(lastExportedPath, shellShowItemInFolder) {
-    if (!lastExportedPath) {
-      return { success: false, error: 'No exported extension found. Please download the extension first.' };
-    }
-    if (!fs.existsSync(lastExportedPath)) {
-      return { success: false, error: 'Exported extension file no longer exists. Please download it again.' };
-    }
-    const stat = fs.statSync(lastExportedPath);
-    if (!stat.isFile()) {
-      return { success: false, error: 'Exported path is not a file.' };
-    }
-    if (!lastExportedPath.toLowerCase().endsWith('.zip')) {
-      return { success: false, error: 'Exported path is not a valid zip archive.' };
-    }
-    shellShowItemInFolder(lastExportedPath);
-    return { success: true, filePath: lastExportedPath };
-  }
+  let revealedPath = null;
+  const mockShell = {
+    showItemInFolder: (p) => { revealedPath = p; }
+  };
+
+  const manager = createBrowserExtensionManager({
+    fs,
+    path,
+    os,
+    shell: mockShell
+  });
 
   // 1. No exported file yet
-  assert.equal(handleRevealExtension(null, () => {}).success, false);
-  assert.match(handleRevealExtension(null, () => {}).error, /No exported extension found/);
+  const resNoFile = await manager.revealExportedExtension();
+  assert.equal(resNoFile.success, false);
+  assert.match(resNoFile.error, /No exported extension found/);
 
   // 2. File does not exist
   const nonExistent = path.join(os.tmpdir(), 'non-existent-eclipse-test.zip');
-  assert.equal(handleRevealExtension(nonExistent, () => {}).success, false);
-  assert.match(handleRevealExtension(nonExistent, () => {}).error, /no longer exists/);
+  manager.setLastExportedExtensionPath(nonExistent);
+  const resMissing = await manager.revealExportedExtension();
+  assert.equal(resMissing.success, false);
+  assert.match(resMissing.error, /no longer exists/);
 
   // 3. Not a file (directory)
   const tmpDir = path.join(os.tmpdir(), `test-dir-${Date.now()}`);
   fs.mkdirSync(tmpDir, { recursive: true });
   try {
-    assert.equal(handleRevealExtension(tmpDir, () => {}).success, false);
-    assert.match(handleRevealExtension(tmpDir, () => {}).error, /not a file/);
+    manager.setLastExportedExtensionPath(tmpDir);
+    const resDir = await manager.revealExportedExtension();
+    assert.equal(resDir.success, false);
+    assert.match(resDir.error, /not a file/);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -579,18 +573,20 @@ test('26 (P1-1 Behavioral): browser-login:reveal-exported-extension IPC logic', 
   const txtFile = path.join(os.tmpdir(), `test-ext-${Date.now()}.txt`);
   fs.writeFileSync(txtFile, 'dummy content', 'utf8');
   try {
-    assert.equal(handleRevealExtension(txtFile, () => {}).success, false);
-    assert.match(handleRevealExtension(txtFile, () => {}).error, /not a valid zip archive/);
+    manager.setLastExportedExtensionPath(txtFile);
+    const resTxt = await manager.revealExportedExtension();
+    assert.equal(resTxt.success, false);
+    assert.match(resTxt.error, /not a valid zip archive/);
   } finally {
     fs.unlinkSync(txtFile);
   }
 
-  // 5. Valid zip file reveals successfully
-  const validZip = path.join(os.tmpdir(), `test-ext-${Date.now()}.ZIP`); // case-insensitive check
+  // 5. Valid zip file reveals successfully (case-insensitive .ZIP check)
+  const validZip = path.join(os.tmpdir(), `test-ext-${Date.now()}.ZIP`);
   fs.writeFileSync(validZip, 'fake zip content', 'utf8');
-  let revealedPath = null;
   try {
-    const res = handleRevealExtension(validZip, (p) => { revealedPath = p; });
+    manager.setLastExportedExtensionPath(validZip);
+    const res = await manager.revealExportedExtension();
     assert.equal(res.success, true);
     assert.equal(res.filePath, validZip);
     assert.equal(revealedPath, validZip);
@@ -718,4 +714,149 @@ test('28 (P1-3 Behavioral): Prerequisite guard blocks startExtensionPairingFlow 
     appJs.includes("stageSetup.classList.add('stage-highlight')"),
     'Browser Profiles must highlight stage-browser-setup instead of starting pairing'
   );
+});
+
+test('29 (P0/P1 Behavioral): BrowserExtensionManager registry fallback and execFileSync execution', () => {
+  let executedCmd = null;
+  let executedArgs = null;
+  const mockExecFileSync = (cmd, args, opts) => {
+    executedCmd = cmd;
+    executedArgs = args;
+    if (cmd === 'reg' && args && args[1] && args[1].includes('chrome.exe')) {
+      return 'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe\r\n    (Default)    REG_SZ    C:\\Custom\\Path\\chrome.exe\r\n';
+    }
+    throw new Error('Not found');
+  };
+
+  const mockFs = {
+    existsSync: (p) => p === 'C:\\Custom\\Path\\chrome.exe'
+  };
+
+  const manager = createBrowserExtensionManager({
+    fs: mockFs,
+    execFileSync: mockExecFileSync,
+    processPlatform: 'win32',
+    env: {}
+  });
+
+  const resolved = manager.resolveBrowserExecutable('chrome');
+  assert.ok(resolved);
+  assert.equal(resolved.exe, 'C:\\Custom\\Path\\chrome.exe');
+  assert.equal(resolved.extUrl, 'chrome://extensions');
+  assert.equal(executedCmd, 'reg');
+  assert.ok(executedArgs.includes('/ve'));
+});
+
+test('30 (P0/P1 Behavioral): BrowserExtensionManager validateExtensionZipArchive error handling', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+
+  // Test missing zip
+  const manager = createBrowserExtensionManager({ fs, path, os });
+  assert.throws(() => manager.validateExtensionZipArchive('non-existent.zip'), /not found at/);
+
+  // Test extraction failure with structured error
+  const mockFailingExec = () => { throw new Error('tar: invalid archive format'); };
+  const mockFs = {
+    existsSync: () => true,
+    mkdirSync: () => {},
+    rmSync: () => {}
+  };
+  const managerWithBadTar = createBrowserExtensionManager({
+    fs: mockFs,
+    path,
+    os,
+    execFileSync: mockFailingExec,
+    processPlatform: 'win32'
+  });
+  assert.throws(() => managerWithBadTar.validateExtensionZipArchive('dummy.zip'), /Extension archive validation failed: tar: invalid archive format/);
+});
+
+test('31 (P1 Behavioral): Export extension verifies destination and cancellation preserves previous path', async () => {
+  let copiedFrom = null;
+  let copiedTo = null;
+
+  const mockFs = {
+    existsSync: (p) => {
+      if (p === '/mock/source/eclipse-connect.zip') return true;
+      if (p.includes('manifest.json')) return true;
+      if (p.endsWith('.zip')) return true;
+      if (p.endsWith('.txt')) return true;
+      return false;
+    },
+    mkdirSync: () => {},
+    readFileSync: (p) => JSON.stringify({ manifest_version: 3 }),
+    copyFileSync: (src, dst) => { copiedFrom = src; copiedTo = dst; },
+    statSync: (p) => ({
+      isFile: () => !p.includes('directory'),
+      isDirectory: () => p.includes('directory')
+    }),
+    rmSync: () => {}
+  };
+
+  const mockDialog = {
+    showSaveDialog: async (win, opts) => {
+      if (opts.defaultPath === 'cancel') return { canceled: true };
+      return { canceled: false, filePath: opts.defaultPath };
+    }
+  };
+
+  const manager = createBrowserExtensionManager({
+    fs: mockFs,
+    dialog: mockDialog,
+    execFileSync: () => '',
+    processPlatform: 'win32',
+    buildExtensionZip: () => '/mock/source/eclipse-connect.zip'
+  });
+
+  // Successful export
+  const resSuccess = await manager.exportExtension({ sender: null }, null);
+  assert.equal(resSuccess.success, true);
+  assert.ok(resSuccess.filePath.endsWith('.zip'));
+  const firstExportedPath = manager.getLastExportedExtensionPath();
+  assert.ok(firstExportedPath);
+
+  // Cancel Save Dialog preserves previous exported path
+  const managerCancel = createBrowserExtensionManager({
+    fs: mockFs,
+    dialog: { showSaveDialog: async () => ({ canceled: true }) },
+    execFileSync: () => '',
+    processPlatform: 'win32',
+    buildExtensionZip: () => '/mock/source/eclipse-connect.zip'
+  });
+  managerCancel.setLastExportedExtensionPath(firstExportedPath);
+  const resCancel = await managerCancel.exportExtension({ sender: null }, null);
+  assert.equal(resCancel.canceled, true);
+  assert.equal(managerCancel.getLastExportedExtensionPath(), firstExportedPath);
+
+  // Copy destination not ending in .zip fails and does NOT update path
+  const managerNonZip = createBrowserExtensionManager({
+    fs: mockFs,
+    dialog: { showSaveDialog: async () => ({ canceled: false, filePath: '/mock/dest/corrupt.txt' }) },
+    execFileSync: () => '',
+    processPlatform: 'win32',
+    buildExtensionZip: () => '/mock/source/eclipse-connect.zip'
+  });
+  managerNonZip.setLastExportedExtensionPath(firstExportedPath);
+  const resNonZip = await managerNonZip.exportExtension({ sender: null }, null);
+  assert.equal(resNonZip.success, false);
+  assert.match(resNonZip.error, /must end in \.zip/);
+  assert.equal(managerNonZip.getLastExportedExtensionPath(), firstExportedPath);
+});
+
+test('32 (P1 Behavioral): Pairing countdown expiry calls updateStartPairingState without enabling Start Pairing unconditionally', () => {
+  const appJs = require('fs').readFileSync(require('path').join(__dirname, '../src/renderer/app.js'), 'utf8');
+
+  // Verify expiry block in app.js calls updateStartPairingState()
+  assert.ok(
+    appJs.includes("extensionPairingBadge.textContent = 'Expired'") &&
+    appJs.includes('updateStartPairingState()'),
+    'app.js must call updateStartPairingState() on expiry'
+  );
+
+  // Ensure btnStartExtensionPairing.disabled = false is NOT called unconditionally on countdown expiry
+  const expirySlice = appJs.slice(appJs.indexOf("extensionPairingBadge.textContent = 'Expired'"), appJs.indexOf("extensionPairingBadge.textContent = 'Expired'") + 300);
+  assert.ok(!expirySlice.includes('btnStartExtensionPairing.disabled = false'), 'Countdown expiry must NOT enable button unconditionally');
+  assert.ok(expirySlice.includes('updateStartPairingState()'), 'Countdown expiry must invoke updateStartPairingState()');
 });

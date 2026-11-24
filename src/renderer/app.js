@@ -23032,8 +23032,8 @@ function bindCoverHoldZoom(wrapEl) {
           extensionPairingBadge.className = 'pairing-badge expired';
         }
         if (btnStartExtensionPairing) {
-          btnStartExtensionPairing.disabled = false;
           btnStartExtensionPairing.classList.remove('hidden');
+          updateStartPairingState();
         }
         if (btnCancelExtensionPairing) {
           btnCancelExtensionPairing.classList.add('hidden');
