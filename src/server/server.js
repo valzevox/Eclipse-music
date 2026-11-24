@@ -23,7 +23,7 @@ const { DATA_DIR, CACHE_DIR, CUSTOM_LYRICS_DIR, LYRICS_DIR, THUMBNAILS_DIR, META
 // Services for Phases 1-8
 const YtmAuthManager = require('./ytm-auth');
 const ytmAuth = new YtmAuthManager(DATA_DIR);
-const { getTempCookieManager } = require('../shared/temp-cookie-manager');
+const { getTempCookieManager, isCookiePayloadAuthenticated } = require('../shared/temp-cookie-manager');
 const tempCookieMgr = getTempCookieManager(DATA_DIR);
 // Clean up any orphan temporary jars on server startup
 try { tempCookieMgr.sweepStaleCookieJars(); } catch (_) {}
@@ -60,7 +60,7 @@ function getActiveSessionCookie() {
 function hasYtLoginCookies() {
   try {
     const c = getActiveSessionCookie();
-    return !!c && cookieJarHasYtLogin(c);
+    return !!c && isCookiePayloadAuthenticated(c);
   } catch (_) {
     return false;
   }
@@ -1839,11 +1839,26 @@ function executeYtDlp(args, timeoutMs = 15000, opts = {}) {
     const errDecoder = new StringDecoder('utf8');
     let timer = null;
 
+    let isSettled = false;
+    const safeResolve = (val) => {
+      if (isSettled) return;
+      isSettled = true;
+      if (timer) clearTimeout(timer);
+      resolve(val);
+    };
+    const safeReject = (err) => {
+      if (isSettled) return;
+      isSettled = true;
+      if (timer) clearTimeout(timer);
+      reject(err);
+    };
+
     if (timeoutMs > 0) {
       timer = setTimeout(() => {
         try { proc.kill('SIGKILL'); } catch (e) {}
-        cleanupCookieJar();
-        reject(new Error(`yt-dlp timed out after ${timeoutMs}ms`));
+        // Do not cleanup immediately while process might still be reading;
+        // proc.on('close') handles cleanup safely and idempotently.
+        safeReject(new Error(`yt-dlp timed out after ${timeoutMs}ms`));
       }, timeoutMs);
     }
 
@@ -1851,10 +1866,9 @@ function executeYtDlp(args, timeoutMs = 15000, opts = {}) {
     proc.stderr.on('data', (d) => { stderr += errDecoder.write(d); });
 
     proc.on('close', (code) => {
-      if (timer) clearTimeout(timer);
       cleanupCookieJar();
       if (code === 0) {
-        resolve(stdout);
+        safeResolve(stdout);
       } else {
         const firstArgs = (args || []).slice(0, 3).join(' ');
         const errSnippet = String(stderr || `code ${code}`).slice(0, 300);
@@ -1863,12 +1877,11 @@ function executeYtDlp(args, timeoutMs = 15000, opts = {}) {
           try { logger.log(isWarn ? 'warn' : 'error', `yt-dlp failed: ${firstArgs} - ${errSnippet}`); } catch (_) {}
         }
 
-        reject(new Error(stderr || `yt-dlp exited with code ${code}`));
+        safeReject(new Error(stderr || `yt-dlp exited with code ${code}`));
       }
     });
 
     proc.on('error', (err) => {
-      if (timer) clearTimeout(timer);
       cleanupCookieJar();
       const firstArgs = (args || []).slice(0, 3).join(' ');
       const errSnippet = String(err && err.message ? err.message : err).slice(0, 300);
@@ -1881,9 +1894,9 @@ function executeYtDlp(args, timeoutMs = 15000, opts = {}) {
         try {
           resolveBinary('yt-dlp');
         } catch (_) {}
-        return executeYtDlp(args, timeoutMs, Object.assign({}, opts, { retried: true })).then(resolve, reject);
+        return executeYtDlp(args, timeoutMs, Object.assign({}, opts, { retried: true })).then(safeResolve, safeReject);
       }
-      reject(err);
+      safeReject(err);
     });
   });
 }

@@ -6,6 +6,9 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const {
+  isValidCookieDomain,
+  isCookiePayloadAuthenticated,
+  parseCookieHeader,
   formatNetscapeCookieLine,
   serializeToNetscapeJar,
   TempCookieManager
@@ -51,13 +54,48 @@ test('TempCookieManager Netscape 7-column formatting and domain isolation', () =
     value: '12345'
   };
   assert.equal(formatNetscapeCookieLine(foreignCookie), null, 'Foreign cookie domains must be excluded');
+
+  // 4. Attacker subdomains / sneaky suffixes MUST be rejected
+  assert.equal(isValidCookieDomain('youtube.com.attacker.test'), false);
+  assert.equal(isValidCookieDomain('google.com.fake.org'), false);
+  assert.equal(isValidCookieDomain('notyoutube.com'), false);
+  assert.equal(isValidCookieDomain('evil-youtube.com'), false);
+
+  // 5. Authentic Google & YouTube domains MUST pass
+  assert.equal(isValidCookieDomain('youtube.com'), true);
+  assert.equal(isValidCookieDomain('.youtube.com'), true);
+  assert.equal(isValidCookieDomain('music.youtube.com'), true);
+  assert.equal(isValidCookieDomain('.google.com'), true);
+  assert.equal(isValidCookieDomain('accounts.google.com'), true);
+  assert.equal(isValidCookieDomain('rr1---sn-xxx.googlevideo.com'), true);
+  assert.equal(isValidCookieDomain('youtubei.googleapis.com'), true);
+});
+
+test('TempCookieManager cookie header parsing and authentication detection', () => {
+  const headerStr = 'SAPISID=sample_sapisid_val; SID=sample_sid_val; OTHER=123';
+  assert.equal(isCookiePayloadAuthenticated(headerStr), true);
+  assert.equal(isCookiePayloadAuthenticated('VISITOR_INFO1_LIVE=abc'), false);
+  assert.equal(isCookiePayloadAuthenticated(''), false);
+
+  const parsed = parseCookieHeader(headerStr);
+  assert.ok(parsed.length >= 2);
+  const sapisidEntry = parsed.find(c => c.name === 'SAPISID');
+  assert.ok(sapisidEntry);
+  assert.equal(sapisidEntry.value, 'sample_sapisid_val');
+
+  // Serializing raw HTTP Cookie header into Netscape jar
+  const jarText = serializeToNetscapeJar(headerStr);
+  assert.ok(jarText.startsWith('# Netscape HTTP Cookie File'));
+  assert.ok(jarText.includes('SAPISID\tsample_sapisid_val'));
+  assert.ok(jarText.includes('SID\tsample_sid_val'));
 });
 
 test('TempCookieManager serializes cookie list and verifies CRLF for Windows compatibility', () => {
   const cookies = [
     { domain: '.youtube.com', name: 'SAPISID', value: 'sap_val', secure: true },
     { domain: '.youtube.com', name: 'SID', value: 'sid_val', secure: true },
-    { domain: '.evil.com', name: 'EVIL', value: 'bad' }
+    { domain: '.evil.com', name: 'EVIL', value: 'bad' },
+    { domain: 'youtube.com.attacker.test', name: 'ATTACK', value: 'hacked' }
   ];
 
   const jarText = serializeToNetscapeJar(cookies);
@@ -65,6 +103,7 @@ test('TempCookieManager serializes cookie list and verifies CRLF for Windows com
   assert.ok(jarText.includes('SAPISID\tsap_val'));
   assert.ok(jarText.includes('SID\tsid_val'));
   assert.ok(!jarText.includes('evil.com'), 'Evil domain must not appear in serialized jar');
+  assert.ok(!jarText.includes('attacker.test'), 'Attacker domain must not appear in serialized jar');
 
   if (process.platform === 'win32') {
     assert.ok(jarText.includes('\r\n'), 'Windows must use CRLF for yt-dlp compatibility');
@@ -131,28 +170,39 @@ test('TempCookieManager creates temporary jar, binds to child process, and unlin
   }
 });
 
-test('TempCookieManager sweeps stale orphan cookie jars on startup', () => {
+test('TempCookieManager sweeps stale orphan cookie jars on startup without deleting active PID jars', () => {
   const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-cookie-sweep-'));
   const manager = new TempCookieManager(tmpBase);
 
   try {
     const tempDir = manager.getTempDir();
-    const staleDir = path.join(tempDir, 'ytjar-99999-stale-test');
-    fs.mkdirSync(staleDir, { recursive: true });
-    const staleFile = path.join(staleDir, 'cookies.txt');
+
+    // 1. Orphan jar belonging to dead PID (e.g. 9999999)
+    const deadPidDir = path.join(tempDir, 'ytjar-9999999-stale-test');
+    fs.mkdirSync(deadPidDir, { recursive: true });
+    const staleFile = path.join(deadPidDir, 'cookies.txt');
     fs.writeFileSync(staleFile, 'stale content', 'utf8');
 
-    // Make mtime older than 5 minutes
+    // 2. Active jar belonging to CURRENT process PID
+    const alivePidDir = path.join(tempDir, `ytjar-${process.pid}-active-test`);
+    fs.mkdirSync(alivePidDir, { recursive: true });
+    const activeFile = path.join(alivePidDir, 'cookies.txt');
+    fs.writeFileSync(activeFile, 'active content', 'utf8');
+
+    // Make both mtime older than 5 minutes
     const oldTime = (Date.now() - 360000) / 1000;
     fs.utimesSync(staleFile, oldTime, oldTime);
-    fs.utimesSync(staleDir, oldTime, oldTime);
+    fs.utimesSync(deadPidDir, oldTime, oldTime);
+    fs.utimesSync(activeFile, oldTime, oldTime);
+    fs.utimesSync(alivePidDir, oldTime, oldTime);
 
-    assert.ok(fs.existsSync(staleFile));
-
-    // Run sweep
+    // Run safe sweep
     manager.sweepStaleCookieJars();
 
-    assert.equal(fs.existsSync(staleDir), false, 'Stale orphan directory must be cleaned up');
+    // Dead PID dir must be cleaned up
+    assert.equal(fs.existsSync(deadPidDir), false, 'Dead PID orphan directory must be cleaned up');
+    // Active PID dir must NOT be cleaned up
+    assert.equal(fs.existsSync(alivePidDir), true, 'Active PID directory must be preserved across instances');
   } finally {
     try { fs.rmSync(tmpBase, { recursive: true, force: true }); } catch (_) {}
   }

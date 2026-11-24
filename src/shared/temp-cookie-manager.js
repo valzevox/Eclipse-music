@@ -7,6 +7,129 @@ const os = require('os');
 const { cookieJarHasYtLogin } = require('./platform');
 
 /**
+ * Strict regex boundary check for permitted domains.
+ * Matches:
+ *  - youtube.com and subdomains (.youtube.com, music.youtube.com, www.youtube.com)
+ *  - google.com and subdomains (.google.com, accounts.google.com)
+ *  - googlevideo.com and subdomains (.googlevideo.com, rr1---sn-xxx.googlevideo.com)
+ *  - youtubei.googleapis.com
+ * Rejects attacker domains: youtube.com.attacker.test, google.com.fake.org, evil.com
+ */
+const ALLOWED_DOMAIN_REGEX = /^(?:[a-zA-Z0-9-]+\.)*(?:youtube\.com|google\.com|googlevideo\.com|youtubei\.googleapis\.com)$/i;
+
+function isValidCookieDomain(domain) {
+  if (!domain || typeof domain !== 'string') return false;
+  const clean = domain.trim().toLowerCase().replace(/^\./, '');
+  return ALLOWED_DOMAIN_REGEX.test(clean);
+}
+
+/**
+ * Check if a cookie payload (either Netscape jar text or HTTP header string)
+ * contains authentic YouTube login credentials (SAPISID/SID or LOGIN_INFO).
+ */
+function isCookiePayloadAuthenticated(payload) {
+  if (!payload) return false;
+  if (typeof payload === 'object' && Array.isArray(payload)) {
+    let hasLoginInfo = false;
+    let hasSapisid = false;
+    let hasSid = false;
+    for (const c of payload) {
+      if (!c || !c.name || !c.value) continue;
+      const dom = String(c.domain || '').trim().toLowerCase().replace(/^\./, '');
+      const isYt = dom === 'youtube.com' || dom.endsWith('.youtube.com');
+      if (c.name === 'LOGIN_INFO') {
+        if (!dom || isYt) hasLoginInfo = true;
+      } else if (c.name === 'SAPISID' || c.name === '__Secure-3PAPISID') {
+        if (!dom || isYt || dom === 'google.com' || dom.endsWith('.google.com')) hasSapisid = true;
+      } else if (c.name === 'SID' || c.name === '__Secure-3PSID') {
+        if (!dom || isYt) hasSid = true;
+      }
+    }
+    return hasLoginInfo || (hasSapisid && hasSid);
+  }
+
+  const str = String(payload).trim();
+  if (!str) return false;
+
+  // 1. If Netscape format
+  if (str.startsWith('# Netscape') || str.includes('\t')) {
+    return cookieJarHasYtLogin(str);
+  }
+
+  // 2. HTTP Cookie header format: name=val; name2=val2
+  let hasLoginInfo = false;
+  let hasSapisid = false;
+  let hasSid = false;
+  const pairs = str.split(';');
+  for (const pair of pairs) {
+    const idx = pair.indexOf('=');
+    if (idx <= 0) continue;
+    const name = pair.slice(0, idx).trim();
+    const val = pair.slice(idx + 1).trim();
+    if (!name || !val) continue;
+    if (name === 'LOGIN_INFO') hasLoginInfo = true;
+    else if (name === 'SAPISID' || name === '__Secure-3PAPISID') hasSapisid = true;
+    else if (name === 'SID') hasSid = true;
+  }
+
+  return hasLoginInfo || (hasSapisid && hasSid);
+}
+
+/**
+ * Parse an HTTP Cookie header string into structured cookie objects.
+ * Infers domain strictly: YouTube-specific cookies go to .youtube.com,
+ * Google/SAPISID shared cookies go to .google.com and .youtube.com.
+ */
+function parseCookieHeader(headerStr, defaultDomain = '.youtube.com') {
+  if (!headerStr || typeof headerStr !== 'string') return [];
+  const str = headerStr.trim();
+  if (!str) return [];
+  const results = [];
+  const now = Math.floor(Date.now() / 1000) + 86400 * 365;
+  const pairs = str.split(';');
+
+  for (const pair of pairs) {
+    const idx = pair.indexOf('=');
+    if (idx <= 0) continue;
+    const name = pair.slice(0, idx).trim();
+    const value = pair.slice(idx + 1).trim();
+    if (!name || !value) continue;
+
+    // Preserving appropriate domain scope:
+    // If it's a Google authentication credential, keep it under google.com
+    // If it's YouTube login/session, keep it under youtube.com
+    let targetDomain = defaultDomain;
+    if (name === 'SAPISID' || name === '__Secure-3PAPISID' || name === 'APISID' || name === 'SSID') {
+      // Shared Google auth cookies: provide entries for both .google.com and .youtube.com
+      results.push({
+        domain: '.google.com',
+        path: '/',
+        secure: true,
+        httpOnly: false,
+        expirationDate: now,
+        name,
+        value
+      });
+      targetDomain = '.youtube.com';
+    } else if (name.startsWith('__Secure-') || name === 'LOGIN_INFO' || name === 'VISITOR_INFO1_LIVE' || name === 'YSC') {
+      targetDomain = '.youtube.com';
+    }
+
+    results.push({
+      domain: targetDomain,
+      path: '/',
+      secure: true,
+      httpOnly: name === 'LOGIN_INFO' || name === 'HSID' || name === 'SID',
+      expirationDate: now,
+      name,
+      value
+    });
+  }
+
+  return results;
+}
+
+/**
  * Format cookie entry as Mozilla/Netscape 7-column format.
  * Format: domain \t includeSubdomains \t path \t secure \t expiry \t name \t value
  */
@@ -15,13 +138,8 @@ function formatNetscapeCookieLine(cookie) {
   let domain = String(cookie.domain || '').trim();
   if (!domain) domain = '.youtube.com';
 
-  // Domain security check: only Google and YouTube domains
-  const lowDom = domain.toLowerCase();
-  const isGoogleOrYt = lowDom.includes('youtube.com') ||
-                       lowDom.includes('google.com') ||
-                       lowDom.includes('googlevideo.com') ||
-                       lowDom.includes('youtubei.googleapis.com');
-  if (!isGoogleOrYt) return null;
+  // Strict domain boundary check
+  if (!isValidCookieDomain(domain)) return null;
 
   const isHttpOnly = !!(cookie.httpOnly || cookie.httponly);
   const includeSub = domain.startsWith('.') ? 'TRUE' : 'FALSE';
@@ -62,25 +180,17 @@ function serializeToNetscapeJar(cookiesOrHeader) {
         const parts = trimmed.split('\t');
         if (parts.length >= 7) {
           const dom = parts[0].replace(/^#HttpOnly_/, '');
-          const lowDom = dom.toLowerCase();
-          if (lowDom.includes('youtube.com') || lowDom.includes('google.com') || lowDom.includes('googlevideo.com')) {
+          if (isValidCookieDomain(dom)) {
             lines.push(trimmed);
           }
         }
       }
     } else {
       // It's a "name=val; name2=val2" cookie header string
-      const pairs = raw.split(';');
-      const now = Math.floor(Date.now() / 1000) + 86400 * 365;
-      for (const pair of pairs) {
-        const idx = pair.indexOf('=');
-        if (idx > 0) {
-          const name = pair.slice(0, idx).trim();
-          const val = pair.slice(idx + 1).trim();
-          if (name) {
-            lines.push(`.youtube.com\tTRUE\t/\tTRUE\t${now}\t${name}\t${val}`);
-          }
-        }
+      const parsed = parseCookieHeader(raw);
+      for (const c of parsed) {
+        const line = formatNetscapeCookieLine(c);
+        if (line) lines.push(line);
       }
     }
   }
@@ -93,7 +203,7 @@ function serializeToNetscapeJar(cookiesOrHeader) {
 class TempCookieManager {
   constructor(baseDir) {
     this.baseDir = baseDir || path.join(os.tmpdir(), 'eclipse-cookies');
-    this.activeJars = new Map(); // jarPath -> { dir, childProc }
+    this.activeJars = new Map(); // jarPath -> { dir, jarPath, childProc, cleaned }
   }
 
   getTempDir() {
@@ -107,7 +217,9 @@ class TempCookieManager {
   }
 
   /**
-   * Sweeps stale temporary cookie files from previous app instances.
+   * Safe Sweeper: Only removes orphan temporary cookie jars.
+   * If a jar directory belongs to a running process PID, it will NOT be deleted,
+   * allowing safe multi-instance concurrency on shared DATA_DIR.
    */
   sweepStaleCookieJars() {
     try {
@@ -118,9 +230,35 @@ class TempCookieManager {
         const fullPath = path.join(tempDir, entry);
         try {
           const stat = fs.statSync(fullPath);
-          // If directory is older than 5 minutes or not tracked in current activeJars, clean it
+          if (!stat.isDirectory()) {
+            fs.unlinkSync(fullPath);
+            continue;
+          }
+
+          // Check if tracked by current instance
           const isTracked = Array.from(this.activeJars.values()).some(j => j.dir === fullPath || j.jarPath === fullPath);
-          if (!isTracked && (Date.now() - stat.mtimeMs > 60000 || !stat.isDirectory())) {
+          if (isTracked) continue;
+
+          // Check owner PID from directory name pattern: ytjar-<ownerPid>-<timestamp>-<rand>
+          const pidMatch = entry.match(/^ytjar-(\d+)-/);
+          if (pidMatch && pidMatch[1]) {
+            const ownerPid = parseInt(pidMatch[1], 10);
+            let ownerAlive = false;
+            try {
+              process.kill(ownerPid, 0);
+              ownerAlive = true;
+            } catch (err) {
+              ownerAlive = err.code === 'EPERM'; // Alive if EPERM, dead if ESRCH
+            }
+
+            if (ownerAlive) {
+              // Owner process is still actively running; leave it alone
+              continue;
+            }
+          }
+
+          // Process is dead or orphan jar older than 60s
+          if (Date.now() - stat.mtimeMs > 60000 || (pidMatch && !isTracked)) {
             fs.rmSync(fullPath, { recursive: true, force: true });
           }
         } catch (_) {}
@@ -132,6 +270,10 @@ class TempCookieManager {
    * Creates a dedicated temporary Netscape cookie jar file for a yt-dlp execution.
    */
   createTemporaryCookieJar(cookiePayload) {
+    if (!isCookiePayloadAuthenticated(cookiePayload)) {
+      return null;
+    }
+
     const netscapeText = serializeToNetscapeJar(cookiePayload);
     if (!cookieJarHasYtLogin(netscapeText)) {
       return null;
@@ -213,6 +355,9 @@ function getTempCookieManager(baseDir) {
 }
 
 module.exports = {
+  isValidCookieDomain,
+  isCookiePayloadAuthenticated,
+  parseCookieHeader,
   formatNetscapeCookieLine,
   serializeToNetscapeJar,
   TempCookieManager,

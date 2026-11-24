@@ -45,7 +45,7 @@ function decryptAccount(buffer) {
   const decompressed = zlib.inflateRawSync(decrypted);
   return JSON.parse(decompressed.toString('utf8'));
 }
-const { LIBRARY_DIR, DATA_DIR, resolveBinary, tutorialDone, markTutorialDone, readStartupConfig, writeStartupConfig, cookieJarHasYtLogin } = require('../shared/platform');
+const { LIBRARY_DIR, DATA_DIR, resolveBinary, tutorialDone, markTutorialDone, readStartupConfig, writeStartupConfig } = require('../shared/platform');
 const { getTempCookieManager } = require('../shared/temp-cookie-manager');
 const mainTempCookieMgr = getTempCookieManager(DATA_DIR);
 try {
@@ -1500,101 +1500,6 @@ ipcMain.on('window-minimize', () => {
       const GOOGLE_OAUTH_FILE = path.join(DATA_DIR, 'google-oauth.enc');
       let youtubeCookieImportPromise = null;
 
-      function hasValidYtCookiesFile() {
-        return false;
-      }
-
-      async function exportSessionCookiesToFile() {
-        // Zero persistent plaintext cookie file: cookies remain in Electron partition and ytm-accounts.enc
-        try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
-        return true;
-      }
-
-      async function importYoutubeCookiesToSession() {
-        return;
-      }
-
-      function getCandidateBrowserSpecs() {
-        const specs = [];
-        const addIfDir = (dirPath, spec) => {
-          try {
-            if (fs.existsSync(dirPath) && !specs.includes(spec)) specs.push(spec);
-          } catch (_) {}
-        };
-        if (process.platform === 'win32') {
-          const local = process.env.LOCALAPPDATA || '';
-          const roaming = process.env.APPDATA || '';
-          addIfDir(path.join(local, 'Google', 'Chrome'), 'chrome');
-          addIfDir(path.join(local, 'BraveSoftware', 'Brave-Browser'), 'brave');
-          addIfDir(path.join(local, 'Microsoft', 'Edge'), 'edge');
-          addIfDir(path.join(roaming, 'Mozilla', 'Firefox'), 'firefox');
-          addIfDir(path.join(local, 'Vivaldi'), 'vivaldi');
-        }
-        if (!specs.includes('chrome')) specs.push('chrome');
-        if (!specs.includes('edge')) specs.push('edge');
-        if (!specs.includes('firefox')) specs.push('firefox');
-        return specs;
-      }
-
-      let exportCookiesPromise = null;
-      function exportYoutubeCookiesToDisk() {
-        if (exportCookiesPromise) return exportCookiesPromise;
-        exportCookiesPromise = (async () => {
-          fs.mkdirSync(DATA_DIR, { recursive: true });
-          if (hasValidYtCookiesFile()) {
-            await importYoutubeCookiesToSession();
-            return true;
-          }
-
-          const tmpTestCookie = '/tmp/test-yt-cookies.txt';
-          try {
-            if (fs.existsSync(tmpTestCookie)) {
-              const tmpTxt = fs.readFileSync(tmpTestCookie, 'utf8');
-              if (cookieJarHasYtLogin(tmpTxt)) {
-                // persistent YT_COOKIES_FILE eliminated
-                await importYoutubeCookiesToSession();
-                try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
-                return true;
-              }
-            }
-          } catch (_) {}
-
-          const ytdlpBin = resolveBinary('yt-dlp');
-          if (!ytdlpBin) return false;
-
-          // Export each browser into a scratch jar first: a browser without a
-          // YouTube login must not overwrite cookies from one that has it.
-          const specs = getCandidateBrowserSpecs();
-          for (const spec of specs) {
-            const tmpJar = path.join(DATA_DIR, `.yt-cookies-${process.pid}.tmp`);
-            try { fs.rmSync(tmpJar, { force: true }); } catch (_) {}
-            try {
-              await new Promise((resolve) => {
-                execFile(ytdlpBin, [
-                  '--no-config',
-                  '--cookies-from-browser', spec,
-                  '--cookies', tmpJar,
-                  '--skip-download',
-                  '--no-warnings',
-                  'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
-                ], { timeout: 15000, windowsHide: true }, () => resolve());
-              });
-              if (hasValidYtCookiesFile(tmpJar)) {
-                // persistent YT_COOKIES_FILE eliminated
-                await importYoutubeCookiesToSession();
-                try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
-                return true;
-              }
-            } catch (_) {
-            } finally {
-              try { fs.rmSync(tmpJar, { force: true }); } catch (_) {}
-            }
-          }
-          return false;
-        })().finally(() => { exportCookiesPromise = null; });
-        return exportCookiesPromise;
-      }
-
       function readGoogleOAuthData() {
         if (!fs.existsSync(GOOGLE_OAUTH_FILE)) return null;
         if (!safeStorage.isEncryptionAvailable()) return null;
@@ -1606,13 +1511,16 @@ ipcMain.on('window-minimize', () => {
           throw new Error('Secure storage is unavailable on this system');
         }
         fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-        const tmpPath = GOOGLE_OAUTH_FILE + '.' + process.pid + '.' + Date.now() + '.tmp';
-        fs.writeFileSync(tmpPath, safeStorage.encryptString(JSON.stringify(data)), { mode: 0o600 });
+        const tmpPath = `${GOOGLE_OAUTH_FILE}.${process.pid}.${Date.now()}.${crypto.randomBytes(6).toString('hex')}.tmp`;
         try {
+          fs.writeFileSync(tmpPath, safeStorage.encryptString(JSON.stringify(data)), { mode: 0o600 });
           fs.renameSync(tmpPath, GOOGLE_OAUTH_FILE);
-        } catch (_) {
-          fs.writeFileSync(GOOGLE_OAUTH_FILE, safeStorage.encryptString(JSON.stringify(data)), { mode: 0o600 });
-          try { fs.unlinkSync(tmpPath); } catch (_) {}
+        } finally {
+          try {
+            if (fs.existsSync(tmpPath)) {
+              fs.unlinkSync(tmpPath);
+            }
+          } catch (_) {}
         }
       }
 
@@ -1727,7 +1635,6 @@ ipcMain.on('window-minimize', () => {
             expiresAt: Date.now() + (Number(tokens.expires_in) || 3600) * 1000,
             scope: tokens.scope || ''
           });
-          exportYoutubeCookiesToDisk().catch(() => {});
         } finally {
           if (cancelCallback) cancelCallback();
           if (server.listening) {
@@ -1786,7 +1693,6 @@ ipcMain.on('window-minimize', () => {
             return false;
           }
           capturedGoogleCookieHeader = cookieStr;
-          await exportSessionCookiesToFile().catch(() => {});
           try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
           try { if (fs.existsSync(GOOGLE_OAUTH_FILE)) fs.unlinkSync(GOOGLE_OAUTH_FILE); } catch (_) {}
           return true;
@@ -2237,8 +2143,6 @@ ipcMain.on('window-minimize', () => {
             };
           } catch (_) {}
         }
-
-        exportYoutubeCookiesToDisk().catch(() => {});
 
         const s = session.fromPartition('persist:eclipse-google');
         const cookies = await s.cookies.get({ name: 'SAPISID' });
