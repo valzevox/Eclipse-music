@@ -551,14 +551,15 @@ class YtmAuthManager {
           const accountItem = entry?.accountItem || entry?.accountItemRenderer;
           if (!accountItem) continue;
 
+          // P0-1: AccountInfo only requires accountName.simpleText
           const accountName = accountItem.accountName?.simpleText || accountItem.accountName?.runs?.[0]?.text || '';
+          if (!accountName || !accountName.trim()) continue;
+
           const handle = accountItem.channelHandle?.simpleText || accountItem.email?.simpleText || '';
           const avatarUrl = accountItem.accountPhoto?.thumbnails?.[0]?.url || '';
           const isSelected = Boolean(accountItem.isSelected);
           const hasChannel = Boolean(accountItem.hasChannel);
 
-          // Correct nested token extraction:
-          // accountItem.serviceEndpoint.selectActiveIdentityEndpoint.supportedTokens
           const tokens = accountItem.serviceEndpoint?.selectActiveIdentityEndpoint?.supportedTokens || [];
           const pageIdTokenObj = tokens.find(t => t?.pageIdToken)?.pageIdToken || null;
           const accountSigninTokenObj = tokens.find(t => t?.accountSigninToken)?.accountSigninToken || null;
@@ -570,7 +571,6 @@ class YtmAuthManager {
 
           if (signinUrl) {
             try {
-              // Parse query parameters supporting both relative and absolute URLs
               const parsedUrl = new URL(signinUrl, 'https://music.youtube.com');
               const au = parsedUrl.searchParams.get('authuser');
               if (au !== null && au !== '') {
@@ -588,7 +588,7 @@ class YtmAuthManager {
           // 1. Prefer onBehalfOfParameter for pageId
           // 2. Otherwise use pageIdToken.pageId
           // 3. Otherwise use valid pageid query parameter from signinUrl
-          // 4. Keep pageId null when none exists (never substitute Gaia ID into pageId)
+          // 4. Keep pageId null when none exists (never fabricate or substitute Gaia ID)
           const resolvedPageId = accountItem.onBehalfOfParameter ||
             pageIdTokenObj?.pageId ||
             signinUrlPageId ||
@@ -600,97 +600,92 @@ class YtmAuthManager {
           const isMerged = accountStateTokenObj?.isMerged ?? false;
 
           candidateAccounts.push({
-            name: accountName,
-            handle: handle,
+            name: accountName.trim(),
+            handle: handle.trim(),
             avatarUrl: avatarUrl,
             pageId: resolvedPageId,
             authUser: resolvedAuthUser,
             obfuscatedGaiaId: obfuscatedGaiaId,
             isSelected: isSelected,
             hasChannel: Boolean(tokenHasChannel),
-            isMerged: Boolean(isMerged),
-            rawTokensSummary: {
-              hasPageIdToken: Boolean(pageIdTokenObj?.pageId),
-              hasSigninUrlPageId: Boolean(signinUrlPageId),
-              hasAccountSigninToken: Boolean(accountSigninTokenObj),
-              hasAccountStateToken: Boolean(accountStateTokenObj),
-              hasObfuscatedGaiaId: Boolean(obfuscatedGaiaId)
-            }
+            isMerged: Boolean(isMerged)
           });
         }
       }
     }
 
     // Account selection rules
-    const selectedCandidates = candidateAccounts.filter(c => c.isSelected);
-    let chosen = null;
-
-    if (selectedCandidates.length > 1) {
-      const err = new Error('Multiple accounts marked as active in Account Switcher');
-      err.code = 'AMBIGUOUS_ACCOUNT_SELECTION';
-      err.stage = 'identity_resolution';
-      err.status = 409;
+    if (candidateAccounts.length === 0) {
+      const err = new Error('Account Switcher did not return valid account identity entries');
+      err.code = 'NO_ACCOUNT_RETURNED';
+      err.stage = 'identity_extraction';
+      err.status = 502;
+      err.requestFingerprint = requestFingerprint;
       throw err;
-    } else if (selectedCandidates.length === 1) {
-      chosen = selectedCandidates[0];
-    } else {
-      // 0 candidates explicitly marked isSelected
-      if (candidateAccounts.length === 1) {
+    }
+
+    // P0-3: If multiple candidates exist, return candidate list for user choice
+    // If explicit requestedAccountIndex or requestedPageId provided in options, honor it
+    let chosen = null;
+    if (options.selectedAccountId) {
+      chosen = candidateAccounts.find(c => c.pageId === options.selectedAccountId || c.name === options.selectedAccountId);
+    }
+
+    if (!chosen) {
+      const selectedCandidates = candidateAccounts.filter(c => c.isSelected);
+      if (selectedCandidates.length === 1) {
+        chosen = selectedCandidates[0];
+      } else if (candidateAccounts.length === 1) {
         chosen = candidateAccounts[0];
-      } else if (candidateAccounts.length > 1) {
-        const err = new Error('Multiple accounts returned without a clear active selection');
+      } else if (selectedCandidates.length > 1 || candidateAccounts.length > 1) {
+        // Expose all candidates in AMBIGUOUS_ACCOUNT_SELECTION so UI can present modal picker
+        const err = new Error('Multiple accounts returned. Please select an active account.');
         err.code = 'AMBIGUOUS_ACCOUNT_SELECTION';
         err.stage = 'identity_resolution';
         err.status = 409;
+        err.candidates = candidateAccounts.map((c, idx) => ({
+          index: idx,
+          name: c.name,
+          handle: c.handle,
+          avatarUrl: c.avatarUrl,
+          pageId: c.pageId,
+          authUser: c.authUser,
+          isSelected: c.isSelected
+        }));
+        err.requestFingerprint = requestFingerprint;
         throw err;
       }
     }
 
     if (!chosen) {
-      const err = new Error('Account Switcher did not return valid account identity entries');
-      err.code = 'NO_ACCOUNT_RETURNED';
-      err.stage = 'identity_extraction';
-      err.status = 502;
-      throw err;
+      chosen = candidateAccounts[0];
     }
 
-    // Stable account identity resolution:
-    // If pageId exists -> Brand/channel account
-    // If pageId absent but obfuscatedGaiaId exists -> Google account identity with namespaced hash
-    let accountKey = null;
-    let identityType = null;
-
-    if (chosen.pageId) {
-      accountKey = chosen.pageId;
-      identityType = 'brand_channel';
-    } else if (chosen.obfuscatedGaiaId) {
-      // Create deterministic internal accountKey using namespaced hash of upstream obfuscatedGaiaId
-      // Never hash cookies, SAPISID, names or handles; never expose raw obfuscatedGaiaId
-      const gaiaHash = crypto.createHash('sha256').update('google_account:' + chosen.obfuscatedGaiaId).digest('hex').slice(0, 32);
-      accountKey = 'ga_' + gaiaHash;
-      identityType = 'google_account';
-    } else {
-      const err = new Error('Authenticated account does not contain a stable pageId or obfuscated Gaia ID');
-      err.code = 'NO_STABLE_ACCOUNT_ID';
-      err.stage = 'identity_validation';
-      err.status = 502;
-      err.identityDetails = chosen.rawTokensSummary || {};
-      throw err;
-    }
-
+    // P0-2: Separate upstream identity from local account ID
+    // pageId: genuine upstream value or null (never fabricate)
+    // identityType: brand_channel if pageId exists, otherwise google_account
+    // candidates: attach candidate list to returned verified profile
     return {
-      id: accountKey,
-      name: chosen.name || 'YouTube Music User',
+      name: chosen.name,
       handle: chosen.handle || '',
       avatarUrl: chosen.avatarUrl || '',
       pageId: chosen.pageId || null,
-      identityType: identityType,
+      identityType: chosen.pageId ? 'brand_channel' : 'google_account',
       authUser: chosen.authUser ?? 0,
-      sapisid: sapisid
+      sapisid: sapisid,
+      candidates: candidateAccounts.map((c, idx) => ({
+        index: idx,
+        name: c.name,
+        handle: c.handle,
+        avatarUrl: c.avatarUrl,
+        pageId: c.pageId,
+        authUser: c.authUser,
+        isSelected: c.isSelected
+      }))
     };
   }
 
-  // Intercept cookies string from redirect (contains SAPISID, SID, SSID, etc.)
+    // Intercept cookies string from redirect (contains SAPISID, SID, SSID, etc.)
   async addAccountFromCookie(cookieString, options = {}) {
     if (!cookieString || typeof cookieString !== 'string') {
       const err = new Error('Invalid cookie payload');
@@ -774,22 +769,39 @@ class YtmAuthManager {
       this.activeClient = yt;
     }
 
-    const channelId = verifiedProfile.id;
+    // P0-2: Re-link matching logic:
+    // 1. Match by genuine pageId when present
+    // 2. Otherwise match by non-empty normalized handle and authUser
+    // 3. If neither available or no match, generate fresh Eclipse local UUID
+    let existingIndex = -1;
+    if (verifiedProfile.pageId) {
+      existingIndex = this.accounts.findIndex(a => a.pageId === verifiedProfile.pageId);
+    } else if (verifiedProfile.handle && verifiedProfile.handle.trim()) {
+      const targetHandle = verifiedProfile.handle.trim().toLowerCase();
+      existingIndex = this.accounts.findIndex(a => !a.pageId && a.handle && a.handle.trim().toLowerCase() === targetHandle && (a.authUser ?? 0) === (verifiedProfile.authUser ?? 0));
+    }
+
+    let localAccountId;
+    if (existingIndex >= 0) {
+      localAccountId = this.accounts[existingIndex].id;
+    } else {
+      localAccountId = crypto.randomUUID ? crypto.randomUUID() : ('ecl_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 9));
+    }
+
     const newAccount = {
-      id: channelId,
+      id: localAccountId,
       name: verifiedProfile.name || 'YouTube User',
       handle: verifiedProfile.handle || '',
       avatarUrl: verifiedProfile.avatarUrl || '',
       pageId: verifiedProfile.pageId || null,
       identityType: verifiedProfile.identityType || (verifiedProfile.pageId ? 'brand_channel' : 'google_account'),
       authUser: verifiedProfile.authUser ?? 0,
+      candidates: verifiedProfile.candidates || [],
       cookie: cookieString,
-      isDefault: this.accounts.length === 0,
+      isDefault: existingIndex >= 0 ? Boolean(this.accounts[existingIndex].isDefault) : (this.accounts.length === 0),
       lastSync: Date.now()
     };
 
-    // Update existing or add new
-    const existingIndex = this.accounts.findIndex(a => a.id === channelId);
     if (existingIndex >= 0) {
       this.accounts[existingIndex] = { ...this.accounts[existingIndex], ...newAccount };
     } else {

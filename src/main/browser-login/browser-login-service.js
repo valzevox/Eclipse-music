@@ -96,6 +96,7 @@ class BrowserLoginService {
       const details = {
         code,
         stage: data?.stage || 'unknown',
+        candidates: data?.candidates || null,
         upstreamStatus: data?.upstreamStatus || res.status,
         upstreamDiagnostic: data?.upstreamDiagnostic || null,
         diagnosticReadError: data?.diagnosticReadError || null,
@@ -122,7 +123,11 @@ class BrowserLoginService {
         id: data.account.id,
         name: data.account.name || 'YouTube User',
         handle: data.account.handle || '',
-        avatarUrl: data.account.avatarUrl || ''
+        avatarUrl: data.account.avatarUrl || '',
+        pageId: data.account.pageId || null,
+        authUser: data.account.authUser ?? 0,
+        identityType: data.account.identityType || (data.account.pageId ? 'brand_channel' : 'google_account'),
+        candidates: data.account.candidates || []
       }
     };
   }

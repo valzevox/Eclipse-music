@@ -301,7 +301,8 @@ describe('YTM Auth Verification & Production Diagnostics Suite', () => {
     try {
       const authResult = await service.authenticateWithRecords(records);
       assert.ok(authResult.success);
-      assert.equal(authResult.account.id, 'PAGE_PROD_999');
+      assert.ok(authResult.account.id);
+      assert.equal(authResult.account.pageId, 'PAGE_PROD_999');
       assert.equal(authResult.account.name, 'Production Verified User');
       assert.equal(authResult.account.handle, '@produser');
 
@@ -316,7 +317,7 @@ describe('YTM Auth Verification & Production Diagnostics Suite', () => {
       await manager2.init();
       const accounts = manager2.getAccounts();
       assert.equal(accounts.length, 1);
-      assert.equal(accounts[0].id, 'PAGE_PROD_999');
+      assert.equal(accounts[0].pageId, 'PAGE_PROD_999');
     } finally {
       server.close();
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -532,7 +533,8 @@ describe('YTM Auth Verification & Production Diagnostics Suite', () => {
     });
 
     assert.ok(account);
-    assert.ok(account.id.startsWith('ga_'));
+    assert.ok(account.id);
+    assert.equal(typeof account.id, 'string');
     assert.equal(account.name, 'Chrome Standard User');
     assert.equal(account.handle, '@chromeuser');
     assert.equal(account.pageId, null);
@@ -595,7 +597,7 @@ describe('YTM Auth Verification & Production Diagnostics Suite', () => {
       sapisidCredential: { name: 'SAPISID', value: 'test_sapisid', domain: '.youtube.com', path: '/', secure: true, expiry: null, scope: 'youtube' }
     });
 
-    assert.equal(account.id, 'PAGE_VIA_URL_456');
+    assert.ok(account.id);
     assert.equal(account.pageId, 'PAGE_VIA_URL_456');
     assert.equal(account.identityType, 'brand_channel');
     assert.equal(account.authUser, 1);
@@ -603,7 +605,7 @@ describe('YTM Auth Verification & Production Diagnostics Suite', () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('15. Account with neither pageId nor obfuscatedGaiaId throws NO_STABLE_ACCOUNT_ID with identityDetails', async () => {
+  it('15. Account with neither pageId nor obfuscatedGaiaId is accepted under standard reference AccountInfo semantics', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-test-ytm-nostable-'));
     const manager = new YtmAuthManager(tempDir);
     await manager.init();
@@ -617,15 +619,62 @@ describe('YTM Auth Verification & Production Diagnostics Suite', () => {
               accountItemSectionRenderer: {
                 contents: [{
                   accountItem: {
-                    accountName: { simpleText: 'Unidentifiable User' },
+                    accountName: { simpleText: 'Standard Google Account User' },
+                    channelHandle: { simpleText: '@standarduser' },
                     isSelected: true,
                     serviceEndpoint: {
                       selectActiveIdentityEndpoint: {
                         supportedTokens: [
-                          { accountSigninToken: { signinUrl: 'https://music.youtube.com' } }
+                          { accountSigninToken: { signinUrl: 'https://music.youtube.com?authuser=0' } }
                         ]
                       }
                     }
+                  }
+                }]
+              }
+            }]
+          }
+        }]
+      }
+    });
+
+    manager._accountSwitcherTransport = async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: createReadableStreamFromText(mockResponsePayload)
+    });
+
+    const account = await manager.authenticateWithCookie('SAPISID=test_sapisid;', {
+      sapisidCredential: { name: 'SAPISID', value: 'test_sapisid', domain: '.youtube.com', path: '/', secure: true, expiry: null, scope: 'youtube' }
+    });
+
+    assert.ok(account);
+    assert.ok(account.id);
+    assert.equal(account.name, 'Standard Google Account User');
+    assert.equal(account.handle, '@standarduser');
+    assert.equal(account.pageId, null);
+    assert.equal(account.identityType, 'google_account');
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('16. Account with missing or empty accountName is rejected with NO_ACCOUNT_RETURNED', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-test-ytm-noname-'));
+    const manager = new YtmAuthManager(tempDir);
+    await manager.init();
+
+    const mockResponsePayload = JSON.stringify({
+      code: 'SUCCESS',
+      data: {
+        contents: [{
+          accountSectionListRenderer: {
+            contents: [{
+              accountItemSectionRenderer: {
+                contents: [{
+                  accountItem: {
+                    accountName: { simpleText: '' },
+                    isSelected: true
                   }
                 }]
               }
@@ -646,14 +695,88 @@ describe('YTM Auth Verification & Production Diagnostics Suite', () => {
       await manager.authenticateWithCookie('SAPISID=test_sapisid;', {
         sapisidCredential: { name: 'SAPISID', value: 'test_sapisid', domain: '.youtube.com', path: '/', secure: true, expiry: null, scope: 'youtube' }
       });
-      assert.fail('Should reject unidentifiable account');
+      assert.fail('Should reject empty accountName');
     } catch (err) {
-      assert.equal(err.code, 'NO_STABLE_ACCOUNT_ID');
-      assert.equal(err.stage, 'identity_validation');
-      assert.ok(err.identityDetails);
-      assert.equal(err.identityDetails.hasPageIdToken, false);
-      assert.equal(err.identityDetails.hasObfuscatedGaiaId, false);
+      assert.equal(err.code, 'NO_ACCOUNT_RETURNED');
+      assert.equal(err.stage, 'identity_extraction');
     }
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('17. Multiple candidate accounts with explicit selection and re-linking by handle/authUser', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-test-ytm-multicandidates-'));
+    const manager = new YtmAuthManager(tempDir);
+    await manager.init();
+
+    const mockResponsePayload = JSON.stringify({
+      code: 'SUCCESS',
+      data: {
+        contents: [{
+          accountSectionListRenderer: {
+            contents: [{
+              accountItemSectionRenderer: {
+                contents: [
+                  {
+                    accountItem: {
+                      accountName: { simpleText: 'Account A' },
+                      channelHandle: { simpleText: '@handleA' },
+                      serviceEndpoint: { selectActiveIdentityEndpoint: { supportedTokens: [{ accountSigninToken: { signinUrl: '/?authuser=0' } }] } }
+                    }
+                  },
+                  {
+                    accountItem: {
+                      accountName: { simpleText: 'Account B' },
+                      channelHandle: { simpleText: '@handleB' },
+                      serviceEndpoint: { selectActiveIdentityEndpoint: { supportedTokens: [{ accountSigninToken: { signinUrl: '/?authuser=1' } }] } }
+                    }
+                  }
+                ]
+              }
+            }]
+          }
+        }]
+      }
+    });
+
+    manager._accountSwitcherTransport = async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: createReadableStreamFromText(mockResponsePayload)
+    });
+
+    // Case 1: Multiple candidates without explicit selection throws AMBIGUOUS_ACCOUNT_SELECTION with candidates list
+    try {
+      await manager.authenticateWithCookie('SAPISID=test_sapisid;', {
+        sapisidCredential: { name: 'SAPISID', value: 'test_sapisid', domain: '.youtube.com', path: '/', secure: true, expiry: null, scope: 'youtube' }
+      });
+      assert.fail('Should throw AMBIGUOUS_ACCOUNT_SELECTION');
+    } catch (err) {
+      assert.equal(err.code, 'AMBIGUOUS_ACCOUNT_SELECTION');
+      assert.ok(Array.isArray(err.candidates));
+      assert.equal(err.candidates.length, 2);
+      assert.equal(err.candidates[0].name, 'Account A');
+      assert.equal(err.candidates[1].name, 'Account B');
+    }
+
+    // Case 2: Selected account explicitly chosen by name or ID
+    const accB = await manager.authenticateWithCookie('SAPISID=test_sapisid;', {
+      sapisidCredential: { name: 'SAPISID', value: 'test_sapisid', domain: '.youtube.com', path: '/', secure: true, expiry: null, scope: 'youtube' },
+      selectedAccountId: 'Account B'
+    });
+
+    assert.ok(accB);
+    assert.equal(accB.name, 'Account B');
+    assert.equal(accB.authUser, 1);
+    const initialLocalId = accB.id;
+
+    // Case 3: Re-link with Account B retains same initial local UUID based on handle + authUser
+    const reLinkedB = await manager.authenticateWithCookie('SAPISID=test_sapisid;', {
+      sapisidCredential: { name: 'SAPISID', value: 'test_sapisid', domain: '.youtube.com', path: '/', secure: true, expiry: null, scope: 'youtube' },
+      selectedAccountId: 'Account B'
+    });
+    assert.equal(reLinkedB.id, initialLocalId, 'Local UUID must be retained upon re-link');
 
     fs.rmSync(tempDir, { recursive: true, force: true });
   });

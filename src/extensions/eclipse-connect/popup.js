@@ -40,37 +40,73 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
 
-      showStatus('Reading YouTube session cookies...', 'loading');
+      showStatus('Extracting authentication cookies...', 'loading');
 
-      // Query cookies with chrome.cookies API strictly for YouTube and Google auth domains
-      const domains = ['.youtube.com', 'music.youtube.com', '.google.com'];
-      const allCookies = [];
+      // P0-4: Query cookies strictly for YouTube target domains matching music.youtube.com
+      // Do NOT query or include .google.com cookies in this YTM authentication request
+      const domains = ['.youtube.com', 'music.youtube.com'];
+      const rawCookies = [];
 
       for (const d of domains) {
         const cookies = await chrome.cookies.getAll({ domain: d });
         if (Array.isArray(cookies)) {
-          allCookies.push(...cookies);
+          rawCookies.push(...cookies);
         }
       }
 
-      // Filter only relevant authentication and session cookies
-      const relevantNames = new Set([
-        'SAPISID', '__Secure-3PAPISID', 'APISID', 'SSID', 'SID',
-        '__Secure-3PSID', 'LOGIN_INFO', 'VISITOR_INFO1_LIVE', 'YSC', 'HSID'
-      ]);
+      // Filter and deduplicate all applicable cookies matching music.youtube.com and root path /
+      // Collect ALL cookies from YouTube target domains, not a short hardcoded allowlist
+      const now = Math.floor(Date.now() / 1000);
+      const eligibleCookies = [];
 
-      const selectedCookies = allCookies.filter(c => relevantNames.has(c.name)).map(c => ({
-        name: c.name,
-        value: c.value,
-        domain: c.domain,
-        path: c.path,
-        secure: c.secure,
-        httpOnly: c.httpOnly,
-        expirationDate: c.expirationDate,
-        hostOnly: c.hostOnly
-      }));
+      for (const c of rawCookies) {
+        if (!c || !c.name || typeof c.value !== 'string') continue;
+        if (c.expirationDate && c.expirationDate <= now) continue;
 
-      if (selectedCookies.length === 0 || !selectedCookies.some(c => c.name === 'SAPISID' || c.name === 'LOGIN_INFO')) {
+        const dom = String(c.domain || '').trim().toLowerCase().replace(/^\./, '');
+        // Must match music.youtube.com (either music.youtube.com or parent youtube.com)
+        if (dom !== 'music.youtube.com' && dom !== 'youtube.com' && !dom.endsWith('.youtube.com')) {
+          continue;
+        }
+
+        const path = (c.path && c.path.startsWith('/')) ? c.path : '/';
+        // Account Switcher request is at /getAccountSwitcherEndpoint, so cookie path must match root / or target endpoint
+        if (path !== '/' && path !== '/getAccountSwitcherEndpoint') {
+          continue;
+        }
+
+        eligibleCookies.push({
+          name: c.name.trim(),
+          value: c.value,
+          domain: c.domain,
+          path: path,
+          secure: Boolean(c.secure),
+          httpOnly: Boolean(c.httpOnly),
+          expirationDate: c.expirationDate || null,
+          hostOnly: Boolean(c.hostOnly)
+        });
+      }
+
+      // Deduplicate deterministically by cookie name (exact music.youtube.com wins over .youtube.com)
+      const byName = new Map();
+      for (const c of eligibleCookies) {
+        const existing = byName.get(c.name);
+        if (!existing) {
+          byName.set(c.name, c);
+        } else {
+          const existingClean = existing.domain.replace(/^\./, '').toLowerCase();
+          const currentClean = c.domain.replace(/^\./, '').toLowerCase();
+          if (currentClean === 'music.youtube.com' && existingClean !== 'music.youtube.com') {
+            byName.set(c.name, c);
+          } else if (c.path.length > existing.path.length) {
+            byName.set(c.name, c);
+          }
+        }
+      }
+
+      const selectedCookies = Array.from(byName.values());
+
+      if (selectedCookies.length === 0 || !selectedCookies.some(c => c.name === 'SAPISID' || c.name === '__Secure-3PAPISID' || c.name === 'LOGIN_INFO')) {
         showStatus('No active YouTube Music login found in this browser. Please log in to music.youtube.com first.', 'error');
         btnPair.disabled = false;
         return;
@@ -97,21 +133,20 @@ document.addEventListener('DOMContentLoaded', () => {
         showStatus('Connected successfully! You can close this popup.', 'success');
         // Clear sensitive inputs
         nonceInput.value = '';
-        setTimeout(() => {
-          window.close();
-        }, 2000);
+        setTimeout(() => { window.close(); }, 2500);
       } else {
-        showStatus(`Pairing failed: ${resJson.error || response.statusText}`, 'error');
+        const errMsg = resJson.error || 'Failed to authenticate pairing with Eclipse';
+        showStatus(`Error: ${errMsg}`, 'error');
         btnPair.disabled = false;
       }
     } catch (err) {
-      showStatus(`Connection error: ${err.message}. Make sure Eclipse is open.`, 'error');
+      showStatus(`Connection failed: ${err.message}`, 'error');
       btnPair.disabled = false;
     }
   });
 
-  function showStatus(msg, type) {
-    statusEl.textContent = msg;
+  function showStatus(text, type) {
+    statusEl.textContent = text;
     statusEl.className = `status ${type}`;
   }
 });

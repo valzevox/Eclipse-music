@@ -11007,6 +11007,7 @@ async function handleInterceptCookie(req, res, deps = {}) {
         success: false,
         code: errorCode,
         stage: errorStage,
+        candidates: e.candidates || undefined,
         upstreamStatus: e.upstreamStatus || undefined,
         upstreamDiagnostic: e.upstreamDiagnostic || undefined,
         diagnosticReadError: e.diagnosticReadError || undefined,

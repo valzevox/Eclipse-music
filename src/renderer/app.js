@@ -23239,11 +23239,85 @@ function bindCoverHoldZoom(wrapEl) {
     window.electronAPI.onBrowserLoginPairingResult((result) => {
       if (result && result.success) {
         onLoginSuccess(result.account);
+      } else if (result && result.details && Array.isArray(result.details.candidates) && result.details.candidates.length > 1) {
+        showCandidateSelectionModal(result.details.candidates);
       } else {
         showBrowserLoginError(result.error || result.reason || 'Pairing was rejected or timed out', result.details || null);
         resetPairingUI();
       }
     });
+
+  function showCandidateSelectionModal(candidates) {
+    if (!browserLoginError) return;
+    browserLoginError.innerHTML = '';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'browser-login-candidate-title';
+    titleEl.style.fontWeight = 'bold';
+    titleEl.style.marginBottom = '8px';
+    titleEl.textContent = 'Phát hiện nhiều tài khoản. Vui lòng chọn tài khoản muốn kết nối:';
+    browserLoginError.appendChild(titleEl);
+
+    const listEl = document.createElement('div');
+    listEl.className = 'browser-login-candidate-list';
+    listEl.style.display = 'flex';
+    listEl.style.flexDirection = 'column';
+    listEl.style.gap = '6px';
+
+    for (const c of candidates) {
+      const itemBtn = document.createElement('button');
+      itemBtn.type = 'button';
+      itemBtn.className = 'btn-candidate-select';
+      itemBtn.style.display = 'flex';
+      itemBtn.style.alignItems = 'center';
+      itemBtn.style.gap = '8px';
+      itemBtn.style.padding = '8px 12px';
+      itemBtn.style.background = 'rgba(255, 255, 255, 0.08)';
+      itemBtn.style.border = '1px solid rgba(255, 255, 255, 0.15)';
+      itemBtn.style.borderRadius = '8px';
+      itemBtn.style.color = '#fff';
+      itemBtn.style.cursor = 'pointer';
+      itemBtn.style.textAlign = 'left';
+
+      if (c.avatarUrl) {
+        const img = document.createElement('img');
+        img.src = c.avatarUrl;
+        img.style.width = '24px';
+        img.style.height = '24px';
+        img.style.borderRadius = '50%';
+        itemBtn.appendChild(img);
+      }
+
+      const infoSpan = document.createElement('span');
+      infoSpan.textContent = (c.name || 'User') + (c.handle ? ' (' + c.handle + ')' : '') + (c.pageId ? ' [Channel]' : ' [Google Account]');
+      itemBtn.appendChild(infoSpan);
+
+      itemBtn.addEventListener('click', async () => {
+        itemBtn.disabled = true;
+        if (state.serverPort) {
+          try {
+            const resp = await fetch(`http://127.0.0.1:${state.serverPort}/api/ytm/switch-account`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: c.pageId || c.name })
+            });
+            const data = await resp.json();
+            if (data && data.success && data.account) {
+              onLoginSuccess(data.account);
+              return;
+            }
+          } catch (_) {}
+        }
+        // Fallback default activation
+        onLoginSuccess(c);
+      });
+
+      listEl.appendChild(itemBtn);
+    }
+
+    browserLoginError.appendChild(listEl);
+    browserLoginError.classList.remove('hidden');
+  }
   }
 
   if (btnGoogleLogin) {
