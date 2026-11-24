@@ -79,6 +79,75 @@ function refreshAccessToken(refreshToken, fetchImpl = fetch) {
   return requestToken(params, fetchImpl);
 }
 
+async function executeGoogleLogout({
+  serverPort,
+  fetchImpl = globalThis.fetch,
+  readOAuthData = () => null,
+  cleanLocalSession = async () => {},
+  revokeOAuthToken = async () => {}
+} = {}) {
+  if (!serverPort) {
+    return {
+      success: false,
+      error: 'Cannot logout: YouTube Music backend service is not running or available'
+    };
+  }
+
+  try {
+    const clearRes = await fetchImpl(`http://127.0.0.1:${serverPort}/api/ytm/clear-accounts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined
+    });
+
+    if (!clearRes || !clearRes.ok) {
+      const errBody = clearRes && typeof clearRes.json === 'function' ? await clearRes.json().catch(() => null) : null;
+      return {
+        success: false,
+        error: (errBody && errBody.error) || `Failed to clear server accounts (HTTP ${clearRes ? clearRes.status : 'ERR'})`
+      };
+    }
+
+    const clearData = typeof clearRes.json === 'function' ? await clearRes.json().catch(() => null) : null;
+    if (!clearData || clearData.success !== true || clearData.cleared !== true) {
+      return {
+        success: false,
+        error: (clearData && clearData.error) || 'Failed to persist cleared accounts on disk'
+      };
+    }
+  } catch (netErr) {
+    return {
+      success: false,
+      error: `Logout failed: unable to reach backend service (${netErr.message || 'Network error'})`
+    };
+  }
+
+  // Only after backend successfully verified and persisted cleared accounts to disk, clean local session
+  try {
+    await cleanLocalSession();
+  } catch (cleanErr) {
+    return {
+      success: false,
+      error: cleanErr && cleanErr.message ? cleanErr.message : 'Failed to clean local session'
+    };
+  }
+
+  // Best effort OAuth revocation
+  let revokeToken = '';
+  try {
+    const auth = readOAuthData();
+    revokeToken = auth && auth.refreshToken ? auth.refreshToken : '';
+  } catch (_) {}
+
+  if (revokeToken && typeof revokeOAuthToken === 'function') {
+    try {
+      await revokeOAuthToken(revokeToken);
+    } catch (_) {}
+  }
+
+  return { success: true };
+}
+
 module.exports = {
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
@@ -88,5 +157,6 @@ module.exports = {
   createOAuthState,
   createAuthorizationUrl,
   exchangeAuthorizationCode,
-  refreshAccessToken
+  refreshAccessToken,
+  executeGoogleLogout
 };

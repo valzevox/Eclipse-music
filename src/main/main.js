@@ -14,7 +14,8 @@ const {
   createOAuthState,
   createAuthorizationUrl,
   exchangeAuthorizationCode,
-  refreshAccessToken
+  refreshAccessToken,
+  executeGoogleLogout
 } = require('./google-oauth');
 const { fetchYouTubeLibrary } = require('./youtube-data');
 const googleOAuthCfg = require('./google-oauth');
@@ -2038,53 +2039,27 @@ ipcMain.on('window-minimize', () => {
 
       ipcMain.handle('google-logout', async () => {
         capturedGoogleCookieHeader = '';
-        let revokeToken = '';
-        try {
-          const auth = readGoogleOAuthData();
-          revokeToken = auth && auth.refreshToken ? auth.refreshToken : '';
-        } catch (_) {}
-
-        if (serverPort) {
-          try {
-            const clearRes = await fetch(`http://127.0.0.1:${serverPort}/api/ytm/clear-accounts`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              signal: AbortSignal.timeout(5000)
-            });
-            if (!clearRes.ok) {
-              const errBody = await clearRes.json().catch(() => null);
-              return { success: false, error: (errBody && errBody.error) || 'Failed to clear server accounts' };
-            }
-            const clearData = await clearRes.json().catch(() => null);
-            if (!clearData || clearData.success !== true || clearData.cleared !== true) {
-              return { success: false, error: (clearData && clearData.error) || 'Failed to persist cleared accounts on disk' };
-            }
-          } catch (netErr) {
-            return { success: false, error: `Logout failed: unable to reach backend service (${netErr.message})` };
-          }
-        }
-
-        try {
-          fs.mkdirSync(DATA_DIR, { recursive: true });
-          fs.writeFileSync(YT_LOGOUT_FLAG, '1', 'utf8');
-          if (fs.existsSync(GOOGLE_OAUTH_FILE)) fs.unlinkSync(GOOGLE_OAUTH_FILE);
-          if (fs.existsSync(YT_COOKIES_FILE)) fs.unlinkSync(YT_COOKIES_FILE);
-          const s = session.fromPartition('persist:eclipse-google');
-          await s.clearStorageData();
-        } catch (e) {
-          return { success: false, error: e && e.message ? e.message : 'Logout failed' };
-        }
-        if (revokeToken) {
-          try {
+        return await executeGoogleLogout({
+          serverPort,
+          fetchImpl: fetch,
+          readOAuthData: readGoogleOAuthData,
+          cleanLocalSession: async () => {
+            fs.mkdirSync(DATA_DIR, { recursive: true });
+            fs.writeFileSync(YT_LOGOUT_FLAG, '1', 'utf8');
+            if (fs.existsSync(GOOGLE_OAUTH_FILE)) fs.unlinkSync(GOOGLE_OAUTH_FILE);
+            if (fs.existsSync(YT_COOKIES_FILE)) fs.unlinkSync(YT_COOKIES_FILE);
+            const s = session.fromPartition('persist:eclipse-google');
+            await s.clearStorageData();
+          },
+          revokeOAuthToken: async (token) => {
             await fetch('https://oauth2.googleapis.com/revoke', {
               method: 'POST',
               headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-              body: new URLSearchParams({ token: revokeToken }),
+              body: new URLSearchParams({ token }),
               signal: AbortSignal.timeout(10000)
             });
-          } catch (_) {}
-        }
-        return { success: true };
+          }
+        });
       });
 
       ipcMain.handle('google-login', async (event) => {

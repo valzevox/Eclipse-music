@@ -11,7 +11,8 @@ const {
   createOAuthState,
   createAuthorizationUrl,
   exchangeAuthorizationCode,
-  refreshAccessToken
+  refreshAccessToken,
+  executeGoogleLogout
 } = require('../src/main/google-oauth');
 const { fetchYouTubeLibrary } = require('../src/main/youtube-data');
 
@@ -281,4 +282,90 @@ test('google-auth-status Detailed Auth Status logic verifies fail-closed invaria
   });
   assert.equal(res5.loggedIn, false);
   assert.equal(res5.ytmConnected, false);
+});
+
+test('executeGoogleLogout enforces strict fail-closed durability and preserves local session until verified', async () => {
+  let localSessionCleaned = false;
+  let oauthTokenRevoked = false;
+
+  const resetState = () => {
+    localSessionCleaned = false;
+    oauthTokenRevoked = false;
+  };
+
+  // 1. serverPort is null / undefined -> FAIL-CLOSED immediately
+  resetState();
+  const resNoPort = await executeGoogleLogout({
+    serverPort: null,
+    fetchImpl: async () => assert.fail('fetch should not be called without serverPort'),
+    cleanLocalSession: async () => { localSessionCleaned = true; }
+  });
+  assert.equal(resNoPort.success, false);
+  assert.match(resNoPort.error, /YouTube Music backend service is not running or available/);
+  assert.equal(localSessionCleaned, false, 'Local session MUST NOT be cleaned if serverPort is missing');
+
+  // 2. Backend returns HTTP 500 error -> FAIL-CLOSED
+  resetState();
+  const res500 = await executeGoogleLogout({
+    serverPort: 38472,
+    fetchImpl: async () => ({
+      ok: false,
+      status: 500,
+      json: async () => ({ success: false, error: 'Database locked' })
+    }),
+    cleanLocalSession: async () => { localSessionCleaned = true; }
+  });
+  assert.equal(res500.success, false);
+  assert.match(res500.error, /Database locked/);
+  assert.equal(localSessionCleaned, false, 'Local session MUST NOT be cleaned when server returns HTTP 500');
+
+  // 3. Backend returns cleared: false -> FAIL-CLOSED
+  resetState();
+  const resClearedFalse = await executeGoogleLogout({
+    serverPort: 38472,
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: false, cleared: false, error: 'Encrypted storage flush error' })
+    }),
+    cleanLocalSession: async () => { localSessionCleaned = true; }
+  });
+  assert.equal(resClearedFalse.success, false);
+  assert.match(resClearedFalse.error, /Encrypted storage flush error/);
+  assert.equal(localSessionCleaned, false, 'Local session MUST NOT be cleaned when clearAccounts fails to persist');
+
+  // 4. Network timeout / connection error -> FAIL-CLOSED
+  resetState();
+  const resTimeout = await executeGoogleLogout({
+    serverPort: 38472,
+    fetchImpl: async () => { throw new Error('ETIMEDOUT'); },
+    cleanLocalSession: async () => { localSessionCleaned = true; }
+  });
+  assert.equal(resTimeout.success, false);
+  assert.match(resTimeout.error, /unable to reach backend service/);
+  assert.equal(localSessionCleaned, false, 'Local session MUST NOT be cleaned on network timeout');
+
+  // 5. Backend returns success: true and cleared: true -> SUCCESS and local session cleaned
+  resetState();
+  const resSuccess = await executeGoogleLogout({
+    serverPort: 38472,
+    fetchImpl: async (url, opts) => {
+      assert.ok(url.endsWith('/api/ytm/clear-accounts'));
+      assert.equal(opts.method, 'POST');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true, cleared: true })
+      };
+    },
+    readOAuthData: () => ({ refreshToken: 'refresh-token-xyz' }),
+    cleanLocalSession: async () => { localSessionCleaned = true; },
+    revokeOAuthToken: async (tok) => {
+      assert.equal(tok, 'refresh-token-xyz');
+      oauthTokenRevoked = true;
+    }
+  });
+  assert.equal(resSuccess.success, true);
+  assert.equal(localSessionCleaned, true, 'Local session is cleaned only after verified server durability');
+  assert.equal(oauthTokenRevoked, true, 'OAuth token revocation is triggered');
 });

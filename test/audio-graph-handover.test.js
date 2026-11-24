@@ -321,6 +321,50 @@ test('P0-4 & P0-5 & P0-6 & P0-7 & P0-9: Full crossfade ends at Deck A=0, Deck B=
     await new Promise(r => setTimeout(r, 3600));
     assert.strictEqual(timeoutNativeEl.muted, false, 'nativeAudio unmuted on playing timeout');
     assert.strictEqual(engine.deckBGain.gain.value, 1.0, 'Deck B preserved on playing timeout');
+
+    // 1. Readiness timeout: native audio unmuted, aux continues playing, Deck B preserved
+    const readinessTimeoutNativeEl = createMockAudioElement('native-readiness-timeout');
+    readinessTimeoutNativeEl.src = 'https://stream/new-unloaded';
+    readinessTimeoutNativeEl.readyState = 0; // never reaches canplay or loadedmetadata
+    readinessTimeoutNativeEl.muted = false;
+    handover.executeSwap(readinessTimeoutNativeEl, auxEl, token, {
+      onDeckGainsReset: () => engine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 0 })
+    });
+    assert.strictEqual(readinessTimeoutNativeEl.muted, true, 'nativeAudio muted during pending readiness');
+    await new Promise(r => setTimeout(r, 4100)); // wait for readinessTimeout (4000ms)
+    assert.strictEqual(readinessTimeoutNativeEl.muted, false, 'nativeAudio unmuted on readiness timeout');
+    assert.strictEqual(engine.deckBGain.gain.value, 1.0, 'Deck B preserved at 1.0 on readiness timeout');
+    assert.strictEqual(auxEl.paused, false, 'Aux continues playing on readiness timeout');
+
+    // 2. Stale owner invocation: loadToken changes while waiting for playing
+    const staleState = { loadToken: 101 };
+    const staleNativeEl = createMockAudioElement('native-stale');
+    staleNativeEl.src = auxEl.src;
+    staleNativeEl.readyState = 4;
+    let stalePlayTrigger = null;
+    staleNativeEl.play = () => new Promise(res => { stalePlayTrigger = res; });
+    handover.executeSwap(staleNativeEl, auxEl, token, {
+      currentToken: 101,
+      state: staleState,
+      onDeckGainsReset: () => engine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 0 })
+    });
+    // Invalidate token before 'playing' event fires
+    staleState.loadToken = 102;
+    staleNativeEl.emit('playing');
+    assert.strictEqual(staleNativeEl.muted, false, 'nativeAudio unmuted when owner invocation is stale');
+    assert.strictEqual(engine.deckBGain.gain.value, 1.0, 'Deck B preserved when owner invocation is stale');
+
+    // 3. Native error event during handover: mute restored, aux continues
+    const errorNativeEl = createMockAudioElement('native-error-event');
+    errorNativeEl.src = 'https://stream/error-stream';
+    errorNativeEl.readyState = 0;
+    handover.executeSwap(errorNativeEl, auxEl, token, {
+      onDeckGainsReset: () => engine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 0 })
+    });
+    errorNativeEl.emit('error', new Error('Media network error'));
+    assert.strictEqual(errorNativeEl.muted, false, 'nativeAudio unmuted on native error event');
+    assert.strictEqual(engine.deckBGain.gain.value, 1.0, 'Deck B preserved on native error event');
+    assert.strictEqual(auxEl.paused, false, 'Aux continues playing on native error event');
   } finally {
     global.window = prevWindow;
   }
