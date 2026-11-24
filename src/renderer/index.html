@@ -1723,9 +1723,15 @@
                       <path d="M12 0C5.376 0 0 5.376 0 12s5.376 12 12 12 12-5.376 12-12S18.624 0 12 0zm0 19.104c-3.924 0-7.104-3.18-7.104-7.104S8.076 4.896 12 4.896s7.104 3.18 7.104 7.104-3.18 7.104-7.104 7.104zm0-13.333c-3.44 0-6.229 2.789-6.229 6.229s2.789 6.229 6.229 6.229 6.229-2.789 6.229-6.229-2.789-6.229-6.229-6.229zm-1.75 9.138V9.091l5.426 3.092-5.426 3.092z"/>
                     </svg>
                   </span>
-                  <span class="setting-name">YouTube Music</span>
+                  <div style="display: flex; flex-direction: column;">
+                    <span class="setting-name">YouTube Music</span>
+                    <span id="settings-ytm-account-status" style="font-size: calc(12px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">Not connected</span>
+                  </div>
                 </div>
-                <button class="btn-pill-primary btn-open-link-import" id="btn-open-ytm-import" data-platform="ytmusic" type="button">Import</button>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <button class="btn-outline-pill" id="btn-settings-connect-ytm" type="button">Connect</button>
+                  <button class="btn-pill-primary btn-open-link-import" id="btn-open-ytm-import" data-platform="ytmusic" type="button">Import</button>
+                </div>
               </div>
             </div>
 
@@ -3935,6 +3941,70 @@
 
   <div class="toast-container" id="toast-container"></div>
 
+  <!-- Browser Login & Extension Pairing Dialog (SimpMusic Style) -->
+  <div id="browser-login-dialog" class="dialog-overlay hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(12px); display: none; align-items: center; justify-content: center; z-index: 10000;">
+    <div class="dialog-card glass-panel" style="width: 480px; max-width: 90vw; max-height: 85vh; background: #14121e; border: 1px solid rgba(255,255,255,0.12); border-radius: 16px; padding: 24px; box-shadow: 0 16px 40px rgba(0,0,0,0.6); display: flex; flex-direction: column; gap: 16px; overflow-y: auto;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h3 style="margin: 0; font-size: 18px; font-weight: 600; color: #fff;">Connect YouTube Music</h3>
+        <button type="button" id="btn-close-browser-login" style="background: transparent; border: none; color: #94a3b8; font-size: 20px; cursor: pointer; padding: 4px;">&times;</button>
+      </div>
+      <div style="font-size: 13px; color: #94a3b8; line-height: 1.4;">
+        Choose a browser profile to connect your YouTube Music session or pair via the Eclipse extension.
+      </div>
+
+      <!-- Section: Browser Profiles -->
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 12px; font-weight: 600; color: #a855f7; text-transform: uppercase; letter-spacing: 0.5px;">Browser Profiles</span>
+          <button type="button" id="btn-refresh-browser-profiles" class="btn-outline-pill" style="padding: 4px 10px; font-size: 11px;">Refresh</button>
+        </div>
+        <div id="browser-profiles-list" style="display: flex; flex-direction: column; gap: 8px; min-height: 60px;">
+          <div style="text-align: center; color: #64748b; font-size: 13px; padding: 12px;">Discovering browser profiles...</div>
+        </div>
+      </div>
+
+      <!-- Section: Extension Pairing -->
+      <div style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 14px; display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 12px; font-weight: 600; color: #a855f7; text-transform: uppercase; letter-spacing: 0.5px;">Eclipse Browser Extension</span>
+          <span id="extension-pairing-badge" style="font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(148,163,184,0.15); color: #94a3b8;">Ready</span>
+        </div>
+        <div style="font-size: 12px; color: #94a3b8; line-height: 1.4;">
+          For Google Chrome, Microsoft Edge, and Brave Browser on Windows:
+        </div>
+        
+        <div id="extension-pairing-info" class="hidden" style="background: rgba(168,85,247,0.08); border: 1px solid rgba(168,85,247,0.2); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px;">
+          <div style="display: flex; justify-content: space-between; font-size: 12px;">
+            <span style="color: #cbd5e1;">Pairing Port:</span>
+            <code id="pairing-port-val" style="color: #c084fc; font-weight: bold;">--</code>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 12px; align-items: center;">
+            <span style="color: #cbd5e1;">One-Time Nonce:</span>
+            <div style="display: flex; gap: 6px; align-items: center;">
+              <code id="pairing-nonce-val" style="color: #c084fc; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">--</code>
+              <button type="button" id="btn-copy-pairing-nonce" class="btn-outline-pill" style="padding: 2px 8px; font-size: 11px;">Copy</button>
+            </div>
+          </div>
+          <div style="font-size: 11px; color: #94a3b8; font-style: italic;">
+            Waiting for extension connection (expires in 120s)...
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button type="button" id="btn-start-extension-pairing" class="btn-pill-primary" style="flex: 1; padding: 8px 12px; font-size: 12px; justify-content: center;">Start Pairing</button>
+          <button type="button" id="btn-cancel-extension-pairing" class="btn-outline-pill hidden" style="padding: 8px 12px; font-size: 12px;">Cancel</button>
+        </div>
+
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px;">
+          <button type="button" id="btn-open-edge-ext" class="btn-outline-pill" style="flex: 1; padding: 6px 10px; font-size: 11px; justify-content: center;">Open Edge Extensions</button>
+          <button type="button" id="btn-open-chrome-ext" class="btn-outline-pill" style="flex: 1; padding: 6px 10px; font-size: 11px; justify-content: center;">Open Chrome Extensions</button>
+        </div>
+      </div>
+
+      <div id="browser-login-error" class="hidden" style="color: #f87171; font-size: 12px; line-height: 1.4; background: rgba(248,113,113,0.1); padding: 8px 12px; border-radius: 6px;"></div>
+    </div>
+  </div>
+
   <div id="css-editor" class="css-editor hidden">
     <div class="css-editor-bar">
       <span class="css-editor-title">CSS editor</span>
@@ -4132,69 +4202,5 @@
     </div>
 
   <div class="modal-backdrop hidden" id="offline-mode-modal"><div class="dialog-card" style="max-width:380px;text-align:center;align-items:center;gap:14px;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg><p style="margin:0;font-size:15px;font-weight:600;line-height:1.45;color:var(--md-sys-color-on-surface);" data-i18n>You are in offline mode because there is no WiFi connection.</p><div class="dialog-actions" style="justify-content:center;width:100%;gap:10px;"><button type="button" class="btn-outline-pill" id="btn-offline-ok" style="flex:1;justify-content:center;" data-i18n>OK</button><button type="button" class="btn-pill-primary" id="btn-offline-retry" style="flex:1;justify-content:center;" data-i18n>Retry</button></div></div></div>
-
-  <!-- Browser Login & Extension Pairing Dialog (SimpMusic Style) -->
-  <div id="browser-login-dialog" class="dialog-overlay hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(12px); display: none; align-items: center; justify-content: center; z-index: 10000;">
-    <div class="dialog-card glass-panel" style="width: 480px; max-width: 90vw; max-height: 85vh; background: #14121e; border: 1px solid rgba(255,255,255,0.12); border-radius: 16px; padding: 24px; box-shadow: 0 16px 40px rgba(0,0,0,0.6); display: flex; flex-direction: column; gap: 16px; overflow-y: auto;">
-      <div style="display: flex; justify-content: space-between; align-items: center;">
-        <h3 style="margin: 0; font-size: 18px; font-weight: 600; color: #fff;">Connect YouTube Music</h3>
-        <button type="button" id="btn-close-browser-login" style="background: transparent; border: none; color: #94a3b8; font-size: 20px; cursor: pointer; padding: 4px;">&times;</button>
-      </div>
-      <div style="font-size: 13px; color: #94a3b8; line-height: 1.4;">
-        Choose a browser profile to connect your YouTube Music session or pair via the Eclipse extension.
-      </div>
-
-      <!-- Section: Browser Profiles -->
-      <div style="display: flex; flex-direction: column; gap: 8px;">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-size: 12px; font-weight: 600; color: #a855f7; text-transform: uppercase; letter-spacing: 0.5px;">Browser Profiles</span>
-          <button type="button" id="btn-refresh-browser-profiles" class="btn-outline-pill" style="padding: 4px 10px; font-size: 11px;">Refresh</button>
-        </div>
-        <div id="browser-profiles-list" style="display: flex; flex-direction: column; gap: 8px; min-height: 60px;">
-          <div style="text-align: center; color: #64748b; font-size: 13px; padding: 12px;">Discovering browser profiles...</div>
-        </div>
-      </div>
-
-      <!-- Section: Extension Pairing -->
-      <div style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 14px; display: flex; flex-direction: column; gap: 10px;">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-size: 12px; font-weight: 600; color: #a855f7; text-transform: uppercase; letter-spacing: 0.5px;">Eclipse Browser Extension</span>
-          <span id="extension-pairing-badge" style="font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(148,163,184,0.15); color: #94a3b8;">Ready</span>
-        </div>
-        <div style="font-size: 12px; color: #94a3b8; line-height: 1.4;">
-          For Google Chrome, Microsoft Edge, and Brave Browser on Windows:
-        </div>
-        
-        <div id="extension-pairing-info" class="hidden" style="background: rgba(168,85,247,0.08); border: 1px solid rgba(168,85,247,0.2); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px;">
-          <div style="display: flex; justify-content: space-between; font-size: 12px;">
-            <span style="color: #cbd5e1;">Pairing Port:</span>
-            <code id="pairing-port-val" style="color: #c084fc; font-weight: bold;">--</code>
-          </div>
-          <div style="display: flex; justify-content: space-between; font-size: 12px; align-items: center;">
-            <span style="color: #cbd5e1;">One-Time Nonce:</span>
-            <div style="display: flex; gap: 6px; align-items: center;">
-              <code id="pairing-nonce-val" style="color: #c084fc; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">--</code>
-              <button type="button" id="btn-copy-pairing-nonce" class="btn-outline-pill" style="padding: 2px 8px; font-size: 11px;">Copy</button>
-            </div>
-          </div>
-          <div style="font-size: 11px; color: #94a3b8; font-style: italic;">
-            Waiting for extension connection (expires in 120s)...
-          </div>
-        </div>
-
-        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-          <button type="button" id="btn-start-extension-pairing" class="btn-pill-primary" style="flex: 1; padding: 8px 12px; font-size: 12px; justify-content: center;">Start Pairing</button>
-          <button type="button" id="btn-cancel-extension-pairing" class="btn-outline-pill hidden" style="padding: 8px 12px; font-size: 12px;">Cancel</button>
-        </div>
-
-        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px;">
-          <button type="button" id="btn-open-edge-ext" class="btn-outline-pill" style="flex: 1; padding: 6px 10px; font-size: 11px; justify-content: center;">Open Edge Extensions</button>
-          <button type="button" id="btn-open-chrome-ext" class="btn-outline-pill" style="flex: 1; padding: 6px 10px; font-size: 11px; justify-content: center;">Open Chrome Extensions</button>
-        </div>
-      </div>
-
-      <div id="browser-login-error" class="hidden" style="color: #f87171; font-size: 12px; line-height: 1.4; background: rgba(248,113,113,0.1); padding: 8px 12px; border-radius: 6px;"></div>
-    </div>
-  </div>
 </body>
 </html>

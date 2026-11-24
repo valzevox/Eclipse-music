@@ -38,7 +38,10 @@ async function readGeckoCookies(profilePath) {
     }
 
     if (!sqlite3) {
-      throw new BrowserLoginException(BrowserLoginFailure.UNSUPPORTED_ENCRYPTION, 'SQLite driver unavailable in runtime');
+      throw new BrowserLoginException(
+        BrowserLoginFailure.UNSUPPORTED_ENCRYPTION,
+        'Native Gecko cookie reading requires SQLite driver. Please use the Eclipse Extension to connect your session.'
+      );
     }
 
     const records = [];

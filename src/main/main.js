@@ -1868,19 +1868,24 @@ ipcMain.on('window-minimize', () => {
 
       ipcMain.handle('browser-login:start-pairing', async (event) => {
         try {
+          const sender = event.sender;
           browserLoginService.ytmAuthUrl = `http://127.0.0.1:${serverPort || 38472}/api/ytm/intercept-cookie`;
           const sessionInfo = await browserLoginService.startPairingSession(
             (authResult) => {
               try {
-                if (win && !win.isDestroyed()) {
-                  win.webContents.send('browser-login:pairing-result', { success: true, account: authResult.account });
+                if (sender && !sender.isDestroyed()) {
+                  sender.send('browser-login:pairing-result', { success: true, account: authResult.account });
+                } else if (mainWindow && !mainWindow.isDestroyed()) {
+                  mainWindow.webContents.send('browser-login:pairing-result', { success: true, account: authResult.account });
                 }
               } catch (_) {}
             },
             (err) => {
               try {
-                if (win && !win.isDestroyed()) {
-                  win.webContents.send('browser-login:pairing-result', { success: false, error: err.message, reason: err.reason });
+                if (sender && !sender.isDestroyed()) {
+                  sender.send('browser-login:pairing-result', { success: false, error: err.message, reason: err.reason });
+                } else if (mainWindow && !mainWindow.isDestroyed()) {
+                  mainWindow.webContents.send('browser-login:pairing-result', { success: false, error: err.message, reason: err.reason });
                 }
               } catch (_) {}
             }

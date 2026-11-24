@@ -28,8 +28,10 @@ class BrowserLoginService {
         try {
           const authResult = await this.authenticateWithRecords(cookieRecords);
           if (typeof onSuccess === 'function') onSuccess(authResult);
+          return authResult;
         } catch (err) {
           if (typeof onError === 'function') onError(err);
+          throw err;
         }
       }
     });

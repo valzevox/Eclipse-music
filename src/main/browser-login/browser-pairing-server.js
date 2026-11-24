@@ -152,19 +152,38 @@ class BrowserPairingServer {
           }));
         }
 
-        res.writeHead(200, {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': origin
-        });
-        res.end(JSON.stringify({ success: true }));
-
-        // Notify callback
+        // Verify with callback first before returning HTTP 200 (fail-closed)
         if (typeof this.onCookiesReceived === 'function') {
-          this.onCookiesReceived(cookieRecords);
-        }
+          try {
+            const authResult = await this.onCookiesReceived(cookieRecords);
+            res.writeHead(200, {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': origin
+            });
+            res.end(JSON.stringify({ success: true, account: authResult && authResult.account }));
 
-        // Auto close server upon successful consumption
-        setTimeout(() => this.close(), 1000);
+            // Auto close server upon successful verification
+            setTimeout(() => this.close(), 1000);
+          } catch (verifyErr) {
+            res.writeHead(400, {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': origin
+            });
+            res.end(JSON.stringify({
+              success: false,
+              error: verifyErr && verifyErr.message ? verifyErr.message : BrowserLoginFailure.SESSION_REJECTED,
+              reason: verifyErr && verifyErr.reason ? verifyErr.reason : BrowserLoginFailure.SESSION_REJECTED
+            }));
+            setTimeout(() => this.close(BrowserLoginFailure.SESSION_REJECTED), 1000);
+          }
+        } else {
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': origin
+          });
+          res.end(JSON.stringify({ success: true }));
+          setTimeout(() => this.close(), 1000);
+        }
       } catch (err) {
         res.writeHead(400, {
           'Content-Type': 'application/json',

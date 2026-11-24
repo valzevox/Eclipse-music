@@ -130,11 +130,12 @@ test('10 & 11: Secret redaction in BrowserCookieRecord.toString()', () => {
   assert.ok(str.includes('[REDACTED]'));
 });
 
-test('12 & 13 & 14 & 15: BrowserPairingServer loopback, nonce validation, replay rejection, expiry', async () => {
+test('12 & 13 & 14 & 15: BrowserPairingServer loopback, nonce validation, replay rejection, expiry and async verification', async () => {
   let receivedCookies = null;
   const server = new BrowserPairingServer({
-    onCookiesReceived: (cookies) => {
+    onCookiesReceived: async (cookies) => {
       receivedCookies = cookies;
+      return { success: true, account: { id: 'test_user', name: 'Test User' } };
     },
     timeoutMs: 2000 // short timeout for testing
   });
@@ -183,12 +184,13 @@ test('12 & 13 & 14 & 15: BrowserPairingServer loopback, nonce validation, replay
     });
     assert.equal(badNonceRes.status, 401);
 
-    // 2. Successful pairing
+    // 2. Successful pairing awaits verification and returns account info
     const successRes = await postJson(session.port, '/api/extension/pair', testPayload, {
       'X-Eclipse-Nonce': session.nonce
     });
     assert.equal(successRes.status, 200);
     assert.equal(successRes.body.success, true);
+    assert.equal(successRes.body.account.name, 'Test User');
     assert.ok(receivedCookies);
     assert.equal(receivedCookies.length, 2);
     assert.equal(receivedCookies[0].name, 'SAPISID');
@@ -199,5 +201,113 @@ test('12 & 13 & 14 & 15: BrowserPairingServer loopback, nonce validation, replay
     assert.equal(replayRes.body.error, BrowserLoginFailure.PAIRING_REPLAYED);
   } finally {
     server.close();
+  }
+});
+
+test('16: BrowserPairingServer returns HTTP 400 when verification fails', async () => {
+  const server = new BrowserPairingServer({
+    onCookiesReceived: async () => {
+      const err = new Error('Verification failed with InnerTube');
+      err.reason = BrowserLoginFailure.SESSION_REJECTED;
+      throw err;
+    },
+    timeoutMs: 2000
+  });
+
+  const session = await server.start();
+  const testPayload = {
+    nonce: session.nonce,
+    cookies: [{ name: 'SAPISID', value: 'bad_token', domain: '.youtube.com' }]
+  };
+
+  const postJson = (port, path, body, headers = {}) => {
+    return new Promise((resolve, reject) => {
+      const data = JSON.stringify(body);
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'POST',
+        headers: Object.assign({
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(data),
+          'Origin': 'chrome-extension://abcdefghijklm'
+        }, headers)
+      }, (res) => {
+        let resBody = '';
+        res.on('data', d => resBody += d);
+        res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(resBody || '{}') }));
+      });
+      req.on('error', reject);
+      req.write(data);
+      req.end();
+    });
+  };
+
+  try {
+    const failRes = await postJson(session.port, '/api/extension/pair', testPayload, {
+      'X-Eclipse-Nonce': session.nonce
+    });
+    assert.equal(failRes.status, 400);
+    assert.equal(failRes.body.success, false);
+    assert.equal(failRes.body.reason, BrowserLoginFailure.SESSION_REJECTED);
+  } finally {
+    server.close();
+  }
+});
+
+test('17: Extension manifest includes optional_host_permissions for loopback', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../src/extensions/eclipse-connect/manifest.json'), 'utf8'));
+  assert.ok(Array.isArray(manifest.optional_host_permissions));
+  assert.ok(manifest.optional_host_permissions.includes('http://127.0.0.1/*'));
+});
+
+test('18: index.html DOM initialization order — browser-login-dialog occurs BEFORE app.js script', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, '../src/renderer/index.html'), 'utf8');
+
+  // Must exist exactly once
+  const dialogMatches = html.match(/id="browser-login-dialog"/g) || [];
+  assert.equal(dialogMatches.length, 1, 'browser-login-dialog must occur exactly once');
+
+  const appScriptMatches = html.match(/src="app\.js"/g) || [];
+  assert.equal(appScriptMatches.length, 1, 'app.js script tag must occur exactly once');
+
+  const dialogIndex = html.indexOf('id="browser-login-dialog"');
+  const appScriptIndex = html.indexOf('src="app.js"');
+
+  assert.ok(dialogIndex > 0, 'browser-login-dialog must exist');
+  assert.ok(appScriptIndex > 0, 'app.js script tag must exist');
+  assert.ok(
+    dialogIndex < appScriptIndex,
+    `browser-login-dialog (offset ${dialogIndex}) MUST appear BEFORE app.js (offset ${appScriptIndex})`
+  );
+
+  // Required modal control IDs must exist exactly once
+  const requiredIds = [
+    'btn-close-browser-login',
+    'btn-refresh-browser-profiles',
+    'browser-profiles-list',
+    'extension-pairing-info',
+    'extension-pairing-badge',
+    'pairing-port-val',
+    'pairing-nonce-val',
+    'btn-copy-pairing-nonce',
+    'btn-start-extension-pairing',
+    'btn-cancel-extension-pairing',
+    'btn-open-edge-ext',
+    'btn-open-chrome-ext',
+    'browser-login-error',
+    'btn-settings-connect-ytm',
+    'btn-google-login'
+  ];
+
+  for (const id of requiredIds) {
+    const re = new RegExp(`id="${id}"`, 'g');
+    const matches = html.match(re) || [];
+    assert.equal(matches.length, 1, `Element ID "${id}" must exist exactly once in index.html`);
   }
 });

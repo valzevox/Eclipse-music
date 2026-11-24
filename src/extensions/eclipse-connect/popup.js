@@ -62,6 +62,20 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
+      // Request localhost permission dynamically if optional_host_permissions declared
+      if (chrome.permissions && chrome.permissions.request) {
+        try {
+          const granted = await chrome.permissions.request({
+            origins: ['http://127.0.0.1/*']
+          });
+          if (!granted) {
+            showStatus('Permission to connect to local Eclipse service was denied.', 'error');
+            btnPair.disabled = false;
+            return;
+          }
+        } catch (_) {}
+      }
+
       showStatus('Connecting to Eclipse loopback service...', 'loading');
 
       const pairEndpoint = `http://127.0.0.1:${port}/api/extension/pair`;

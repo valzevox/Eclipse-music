@@ -22546,6 +22546,8 @@ function bindCoverHoldZoom(wrapEl) {
 
   const linkModesContainer = document.getElementById('link-modes');
   const btnGoogleLogin = document.getElementById('btn-google-login');
+  const btnSettingsConnectYtm = document.getElementById('btn-settings-connect-ytm');
+  const settingsYtmAccountStatus = document.getElementById('settings-ytm-account-status');
   const btnGoogleLogout = document.getElementById('btn-google-logout');
   const googleLoginStatus = document.getElementById('google-login-status');
   const googleChkLikes = document.getElementById('google-chk-likes');
@@ -22628,6 +22630,19 @@ function bindCoverHoldZoom(wrapEl) {
         googleLoginStatus.textContent = (lbl === 'Not connected' || !lbl) ? 'Chưa kết nối' : lbl;
         googleLoginStatus.style.color = 'var(--md-sys-color-outline)';
       }
+    }
+    if (settingsYtmAccountStatus) {
+      if (googleConnected) {
+        settingsYtmAccountStatus.textContent = typeof t === 'function' ? t('Connected') : 'Connected';
+        settingsYtmAccountStatus.style.color = '#4caf50';
+      } else {
+        settingsYtmAccountStatus.textContent = typeof t === 'function' ? t('Not connected') : 'Not connected';
+        settingsYtmAccountStatus.style.color = 'var(--md-sys-color-outline)';
+      }
+    }
+    if (btnSettingsConnectYtm) {
+      btnSettingsConnectYtm.textContent = googleConnected ? (typeof t === 'function' ? t('Connected') : 'Connected') : (typeof t === 'function' ? t('Connect') : 'Connect');
+      btnSettingsConnectYtm.disabled = !!googleConnected;
     }
     if (btnGoogleLogin) {
       btnGoogleLogin.classList.toggle('hidden', !!googleConnected);
@@ -22741,8 +22756,18 @@ function bindCoverHoldZoom(wrapEl) {
   const btnOpenChromeExt = document.getElementById('btn-open-chrome-ext');
   const browserLoginError = document.getElementById('browser-login-error');
 
+  if (!browserLoginDialog) {
+    console.error('[BrowserLogin] Critical initialization error: #browser-login-dialog not found in DOM');
+  }
+
   function openBrowserLoginModal() {
-    if (!browserLoginDialog) return;
+    if (!browserLoginDialog) {
+      console.error('[BrowserLogin] Cannot open Browser Login modal: #browser-login-dialog element is missing');
+      if (typeof showToast === 'function') {
+        showToast('Browser Login dialog markup is missing or failed to initialize', 'error');
+      }
+      return;
+    }
     browserLoginDialog.style.display = 'flex';
     browserLoginDialog.classList.remove('hidden');
     refreshBrowserProfilesUI();
@@ -22873,6 +22898,10 @@ function bindCoverHoldZoom(wrapEl) {
     if (googleLoginStatus) {
       googleLoginStatus.textContent = account && account.name ? `Connected: ${account.name}` : 'Connected';
     }
+    if (settingsYtmAccountStatus) {
+      settingsYtmAccountStatus.textContent = account && account.name ? `Connected: ${account.name}` : 'Connected';
+      settingsYtmAccountStatus.style.color = '#4caf50';
+    }
     if (typeof showToast === 'function') {
       showToast(account && account.name ? `Đã kết nối YouTube Music: ${account.name}` : 'Đã kết nối YouTube Music', 'success');
     }
@@ -22936,6 +22965,12 @@ function bindCoverHoldZoom(wrapEl) {
 
   if (btnGoogleLogin) {
     btnGoogleLogin.addEventListener('click', () => {
+      openBrowserLoginModal();
+    });
+  }
+
+  if (btnSettingsConnectYtm) {
+    btnSettingsConnectYtm.addEventListener('click', () => {
       openBrowserLoginModal();
     });
   }
