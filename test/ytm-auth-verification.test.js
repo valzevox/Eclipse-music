@@ -486,4 +486,176 @@ describe('YTM Auth Verification & Production Diagnostics Suite', () => {
     }
   });
 
+  it('13. Chrome account without pageId but with obfuscatedGaiaId authenticates as google_account with null pageId', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-test-ytm-gaia-'));
+    const manager = new YtmAuthManager(tempDir);
+    await manager.init();
+
+    const mockResponsePayload = JSON.stringify({
+      code: 'SUCCESS',
+      data: {
+        contents: [{
+          accountSectionListRenderer: {
+            contents: [{
+              accountItemSectionRenderer: {
+                contents: [{
+                  accountItem: {
+                    accountName: { simpleText: 'Chrome Standard User' },
+                    channelHandle: { simpleText: '@chromeuser' },
+                    isSelected: true,
+                    serviceEndpoint: {
+                      selectActiveIdentityEndpoint: {
+                        supportedTokens: [
+                          { accountSigninToken: { signinUrl: 'https://music.youtube.com?authuser=2' } },
+                          { accountStateToken: { obfuscatedGaiaId: '109876543210987654321', hasChannel: false, isMerged: false } }
+                        ]
+                      }
+                    }
+                  }
+                }]
+              }
+            }]
+          }
+        }]
+      }
+    });
+
+    manager._accountSwitcherTransport = async (url, opts) => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: createReadableStreamFromText(mockResponsePayload)
+    });
+
+    const account = await manager.authenticateWithCookie('SAPISID=test_sapisid; VISITOR_INFO1_LIVE=vis', {
+      sapisidCredential: { name: 'SAPISID', value: 'test_sapisid', domain: '.youtube.com', path: '/', secure: true, expiry: null, scope: 'youtube' }
+    });
+
+    assert.ok(account);
+    assert.ok(account.id.startsWith('ga_'));
+    assert.equal(account.name, 'Chrome Standard User');
+    assert.equal(account.handle, '@chromeuser');
+    assert.equal(account.pageId, null);
+    assert.equal(account.identityType, 'google_account');
+    assert.equal(account.authUser, 2);
+
+    // Verify persistence and re-read
+    const manager2 = new YtmAuthManager(tempDir);
+    await manager2.init();
+    const accounts = manager2.getAccounts();
+    assert.equal(accounts.length, 1);
+    assert.equal(accounts[0].pageId, null);
+    assert.equal(accounts[0].identityType, 'google_account');
+    assert.equal(accounts[0].authUser, 2);
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('14. Account with pageId in signinUrl query parameter extracts pageId cleanly', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-test-ytm-signinpid-'));
+    const manager = new YtmAuthManager(tempDir);
+    await manager.init();
+
+    const mockResponsePayload = JSON.stringify({
+      code: 'SUCCESS',
+      data: {
+        contents: [{
+          accountSectionListRenderer: {
+            contents: [{
+              accountItemSectionRenderer: {
+                contents: [{
+                  accountItem: {
+                    accountName: { simpleText: 'SigninUrl PageId User' },
+                    channelHandle: { simpleText: '@piduser' },
+                    isSelected: true,
+                    serviceEndpoint: {
+                      selectActiveIdentityEndpoint: {
+                        supportedTokens: [
+                          { accountSigninToken: { signinUrl: '/?authuser=1&pageid=PAGE_VIA_URL_456' } }
+                        ]
+                      }
+                    }
+                  }
+                }]
+              }
+            }]
+          }
+        }]
+      }
+    });
+
+    manager._accountSwitcherTransport = async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: createReadableStreamFromText(mockResponsePayload)
+    });
+
+    const account = await manager.authenticateWithCookie('SAPISID=test_sapisid;', {
+      sapisidCredential: { name: 'SAPISID', value: 'test_sapisid', domain: '.youtube.com', path: '/', secure: true, expiry: null, scope: 'youtube' }
+    });
+
+    assert.equal(account.id, 'PAGE_VIA_URL_456');
+    assert.equal(account.pageId, 'PAGE_VIA_URL_456');
+    assert.equal(account.identityType, 'brand_channel');
+    assert.equal(account.authUser, 1);
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('15. Account with neither pageId nor obfuscatedGaiaId throws NO_STABLE_ACCOUNT_ID with identityDetails', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-test-ytm-nostable-'));
+    const manager = new YtmAuthManager(tempDir);
+    await manager.init();
+
+    const mockResponsePayload = JSON.stringify({
+      code: 'SUCCESS',
+      data: {
+        contents: [{
+          accountSectionListRenderer: {
+            contents: [{
+              accountItemSectionRenderer: {
+                contents: [{
+                  accountItem: {
+                    accountName: { simpleText: 'Unidentifiable User' },
+                    isSelected: true,
+                    serviceEndpoint: {
+                      selectActiveIdentityEndpoint: {
+                        supportedTokens: [
+                          { accountSigninToken: { signinUrl: 'https://music.youtube.com' } }
+                        ]
+                      }
+                    }
+                  }
+                }]
+              }
+            }]
+          }
+        }]
+      }
+    });
+
+    manager._accountSwitcherTransport = async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: createReadableStreamFromText(mockResponsePayload)
+    });
+
+    try {
+      await manager.authenticateWithCookie('SAPISID=test_sapisid;', {
+        sapisidCredential: { name: 'SAPISID', value: 'test_sapisid', domain: '.youtube.com', path: '/', secure: true, expiry: null, scope: 'youtube' }
+      });
+      assert.fail('Should reject unidentifiable account');
+    } catch (err) {
+      assert.equal(err.code, 'NO_STABLE_ACCOUNT_ID');
+      assert.equal(err.stage, 'identity_validation');
+      assert.ok(err.identityDetails);
+      assert.equal(err.identityDetails.hasPageIdToken, false);
+      assert.equal(err.identityDetails.hasObfuscatedGaiaId, false);
+    }
+
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
 });

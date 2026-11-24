@@ -23121,14 +23121,25 @@ function bindCoverHoldZoom(wrapEl) {
 
       const summaryParts = [];
       if (details.upstreamStatus) summaryParts.push('Status: ' + details.upstreamStatus);
-      if (details.upstreamDiagnostic && details.upstreamDiagnostic.reason) summaryParts.push('Reason: ' + details.upstreamDiagnostic.reason);
-      if (details.upstreamDiagnostic && details.upstreamDiagnostic.message) summaryParts.push('Message: ' + details.upstreamDiagnostic.message);
-      if (details.requestFingerprint) {
-        summaryParts.push('Scope: ' + (details.requestFingerprint.selectedCredentialScope || 'unknown'));
-        summaryParts.push('Matched: ' + details.requestFingerprint.isCredentialInCookieHeader);
-        summaryParts.push('Cookies: [' + (details.requestFingerprint.outgoingCookieNames || []).join(', ') + ']');
+      if (details.upstreamDiagnostic) {
+        if (details.upstreamDiagnostic.code) summaryParts.push('Code: ' + details.upstreamDiagnostic.code);
+        if (details.upstreamDiagnostic.status) summaryParts.push('StatusText: ' + details.upstreamDiagnostic.status);
+        if (details.upstreamDiagnostic.reason) summaryParts.push('Reason: ' + details.upstreamDiagnostic.reason);
+        if (Array.isArray(details.upstreamDiagnostic.reasons) && details.upstreamDiagnostic.reasons.length > 0) {
+          const r0 = details.upstreamDiagnostic.reasons[0];
+          summaryParts.push('Reason: ' + (r0.reason || 'unknown') + (r0.location ? ' (' + r0.location + ')' : ''));
+        }
+        if (details.upstreamDiagnostic.message) summaryParts.push('Msg: ' + details.upstreamDiagnostic.message);
       }
-
+      if (details.requestFingerprint) {
+        const fp = details.requestFingerprint;
+        summaryParts.push('Cred: ' + (fp.selectedCredentialName || 'NONE') + '@' + (fp.selectedCredentialDomain || 'UNKNOWN') + ' (' + (fp.selectedCredentialScope || 'unknown') + ')');
+        summaryParts.push('ExactInCookie: ' + Boolean(fp.isCredentialInCookieHeader));
+        summaryParts.push('YtSapisidPresent: ' + Boolean(fp.hasYouTubeSapisidInCookieHeader));
+        summaryParts.push('ClientVer: ' + (fp.clientVersion || 'unknown'));
+        summaryParts.push('OutgoingCookies: [' + (fp.outgoingCookieNames || []).join(', ') + ']');
+      }
+      if (details.diagnosticReadError) summaryParts.push('DiagReadErr: ' + details.diagnosticReadError);
       diagEl.textContent = summaryParts.join(' | ') || JSON.stringify(details);
       browserLoginError.appendChild(diagEl);
     }

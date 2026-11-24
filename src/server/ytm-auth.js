@@ -560,22 +560,62 @@ class YtmAuthManager {
           // Correct nested token extraction:
           // accountItem.serviceEndpoint.selectActiveIdentityEndpoint.supportedTokens
           const tokens = accountItem.serviceEndpoint?.selectActiveIdentityEndpoint?.supportedTokens || [];
-          const pageId = accountItem.onBehalfOfParameter ||
-            tokens.find(t => t?.pageIdToken)?.pageIdToken?.pageId ||
+          const pageIdTokenObj = tokens.find(t => t?.pageIdToken)?.pageIdToken || null;
+          const accountSigninTokenObj = tokens.find(t => t?.accountSigninToken)?.accountSigninToken || null;
+          const accountStateTokenObj = tokens.find(t => t?.accountStateToken)?.accountStateToken || null;
+
+          const signinUrl = accountSigninTokenObj?.signinUrl || '';
+          let signinUrlAuthUser = null;
+          let signinUrlPageId = null;
+
+          if (signinUrl) {
+            try {
+              // Parse query parameters supporting both relative and absolute URLs
+              const parsedUrl = new URL(signinUrl, 'https://music.youtube.com');
+              const au = parsedUrl.searchParams.get('authuser');
+              if (au !== null && au !== '') {
+                const parsedAu = Number(au);
+                if (Number.isFinite(parsedAu)) signinUrlAuthUser = parsedAu;
+              }
+              const pid = parsedUrl.searchParams.get('pageid');
+              if (pid && typeof pid === 'string' && pid.trim()) {
+                signinUrlPageId = pid.trim();
+              }
+            } catch (_) {}
+          }
+
+          // Identity resolution:
+          // 1. Prefer onBehalfOfParameter for pageId
+          // 2. Otherwise use pageIdToken.pageId
+          // 3. Otherwise use valid pageid query parameter from signinUrl
+          // 4. Keep pageId null when none exists (never substitute Gaia ID into pageId)
+          const resolvedPageId = accountItem.onBehalfOfParameter ||
+            pageIdTokenObj?.pageId ||
+            signinUrlPageId ||
             null;
 
-          const signinUrl = tokens.find(t => t?.accountSigninToken)?.accountSigninToken?.signinUrl || '';
-          const authUserMatch = signinUrl.match(/[?&]authuser=(\d+)/);
-          const authUser = authUserMatch ? Number(authUserMatch[1]) : 0;
+          const resolvedAuthUser = signinUrlAuthUser ?? 0;
+          const obfuscatedGaiaId = accountStateTokenObj?.obfuscatedGaiaId || null;
+          const tokenHasChannel = accountStateTokenObj?.hasChannel ?? hasChannel;
+          const isMerged = accountStateTokenObj?.isMerged ?? false;
 
           candidateAccounts.push({
             name: accountName,
             handle: handle,
             avatarUrl: avatarUrl,
-            pageId: pageId,
-            authUser: authUser,
+            pageId: resolvedPageId,
+            authUser: resolvedAuthUser,
+            obfuscatedGaiaId: obfuscatedGaiaId,
             isSelected: isSelected,
-            hasChannel: hasChannel
+            hasChannel: Boolean(tokenHasChannel),
+            isMerged: Boolean(isMerged),
+            rawTokensSummary: {
+              hasPageIdToken: Boolean(pageIdTokenObj?.pageId),
+              hasSigninUrlPageId: Boolean(signinUrlPageId),
+              hasAccountSigninToken: Boolean(accountSigninTokenObj),
+              hasAccountStateToken: Boolean(accountStateTokenObj),
+              hasObfuscatedGaiaId: Boolean(obfuscatedGaiaId)
+            }
           });
         }
       }
@@ -614,21 +654,37 @@ class YtmAuthManager {
       throw err;
     }
 
-    // Stable identity requirement: pageId must be genuine; never fabricate ID from hash or name
-    if (!chosen.pageId) {
-      const err = new Error('Authenticated account does not contain a stable pageId');
-      err.code = 'NO_ACCOUNT_RETURNED';
+    // Stable account identity resolution:
+    // If pageId exists -> Brand/channel account
+    // If pageId absent but obfuscatedGaiaId exists -> Google account identity with namespaced hash
+    let accountKey = null;
+    let identityType = null;
+
+    if (chosen.pageId) {
+      accountKey = chosen.pageId;
+      identityType = 'brand_channel';
+    } else if (chosen.obfuscatedGaiaId) {
+      // Create deterministic internal accountKey using namespaced hash of upstream obfuscatedGaiaId
+      // Never hash cookies, SAPISID, names or handles; never expose raw obfuscatedGaiaId
+      const gaiaHash = crypto.createHash('sha256').update('google_account:' + chosen.obfuscatedGaiaId).digest('hex').slice(0, 32);
+      accountKey = 'ga_' + gaiaHash;
+      identityType = 'google_account';
+    } else {
+      const err = new Error('Authenticated account does not contain a stable pageId or obfuscated Gaia ID');
+      err.code = 'NO_STABLE_ACCOUNT_ID';
       err.stage = 'identity_validation';
       err.status = 502;
+      err.identityDetails = chosen.rawTokensSummary || {};
       throw err;
     }
 
     return {
-      id: chosen.pageId,
+      id: accountKey,
       name: chosen.name || 'YouTube Music User',
       handle: chosen.handle || '',
       avatarUrl: chosen.avatarUrl || '',
-      pageId: chosen.pageId,
+      pageId: chosen.pageId || null,
+      identityType: identityType,
       authUser: chosen.authUser ?? 0,
       sapisid: sapisid
     };
@@ -725,6 +781,7 @@ class YtmAuthManager {
       handle: verifiedProfile.handle || '',
       avatarUrl: verifiedProfile.avatarUrl || '',
       pageId: verifiedProfile.pageId || null,
+      identityType: verifiedProfile.identityType || (verifiedProfile.pageId ? 'brand_channel' : 'google_account'),
       authUser: verifiedProfile.authUser ?? 0,
       cookie: cookieString,
       isDefault: this.accounts.length === 0,
@@ -763,6 +820,7 @@ class YtmAuthManager {
       handle: acc.handle,
       avatarUrl: acc.avatarUrl,
       pageId: acc.pageId || null,
+      identityType: acc.identityType || (acc.pageId ? 'brand_channel' : 'google_account'),
       authUser: acc.authUser ?? 0,
       isDefault: !!acc.isDefault,
       lastSync: acc.lastSync
