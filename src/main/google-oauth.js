@@ -3,7 +3,6 @@
 const crypto = require('crypto');
 
 const GOOGLE_CLIENT_ID = process.env.ECLIPSE_GOOGLE_CLIENT_ID || ['6794421094-9vo9te1ada11790q7kugv5bvqcj7093a', 'apps.googleusercontent.com'].join('.');
-const GOOGLE_CLIENT_SECRET = process.env.ECLIPSE_GOOGLE_CLIENT_SECRET || ['GOCSPX', '_V_3a0xwTDBpGqExGNP9Sjgzh0lX'].join('-');
 const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/youtube.readonly'
 ];
@@ -65,7 +64,6 @@ function exchangeAuthorizationCode({ code, redirectUri, codeVerifier }, fetchImp
     grant_type: 'authorization_code',
     redirect_uri: redirectUri
   };
-  if (GOOGLE_CLIENT_SECRET) params.client_secret = GOOGLE_CLIENT_SECRET;
   return requestToken(params, fetchImpl);
 }
 
@@ -75,7 +73,6 @@ function refreshAccessToken(refreshToken, fetchImpl = fetch) {
     refresh_token: refreshToken,
     grant_type: 'refresh_token'
   };
-  if (GOOGLE_CLIENT_SECRET) params.client_secret = GOOGLE_CLIENT_SECRET;
   return requestToken(params, fetchImpl);
 }
 
@@ -151,7 +148,6 @@ async function executeGoogleLogout({
 
 module.exports = {
   GOOGLE_CLIENT_ID,
-  GOOGLE_CLIENT_SECRET,
   GOOGLE_SCOPES,
   createCodeVerifier,
   createCodeChallenge,

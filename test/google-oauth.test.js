@@ -62,8 +62,11 @@ test('Google OAuth exchanges and refreshes tokens without a client secret', asyn
   assert.equal(requests[0].body.get('code'), 'authorization-code');
   assert.equal(requests[0].body.get('code_verifier'), 'verifier');
   assert.equal(requests[0].body.get('client_id'), GOOGLE_CLIENT_ID);
+  assert.equal(requests[0].body.get('client_secret'), null, 'client_secret must not be sent in authorization_code request');
   assert.equal(requests[1].body.get('grant_type'), 'refresh_token');
   assert.equal(requests[1].body.get('refresh_token'), 'refresh-token');
+  assert.equal(requests[1].body.get('client_id'), GOOGLE_CLIENT_ID);
+  assert.equal(requests[1].body.get('client_secret'), null, 'client_secret must not be sent in refresh_token request');
 });
 
 test('YouTube library import paginates likes and playlists and adds video durations', async () => {
