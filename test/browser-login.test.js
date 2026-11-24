@@ -381,17 +381,28 @@ test('19: modal-backdrop class and visible/hidden state transition', () => {
 test('20: Extension ZIP generation and packaging contents verification', () => {
   const fs = require('fs');
   const path = require('path');
-  const cp = require('child_process');
   const { buildExtensionZip } = require('../scripts/build-extension');
 
   const zipPath = buildExtensionZip();
   assert.ok(fs.existsSync(zipPath), 'Extension zip must exist');
   assert.ok(fs.statSync(zipPath).size > 1000, 'Extension zip must have valid size');
 
-  const list = cp.execSync(`tar -tf "${zipPath}"`, { encoding: 'utf8' })
-    .split(/\r?\n/)
-    .map(s => s.trim().replace(/^.*[\\\/]/, ''))
-    .filter(Boolean);
+  // Parse ZIP central directory headers (pure node, 100% cross-platform)
+  const buf = fs.readFileSync(zipPath);
+  const list = [];
+  let i = 0;
+  while (i < buf.length - 4) {
+    if (buf[i] === 0x50 && buf[i+1] === 0x4b && buf[i+2] === 0x01 && buf[i+3] === 0x02) {
+      const fnLen = buf.readUInt16LE(i + 28);
+      const extraLen = buf.readUInt16LE(i + 30);
+      const commentLen = buf.readUInt16LE(i + 32);
+      const name = buf.toString('utf8', i + 46, i + 46 + fnLen).replace(/^.*[\\\/]/, '');
+      list.push(name);
+      i += 46 + fnLen + extraLen + commentLen;
+    } else {
+      i++;
+    }
+  }
 
   const expectedEntries = ['manifest.json', 'background.js', 'popup.html', 'popup.js', 'README.md'];
   for (const entry of expectedEntries) {
