@@ -9966,68 +9966,8 @@ if (parsedUrl.pathname === '/api/ytm/login-url') {
     return res.end(JSON.stringify({ success: true, accounts, activeAccount: active }));
   }
 
-  if (parsedUrl.pathname === '/api/ytm/intercept-cookie' && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
-      try {
-        const payload = JSON.parse(body || '{}');
-        const cookie = payload.cookie || '';
-        const rawCred = payload.sapisidCredential || null;
-
-        // Re-validate credential structure on backend
-        let validatedCred = null;
-        if (rawCred && typeof rawCred === 'object') {
-          const name = String(rawCred.name || '').trim();
-          const value = String(rawCred.value || '').trim();
-          const dom = String(rawCred.domain || '').trim().toLowerCase();
-          if ((name === 'SAPISID' || name === '__Secure-3PAPISID') && value.length > 0) {
-            const cleanDom = dom.replace(/^\./, '');
-            if (cleanDom === 'youtube.com' || cleanDom === 'music.youtube.com' || cleanDom.endsWith('.youtube.com') || cleanDom === 'google.com' || cleanDom.endsWith('.google.com')) {
-              validatedCred = { name, value, domain: dom };
-            }
-          }
-        }
-
-        const account = await ytmAuth.authenticateWithCookie(cookie, { sapisidCredential: validatedCred });
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ success: true, account }));
-      } catch (e) {
-        // Strict HTTP Status mapping:
-        // 400: Invalid local payload / missing cookie / missing SAPISID
-        // 401: Explicit upstream HTTP 401
-        // 403: Explicit upstream HTTP 403
-        // 409: Ambiguous account selection (AMBIGUOUS_ACCOUNT_SELECTION)
-        // 502: Malformed upstream JSON, anti-XSSI failure, upstream 5xx, network failure, timeout, or payload too large
-        let statusCode = 502;
-        if (e.code === 'MISSING_COOKIE' || e.code === 'MISSING_SAPISID' || e.code === 'INVALID_CREDENTIAL') {
-          statusCode = 400;
-        } else if (e.upstreamStatus === 401 || e.status === 401) {
-          statusCode = 401;
-        } else if (e.upstreamStatus === 403 || e.status === 403) {
-          statusCode = 403;
-        } else if (e.code === 'AMBIGUOUS_ACCOUNT_SELECTION' || e.status === 409) {
-          statusCode = 409;
-        } else {
-          statusCode = 502;
-        }
-
-        const errorCode = e.code || 'UNKNOWN_ERROR';
-        const errorStage = e.stage || 'verification';
-        // Clean error message: strip any cookie or credential substring
-        const safeMessage = String(e.message || 'Authentication failed')
-          .replace(/(?:SAPISID|__Secure-3PAPISID|SID|SSID|LOGIN_INFO)=[^;\s&]+/gi, '$1=[REDACTED]');
-        res.writeHead(statusCode, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({
-          success: false,
-          code: errorCode,
-          stage: errorStage,
-          error: safeMessage,
-          fallbackError: e.fallbackError || undefined
-        }));
-      }
-    });
-    return;
+if (parsedUrl.pathname === '/api/ytm/intercept-cookie' && req.method === 'POST') {
+    return handleInterceptCookie(req, res, { ytmAuth });
   }
 
   if (parsedUrl.pathname === '/api/ytm/switch-account' && req.method === 'POST') {
@@ -10973,9 +10913,100 @@ function startServer(port = PORT) {
   });
 }
 
+const SAPISID_ALLOWED_DOMAIN_REGEX = /^(?:music\.youtube\.com|\.?youtube\.com|\.?google\.com)$/i;
+
+function validateBackendSapisidCredential(rawCred) {
+  if (!rawCred || typeof rawCred !== 'object') return null;
+  const name = String(rawCred.name || '').trim();
+  const value = String(rawCred.value || '').trim();
+  const dom = String(rawCred.domain || '').trim().toLowerCase();
+  const pathVal = String(rawCred.path || '/').trim();
+  const secure = rawCred.secure === true;
+  const now = Math.floor(Date.now() / 1000);
+  const expiry = Number.isFinite(Number(rawCred.expiry)) && Number(rawCred.expiry) > 0 ? Math.floor(Number(rawCred.expiry)) : null;
+
+  if (name !== 'SAPISID' && name !== '__Secure-3PAPISID') return null;
+  if (!value) return null;
+  if (!secure) return null;
+  if (!pathVal.startsWith('/')) return null;
+  if (expiry && expiry <= now) return null;
+
+  const cleanDom = dom.replace(/^\./, '');
+  if (!SAPISID_ALLOWED_DOMAIN_REGEX.test(cleanDom)) return null;
+
+  return {
+    name,
+    value,
+    domain: dom,
+    path: pathVal,
+    secure,
+    expiry,
+    scope: cleanDom.includes('google.com') ? 'google' : 'youtube'
+  };
+}
+
+async function handleInterceptCookie(req, res, deps = {}) {
+  const authInstance = deps.ytmAuth || ytmAuth;
+  let body = '';
+  req.on('data', chunk => body += chunk);
+  req.on('end', async () => {
+    try {
+      const payload = JSON.parse(body || '{}');
+      const cookie = payload.cookie || '';
+      const rawCred = payload.sapisidCredential || null;
+
+      let validatedCred = null;
+      if (rawCred !== null) {
+        validatedCred = validateBackendSapisidCredential(rawCred);
+        if (!validatedCred) {
+          const err = new Error('Invalid or expired SAPISID credential payload');
+          err.code = 'INVALID_CREDENTIAL';
+          err.status = 400;
+          throw err;
+        }
+      }
+
+      const account = await authInstance.authenticateWithCookie(cookie, { sapisidCredential: validatedCred });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: true, account }));
+    } catch (e) {
+      let statusCode = 502;
+      if (e.code === 'MISSING_COOKIE' || e.code === 'MISSING_SAPISID' || e.code === 'INVALID_CREDENTIAL') {
+        statusCode = 400;
+      } else if (e.upstreamStatus === 401 || e.status === 401) {
+        statusCode = 401;
+      } else if (e.upstreamStatus === 403 || e.status === 403) {
+        statusCode = 403;
+      } else if (e.code === 'AMBIGUOUS_ACCOUNT_SELECTION' || e.status === 409) {
+        statusCode = 409;
+      } else {
+        statusCode = 502;
+      }
+
+      const errorCode = e.code || 'UNKNOWN_ERROR';
+      const errorStage = e.stage || 'verification';
+      const safeMessage = String(e.message || 'Authentication failed')
+        .replace(/(?:SAPISID|__Secure-3PAPISID|SID|SSID|LOGIN_INFO)=[^;\s&]+/gi, '$1=[REDACTED]');
+      res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({
+        success: false,
+        code: errorCode,
+        stage: errorStage,
+        upstreamStatus: e.upstreamStatus || undefined,
+        upstreamDiagnostic: e.upstreamDiagnostic || undefined,
+        diagnosticReadError: e.diagnosticReadError || undefined,
+        requestFingerprint: e.requestFingerprint || undefined,
+        error: safeMessage,
+        fallbackError: e.fallbackError || undefined
+      }));
+    }
+  });
+}
+
+  
 function stopServer() { return new Promise((resolve) => { if (!server || !server.listening) return resolve(); server.close(() => resolve()); }); }
 
-module.exports = { stopServer, matchAndResolveTrack, handleLyrics, handleAudioProxy, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchSyncLrc, parseKaraokeToWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc, cleanSearchResults };
+module.exports = { stopServer, matchAndResolveTrack, handleLyrics, handleAudioProxy, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchSyncLrc, parseKaraokeToWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc, cleanSearchResults, handleInterceptCookie, validateBackendSapisidCredential };
 
 if (require.main === module) {
   startServer();

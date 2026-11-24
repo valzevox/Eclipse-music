@@ -361,17 +361,18 @@ class YtmAuthManager {
 
   /**
    * Primary verification via native Account Switcher:
-   * GET https://music.youtube.com/getAccountSwitcherEndpoint
+   * GET https://music.youtube.com/getAccountSwitcherEndpoint?prettyPrint=false
    */
-  async verifySessionWithAccountSwitcher(cookieString, explicitSapisid = null) {
+  async verifySessionWithAccountSwitcher(cookieString, explicitSapisidCred = null, options = {}) {
     if (!cookieString || typeof cookieString !== 'string') {
       const err = new Error('No cookie string provided');
       err.code = 'MISSING_COOKIE';
       err.stage = 'validation';
+      err.status = 400;
       throw err;
     }
 
-    let sapisid = explicitSapisid;
+    let sapisid = typeof explicitSapisidCred === 'string' ? explicitSapisidCred : explicitSapisidCred?.value;
     if (!sapisid) {
       const match = cookieString.match(/(?:^|;\s*)(?:SAPISID|__Secure-3PAPISID)=([^;]+)/);
       sapisid = match ? match[1].trim() : null;
@@ -381,17 +382,20 @@ class YtmAuthManager {
       const err = new Error('Missing SAPISID authentication credential');
       err.code = 'MISSING_SAPISID';
       err.stage = 'credential_check';
+      err.status = 400;
       throw err;
     }
 
     const authHeader = this.generateSapisidHash(sapisid, WEB_REMIX_CLIENT.origin);
+    const authUserVal = String(options.authUser ?? 0);
     const headers = {
       'Authorization': authHeader,
       'Cookie': cookieString,
+      'Content-Type': 'application/json',
       'Origin': WEB_REMIX_CLIENT.origin,
       'Referer': WEB_REMIX_CLIENT.referer,
       'X-Origin': WEB_REMIX_CLIENT.origin,
-      'X-Goog-AuthUser': '0',
+      'X-Goog-AuthUser': authUserVal,
       'X-Goog-Api-Format-Version': WEB_REMIX_CLIENT.apiFormatVersion,
       'X-YouTube-Client-Name': WEB_REMIX_CLIENT.xYouTubeClientName,
       'X-YouTube-Client-Version': WEB_REMIX_CLIENT.clientVersion,
@@ -399,10 +403,33 @@ class YtmAuthManager {
       'Accept': '*/*'
     };
 
+    if (options.pageId && typeof options.pageId === 'string' && options.pageId.trim()) {
+      headers['X-Goog-PageId'] = options.pageId.trim();
+    }
+
+    // Build secret-free request fingerprint
+    const cookiePairs = cookieString.split(';').map(c => c.trim()).filter(Boolean);
+    const exactCookieNames = cookiePairs.map(c => c.split('=')[0].trim());
+    const hasYouTubeSapisidInCookieHeader = exactCookieNames.includes('SAPISID') || exactCookieNames.includes('__Secure-3PAPISID');
+
+    const requestFingerprint = {
+      selectedCredentialName: explicitSapisidCred?.name || 'NONE',
+      selectedCredentialDomain: explicitSapisidCred?.domain || 'UNKNOWN',
+      selectedCredentialScope: explicitSapisidCred?.scope || (explicitSapisidCred?.domain?.includes('google.com') ? 'google' : 'youtube'),
+      isCredentialInCookieHeader: exactCookieNames.includes(explicitSapisidCred?.name),
+      hasYouTubeSapisidInCookieHeader,
+      outgoingCookieNames: exactCookieNames,
+      hasAuthorizationHeader: Boolean(authHeader),
+      hasOriginHeader: Boolean(headers.Origin),
+      hasRefererHeader: Boolean(headers.Referer),
+      clientName: WEB_REMIX_CLIENT.xYouTubeClientName,
+      clientVersion: WEB_REMIX_CLIENT.clientVersion
+    };
+
     let res;
     try {
       const fetchFn = typeof this._accountSwitcherTransport === 'function' ? this._accountSwitcherTransport : globalThis.fetch;
-      res = await fetchFn(`${WEB_REMIX_CLIENT.origin}/getAccountSwitcherEndpoint`, {
+      res = await fetchFn(`${WEB_REMIX_CLIENT.origin}/getAccountSwitcherEndpoint?prettyPrint=false`, {
         method: 'GET',
         headers,
         signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined
@@ -411,22 +438,58 @@ class YtmAuthManager {
       const err = new Error(`Network failure contacting Account Switcher: ${netErr.message}`);
       err.code = 'AUTH_REQUEST_FAILED';
       err.stage = 'network';
+      err.status = 502;
+      err.requestFingerprint = requestFingerprint;
       throw err;
     }
 
     if (!res || !res.ok) {
       const status = res ? res.status : 0;
-      // Read at most 8 KB for upstream error body
       let errorBodySample = '';
+      let diagnosticReadError = null;
+
       try {
         if (res) errorBodySample = await this._readBoundedStream(res, 8192);
-      } catch (_) {}
+      } catch (readErr) {
+        diagnosticReadError = readErr.message;
+      }
+
+      // Safe upstream error diagnostics extraction
+      let upstreamDiagnostic = null;
+      const contentType = (res?.headers?.get?.('content-type') || '').toLowerCase();
+
+      if (errorBodySample && (contentType.includes('application/json') || errorBodySample.trim().startsWith('{') || errorBodySample.trim().startsWith(")]}'"))) {
+        let cleanJsonText = errorBodySample.trim();
+        if (cleanJsonText.startsWith(")]}'")) cleanJsonText = cleanJsonText.slice(4).trim();
+        try {
+          const parsed = JSON.parse(cleanJsonText);
+          const errObj = parsed.error || parsed;
+          upstreamDiagnostic = {
+            contentType: 'application/json',
+            code: errObj.code || null,
+            status: errObj.status || null,
+            message: typeof errObj.message === 'string' ? errObj.message.slice(0, 200).replace(/(?:SAPISID|__Secure-3PAPISID|SID|SSID)=[^;\s&]+/gi, '[REDACTED]') : null,
+            reasons: Array.isArray(errObj.errors) ? errObj.errors.slice(0, 5).map(e => ({ reason: e.reason, location: e.location })) : []
+          };
+        } catch (_) {
+          upstreamDiagnostic = { contentType: 'application/json', isMalformed: true };
+        }
+      } else if (contentType.includes('text/html') || errorBodySample.includes('<html')) {
+        upstreamDiagnostic = {
+          contentType: 'text/html',
+          isHtml: true,
+          summary: 'Non-JSON upstream error response'
+        };
+      }
 
       const err = new Error(`Account Switcher rejected session with HTTP ${status}`);
       err.code = 'ACCOUNT_SWITCHER_HTTP_REJECTED';
       err.stage = 'endpoint_response';
       err.upstreamStatus = status;
       err.status = (status === 401 || status === 403) ? status : 502;
+      err.upstreamDiagnostic = upstreamDiagnostic;
+      err.diagnosticReadError = diagnosticReadError;
+      err.requestFingerprint = requestFingerprint;
       throw err;
     }
 
@@ -436,6 +499,7 @@ class YtmAuthManager {
       rawText = await this._readBoundedStream(res, 1048576);
     } catch (readErr) {
       readErr.status = 502;
+      readErr.requestFingerprint = requestFingerprint;
       throw readErr;
     }
 
@@ -453,6 +517,7 @@ class YtmAuthManager {
       err.code = 'MALFORMED_AUTH_RESPONSE';
       err.stage = 'json_parsing';
       err.status = 502;
+      err.requestFingerprint = requestFingerprint;
       throw err;
     }
 
@@ -462,6 +527,7 @@ class YtmAuthManager {
       err.code = 'VERIFICATION_CODE_REJECTED';
       err.stage = 'verification_code';
       err.status = 502;
+      err.requestFingerprint = requestFingerprint;
       throw err;
     }
 
@@ -570,28 +636,32 @@ class YtmAuthManager {
       throw err;
     }
 
-    const explicitSapisid = options.sapisidCredential?.value || options.explicitSapisid || null;
+    const explicitSapisidCred = options.sapisidCredential || null;
 
     // Phase 3: Primary verification via getAccountSwitcherEndpoint
     let verifiedProfile = null;
     try {
-      verifiedProfile = await this.verifySessionWithAccountSwitcher(cookieString, explicitSapisid);
+      verifiedProfile = await this.verifySessionWithAccountSwitcher(cookieString, explicitSapisidCred, options);
     } catch (asErr) {
-      // Do NOT run fallback on explicit authentication rejection (HTTP 401 / 403)
-      if (asErr.upstreamStatus === 401 || asErr.upstreamStatus === 403 || asErr.status === 401 || asErr.status === 403 || asErr.code === 'AMBIGUOUS_ACCOUNT_SELECTION') {
-        logger.log('warn', `ytm-auth: Account Switcher rejected session explicitly (${asErr.code || 'UNKNOWN'}). Fallback aborted.`);
+      // Explicit allowlist for fallback:
+      // Fallback is ONLY permitted for genuine network failure or upstream 5xx
+      const isEligible5xx = asErr.code === 'ACCOUNT_SWITCHER_HTTP_REJECTED' && asErr.upstreamStatus >= 500 && asErr.upstreamStatus < 600;
+      const isEligibleTransient = asErr.code === 'AUTH_REQUEST_FAILED' || asErr.code === 'STREAM_READ_ERROR' || isEligible5xx;
+
+      if (!isEligibleTransient) {
+        logger.log('warn', `ytm-auth: Account Switcher rejected session (${asErr.code || 'UNKNOWN'}). Upstream status: ${asErr.upstreamStatus || asErr.status}. Fallback disbarred.`);
         throw asErr;
       }
 
-      logger.log('warn', `ytm-auth: Account Switcher verification failed (${asErr.code || 'UNKNOWN'}): ${asErr.message}. Attempting Innertube fallback.`);
+      logger.log('warn', `ytm-auth: Account Switcher verification failed with transient error (${asErr.code}): ${asErr.message}. Attempting Innertube fallback.`);
       
-      // Secondary fallback to Innertube only for eligible network/transient failures
+      // Secondary fallback to Innertube only for eligible transient failures
       let yt;
       try {
         yt = await Innertube.create({ cookie: cookieString });
       } catch (e) {
-        logger.log('error', `ytm-auth: Innertube session initialization failed: ${e.message}`);
-        asErr.fallbackError = { code: 'INNERTUBE_INIT_FAILED', message: e.message };
+        logger.log('error', `ytm-auth: Innertube session initialization failed: ${e.message.replace(/(?:SAPISID|__Secure-3PAPISID|SID|SSID)=[^;\s&]+/gi, '[REDACTED]')}`);
+        asErr.fallbackError = { code: 'INNERTUBE_INIT_FAILED', stage: 'fallback_init' };
         throw asErr;
       }
 
@@ -599,13 +669,13 @@ class YtmAuthManager {
       try {
         accountInfo = await yt.account.getInfo();
       } catch (e) {
-        logger.log('error', `ytm-auth: getInfo failed: ${e.message}`);
-        asErr.fallbackError = { code: 'ACCOUNT_LOOKUP_FAILED', message: e.message };
+        logger.log('error', `ytm-auth: getInfo failed: ${e.message.replace(/(?:SAPISID|__Secure-3PAPISID|SID|SSID)=[^;\s&]+/gi, '[REDACTED]')}`);
+        asErr.fallbackError = { code: 'ACCOUNT_LOOKUP_FAILED', stage: 'fallback_lookup' };
         throw asErr;
       }
 
       if (!accountInfo) {
-        asErr.fallbackError = { code: 'NO_ACCOUNT_RETURNED', message: 'No YouTube account profile returned from InnerTube' };
+        asErr.fallbackError = { code: 'NO_ACCOUNT_RETURNED', stage: 'fallback_lookup' };
         throw asErr;
       }
 
@@ -624,7 +694,7 @@ class YtmAuthManager {
       }
 
       if (!channelId || channelId === 'unknown') {
-        asErr.fallbackError = { code: 'NO_ACCOUNT_RETURNED', message: 'Profile does not contain valid channel ID' };
+        asErr.fallbackError = { code: 'NO_ACCOUNT_RETURNED', stage: 'fallback_identity' };
         throw asErr;
       }
 

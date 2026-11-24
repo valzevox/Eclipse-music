@@ -151,14 +151,21 @@ function buildNetscapeJar(records, targetHost = 'music.youtube.com') {
   return lines.join(eol) + eol;
 }
 
+const SAPISID_ALLOWED_DOMAIN_REGEX = /^(?:music\.youtube\.com|\.?youtube\.com|\.?google\.com)$/i;
+
 /**
  * Extracts SAPISID or __Secure-3PAPISID credential without polluting
  * the outgoing Cookie header for music.youtube.com.
- * Strictly validates cookie name, non-empty value, non-expired, secure flag,
- * and permitted domain scope (.youtube.com, music.youtube.com, or .google.com).
- * Returns { name, value, domain, path, secure, expiry } or null.
+ * Strictly validates:
+ *  - exact cookie name ('SAPISID' or '__Secure-3PAPISID')
+ *  - non-empty string value
+ *  - non-expired record
+ *  - secure flag (secure === true)
+ *  - valid request-host ('music.youtube.com') and request-path ('/getAccountSwitcherEndpoint')
+ *  - narrow SAPISID allowed domain policy (.youtube.com, music.youtube.com, or .google.com)
+ * Returns { name, value, domain, path, secure, expiry, scope } or null.
  */
-function extractSapisidCredential(records) {
+function extractSapisidCredential(records, targetHost = 'music.youtube.com', targetPath = '/getAccountSwitcherEndpoint') {
   if (!Array.isArray(records)) return null;
   const now = Math.floor(Date.now() / 1000);
 
@@ -167,28 +174,40 @@ function extractSapisidCredential(records) {
     if (!(r instanceof BrowserCookieRecord)) continue;
     if (r.isExpired(now)) continue;
     if (!r.value || typeof r.value !== 'string' || !r.value.trim()) continue;
-    if (r.secure !== true) continue; // Must be secure credential
+    if (r.secure !== true) continue;
+    if (r.name !== 'SAPISID' && r.name !== '__Secure-3PAPISID') continue;
 
-    if (r.name === 'SAPISID' || r.name === '__Secure-3PAPISID') {
-      const cleanDom = r.domain.toLowerCase().replace(/^\./, '');
-      if (cleanDom === 'music.youtube.com' || cleanDom === 'youtube.com' || cleanDom.endsWith('.youtube.com')) {
-        candidates.push({ priority: r.name === 'SAPISID' ? 1 : 2, record: r });
-      } else if (cleanDom === 'google.com' || cleanDom.endsWith('.google.com')) {
-        candidates.push({ priority: r.name === 'SAPISID' ? 3 : 4, record: r });
-      }
+    const cleanDom = r.domain.toLowerCase().replace(/^\./, '');
+    if (!SAPISID_ALLOWED_DOMAIN_REGEX.test(cleanDom)) continue;
+
+    // Strict host and path matching for YouTube-scoped credential
+    if (r.matchesHost(targetHost) && r.matchesPath(targetPath)) {
+      candidates.push({
+        priority: r.name === 'SAPISID' ? 1 : 2,
+        scope: 'youtube',
+        record: r
+      });
+    } else if (cleanDom === 'google.com' || cleanDom.endsWith('.google.com')) {
+      // Separate compatibility path for Google-scoped credential
+      candidates.push({
+        priority: r.name === 'SAPISID' ? 3 : 4,
+        scope: 'google',
+        record: r
+      });
     }
   }
 
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => a.priority - b.priority);
-  const best = candidates[0].record;
+  const best = candidates[0];
   return {
-    name: best.name,
-    value: best.value,
-    domain: best.domain,
-    path: best.path,
-    secure: best.secure,
-    expiry: best.expiry
+    name: best.record.name,
+    value: best.record.value,
+    domain: best.record.domain,
+    path: best.record.path,
+    secure: best.record.secure,
+    expiry: best.record.expiry,
+    scope: best.scope
   };
 }
 
