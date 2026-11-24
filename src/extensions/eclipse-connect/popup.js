@@ -25,9 +25,23 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     btnPair.disabled = true;
-    showStatus('Reading YouTube session cookies...', 'loading');
+    showStatus('Requesting permissions...', 'loading');
 
     try {
+      // P1-2: chrome.permissions.request MUST be called synchronously inside user click gesture BEFORE any await
+      if (chrome.permissions && chrome.permissions.request) {
+        const granted = await chrome.permissions.request({
+          origins: ['http://127.0.0.1/*']
+        });
+        if (!granted) {
+          showStatus('Permission to connect to local Eclipse service was denied.', 'error');
+          btnPair.disabled = false;
+          return;
+        }
+      }
+
+      showStatus('Reading YouTube session cookies...', 'loading');
+
       // Query cookies with chrome.cookies API strictly for YouTube and Google auth domains
       const domains = ['.youtube.com', 'music.youtube.com', '.google.com'];
       const allCookies = [];
@@ -60,20 +74,6 @@ document.addEventListener('DOMContentLoaded', () => {
         showStatus('No active YouTube Music login found in this browser. Please log in to music.youtube.com first.', 'error');
         btnPair.disabled = false;
         return;
-      }
-
-      // Request localhost permission dynamically if optional_host_permissions declared
-      if (chrome.permissions && chrome.permissions.request) {
-        try {
-          const granted = await chrome.permissions.request({
-            origins: ['http://127.0.0.1/*']
-          });
-          if (!granted) {
-            showStatus('Permission to connect to local Eclipse service was denied.', 'error');
-            btnPair.disabled = false;
-            return;
-          }
-        } catch (_) {}
       }
 
       showStatus('Connecting to Eclipse loopback service...', 'loading');

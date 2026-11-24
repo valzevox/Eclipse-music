@@ -8,6 +8,8 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test test/*.test.js",
+    "build:extension": "node scripts/build-extension.js",
+    "predist": "npm run build:extension",
     "dist": "electron-builder",
     "conveyor:app": "conveyor --cache-free-space-limit=1 make --overwrite=HARD_REPLACE app",
     "conveyor:site": "conveyor --cache-free-space-limit=1 make --overwrite=HARD_REPLACE site",
@@ -130,6 +132,10 @@
         "filter": [
           "*.exe"
         ]
+      },
+      {
+        "from": "dist/extension/eclipse-connect.zip",
+        "to": "extension/eclipse-connect.zip"
       }
     ],
     "afterPack": "src/main/afterPack.js"

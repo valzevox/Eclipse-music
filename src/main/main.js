@@ -1914,6 +1914,160 @@ ipcMain.on('window-minimize', () => {
         }
       });
 
+      function resolveBrowserExecutable(browser) {
+        const norm = String(browser || '').toLowerCase().trim();
+        const defs = {
+          chrome: {
+            regName: 'chrome.exe',
+            extUrl: 'chrome://extensions',
+            paths: [
+              'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+              'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+              path.join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe')
+            ]
+          },
+          edge: {
+            regName: 'msedge.exe',
+            extUrl: 'edge://extensions',
+            paths: [
+              'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+              'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+              path.join(process.env.LOCALAPPDATA || '', 'Microsoft\\Edge\\Application\\msedge.exe')
+            ]
+          },
+          brave: {
+            regName: 'brave.exe',
+            extUrl: 'brave://extensions',
+            paths: [
+              'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
+              'C:\\Program Files (x86)\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
+              path.join(process.env.LOCALAPPDATA || '', 'BraveSoftware\\Brave-Browser\\Application\\brave.exe')
+            ]
+          }
+        };
+
+        const target = defs[norm];
+        if (!target) return null;
+
+        if (process.platform === 'win32') {
+          for (const p of target.paths) {
+            if (p && fs.existsSync(p)) return { exe: p, extUrl: target.extUrl };
+          }
+
+          const queryReg = (key) => {
+            try {
+              const stdout = execFileSync('reg', ['query', key, '/ve'], {
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'ignore'],
+                windowsHide: true
+              });
+              const match = stdout.match(/REG_SZ\s+(.*)/i);
+              if (match && match[1]) {
+                let val = match[1].trim();
+                if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+                return val;
+              }
+            } catch (_) {}
+            return null;
+          };
+
+          const hkcu = queryReg(`HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\${target.regName}`);
+          if (hkcu && fs.existsSync(hkcu)) return { exe: hkcu, extUrl: target.extUrl };
+
+          const hklm = queryReg(`HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\${target.regName}`);
+          if (hklm && fs.existsSync(hklm)) return { exe: hklm, extUrl: target.extUrl };
+        }
+
+        return null;
+      }
+
+      ipcMain.handle('browser-login:open-extension-manager', async (event, browser) => {
+        try {
+          const validBrowsers = ['chrome', 'edge', 'brave'];
+          const norm = String(browser || '').toLowerCase().trim();
+          if (!validBrowsers.includes(norm)) {
+            return { success: false, error: `Invalid browser: ${browser}. Supported: chrome, edge, brave.` };
+          }
+
+          const resolved = resolveBrowserExecutable(norm);
+          if (!resolved || !resolved.exe) {
+            return { success: false, error: `Browser executable not found for ${norm}.` };
+          }
+
+          execFile(resolved.exe, [resolved.extUrl], { shell: false }, (err) => {
+            if (err) {
+              console.warn(`[browser-login] Failed to launch ${norm} extension manager:`, err.message);
+            }
+          });
+
+          return { success: true };
+        } catch (err) {
+          return { success: false, error: err.message };
+        }
+      });
+
+      ipcMain.handle('browser-login:export-extension', async (event) => {
+        try {
+          const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+          const candidates = [
+            path.join(process.resourcesPath || '', 'extension', 'eclipse-connect.zip'),
+            path.join(app.getAppPath(), 'dist', 'extension', 'eclipse-connect.zip'),
+            path.join(__dirname, '..', '..', 'dist', 'extension', 'eclipse-connect.zip')
+          ];
+
+          let sourceZip = candidates.find(c => fs.existsSync(c));
+          if (!sourceZip) {
+            // Lazy build fallback in development environment
+            try {
+              const { buildExtensionZip } = require('../../scripts/build-extension');
+              sourceZip = buildExtensionZip();
+            } catch (_) {}
+          }
+
+          if (!sourceZip || !fs.existsSync(sourceZip)) {
+            return { success: false, error: 'Extension package (eclipse-connect.zip) not found' };
+          }
+
+          // Validate zip by extracting to a temp directory and checking manifest.json
+          const tmpDir = path.join(os.tmpdir(), `eclipse-ext-verify-${Date.now()}`);
+          fs.mkdirSync(tmpDir, { recursive: true });
+          try {
+            if (process.platform === 'win32') {
+              execFileSync('tar.exe', ['-xf', sourceZip, '-C', tmpDir], { windowsHide: true });
+            } else {
+              execFileSync('unzip', ['-q', sourceZip, '-d', tmpDir]);
+            }
+            const manifestPath = path.join(tmpDir, 'manifest.json');
+            if (!fs.existsSync(manifestPath)) {
+              throw new Error('manifest.json missing inside extension archive');
+            }
+            const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+            if (!manifest || manifest.manifest_version !== 3) {
+              throw new Error('Invalid manifest.json in extension archive');
+            }
+          } finally {
+            try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+          }
+
+          const defaultSavePath = path.join(app.getPath('downloads'), 'eclipse-connect.zip');
+          const saveResult = await dialog.showSaveDialog(win, {
+            title: 'Export Eclipse Connect Extension',
+            defaultPath: defaultSavePath,
+            filters: [{ name: 'ZIP Archive', extensions: ['zip'] }]
+          });
+
+          if (saveResult.canceled || !saveResult.filePath) {
+            return { canceled: true };
+          }
+
+          fs.copyFileSync(sourceZip, saveResult.filePath);
+          shell.showItemInFolder(saveResult.filePath);
+          return { success: true, filePath: saveResult.filePath };
+        } catch (err) {
+          return { success: false, error: err.message };
+        }
+      });
+
       ipcMain.handle('google-auth-status', async () => {
         try {
           const auth = readGoogleOAuthData();

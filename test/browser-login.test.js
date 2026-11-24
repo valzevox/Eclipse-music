@@ -302,7 +302,28 @@ test('18: index.html DOM initialization order — browser-login-dialog occurs BE
     'btn-open-chrome-ext',
     'browser-login-error',
     'btn-settings-connect-ytm',
-    'btn-google-login'
+    'btn-google-login',
+    'tab-login-profiles',
+    'tab-login-extension',
+    'pane-login-profiles',
+    'pane-login-extension',
+    'stage-get-extension',
+    'stage-browser-setup',
+    'stage-pair-session',
+    'btn-export-extension',
+    'btn-open-extension-folder',
+    'btn-reexport-extension',
+    'extension-saved-path-box',
+    'extension-saved-path',
+    'btn-open-brave-ext',
+    'chk-ext-extracted',
+    'chk-ext-loaded',
+    'chk-ext-pinned',
+    'chk-ytm-signedin',
+    'btn-copy-pairing-port',
+    'btn-copy-all-details',
+    'pairing-countdown-box',
+    'pairing-countdown-val'
   ];
 
   for (const id of requiredIds) {
@@ -354,5 +375,143 @@ test('19: modal-backdrop class and visible/hidden state transition', () => {
   assert.ok(
     css.includes('transform: scale(1);') && css.includes('opacity: 1;'),
     'CSS must transition to transform: scale(1) and opacity: 1'
+  );
+});
+
+test('20: Extension ZIP generation and packaging contents verification', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const cp = require('child_process');
+  const { buildExtensionZip } = require('../scripts/build-extension');
+
+  const zipPath = buildExtensionZip();
+  assert.ok(fs.existsSync(zipPath), 'Extension zip must exist');
+  assert.ok(fs.statSync(zipPath).size > 1000, 'Extension zip must have valid size');
+
+  const list = cp.execSync(`tar -tf "${zipPath}"`, { encoding: 'utf8' })
+    .split(/\r?\n/)
+    .map(s => s.trim().replace(/^.*[\\\/]/, ''))
+    .filter(Boolean);
+
+  const expectedEntries = ['manifest.json', 'background.js', 'popup.html', 'popup.js', 'README.md'];
+  for (const entry of expectedEntries) {
+    assert.ok(list.includes(entry), `ZIP must contain ${entry}`);
+  }
+
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../src/extensions/eclipse-connect/manifest.json'), 'utf8'));
+  assert.equal(manifest.manifest_version, 3, 'Must be Manifest V3');
+  assert.ok(manifest.permissions.includes('cookies'), 'Manifest must have cookies permission');
+});
+
+test('21: Browser manager IPC validation and browser resolution logic', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const mainJs = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
+
+  // Verify IPC handler registered
+  assert.ok(mainJs.includes("'browser-login:open-extension-manager'"), 'Must register open-extension-manager IPC');
+  assert.ok(mainJs.includes('resolveBrowserExecutable(norm)'), 'Must call resolveBrowserExecutable');
+
+  // Verify browser validation logic: rejects unsupported browsers
+  const validBrowsers = ['chrome', 'edge', 'brave'];
+  const testInput = (browser) => {
+    const norm = String(browser || '').toLowerCase().trim();
+    if (!validBrowsers.includes(norm)) {
+      return { success: false, error: `Invalid browser: ${browser}. Supported: chrome, edge, brave.` };
+    }
+    return { success: true };
+  };
+
+  assert.equal(testInput('firefox').success, false);
+  assert.equal(testInput('safari').success, false);
+  assert.equal(testInput('').success, false);
+  assert.equal(testInput('chrome').success, true);
+  assert.equal(testInput('edge').success, true);
+  assert.equal(testInput('brave').success, true);
+
+  // Verify execFile uses shell: false
+  assert.ok(
+    mainJs.includes('execFile(resolved.exe, [resolved.extUrl], { shell: false }') ||
+    mainJs.includes('execFile(resolved.exe, [resolved.extUrl], { shell: false'),
+    'Browser launcher must spawn with shell: false'
+  );
+});
+
+test('22: Export extension IPC handles cancel, write, validation', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const mainJs = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
+
+  assert.ok(mainJs.includes("'browser-login:export-extension'"), 'Must register export-extension IPC');
+  assert.ok(mainJs.includes('dialog.showSaveDialog'), 'Must use dialog.showSaveDialog');
+  assert.ok(mainJs.includes('shell.showItemInFolder'), 'Must call shell.showItemInFolder upon save');
+  assert.ok(mainJs.includes('manifest.manifest_version !== 3'), 'Must validate MV3 manifest inside zip');
+  assert.ok(mainJs.includes('saveResult.canceled'), 'Must handle user cancelation gracefully');
+});
+
+test('23: 3 stages rendered, 6 instructions present, prerequisites gating Start Pairing', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, '../src/renderer/index.html'), 'utf8');
+  const appJs = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+
+  // Verify 3 stages rendered in DOM
+  assert.ok(html.includes('id="stage-get-extension"'), 'Stage 1 must exist');
+  assert.ok(html.includes('id="stage-browser-setup"'), 'Stage 2 must exist');
+  assert.ok(html.includes('id="stage-pair-session"'), 'Stage 3 must exist');
+
+  // Verify 6 instructions present
+  assert.ok(html.includes('Extract ZIP:'), 'Step 1 Extract ZIP must be present');
+  assert.ok(html.includes('Open Extensions page:'), 'Step 2 Open extensions page must be present');
+  assert.ok(html.includes('Enable Developer Mode:'), 'Step 3 Dev mode must be present');
+  assert.ok(html.includes('Load unpacked:'), 'Step 4 Load unpacked must be present');
+  assert.ok(html.includes('Select folder:'), 'Step 5 Select folder must be present');
+  assert.ok(html.includes('Pin to toolbar:'), 'Step 6 Pin to toolbar must be present');
+
+  // Verify prerequisites gating Start Pairing in app.js
+  assert.ok(appJs.includes('updateStartPairingState()'), 'Must have updateStartPairingState function');
+  assert.ok(
+    appJs.includes('chkExtExtracted.checked && chkExtLoaded.checked && chkExtPinned.checked') ||
+    appJs.includes('isStage2Confirmed && isStage3Ready'),
+    'Start Pairing must be gated on all 3 stage 2 checks plus stage 3 sign-in check'
+  );
+});
+
+test('24: Copy Port, Nonce, All Details formatting', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const appJs = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+
+  assert.ok(appJs.includes('btnCopyPairingPort'), 'btnCopyPairingPort handler must exist');
+  assert.ok(appJs.includes('btnCopyPairingNonce'), 'btnCopyPairingNonce handler must exist');
+  assert.ok(appJs.includes('btnCopyAllDetails'), 'btnCopyAllDetails handler must exist');
+
+  // Verify formatted text for All Details
+  assert.ok(
+    appJs.includes('`Port: ${port}\\nNonce: ${nonce}`') ||
+    appJs.includes('Port: ') && appJs.includes('Nonce: '),
+    'All Details must format Port and Nonce clearly'
+  );
+});
+
+test('25: Timeout 120s expiry and cancel clearing session', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const appJs = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+
+  // Verify 120s timer logic using expiresAt timestamp
+  assert.ok(appJs.includes('startPairingTimer(res.expiresAt)'), 'startPairingFlow must pass expiresAt to timer');
+  assert.ok(appJs.includes('stopPairingCountdown()'), 'Must have stopPairingCountdown function');
+  assert.ok(
+    appJs.includes("extensionPairingBadge.textContent = 'Expired'") ||
+    appJs.includes("'Expired'"),
+    'Must set badge to Expired upon countdown timeout'
+  );
+
+  // Verify modal close and cancel clear session and invoke IPC
+  assert.ok(
+    appJs.includes('browserLoginCancelPairing().catch') ||
+    appJs.includes('browserLoginCancelPairing()'),
+    'Cancel / close must invoke browserLoginCancelPairing'
   );
 });

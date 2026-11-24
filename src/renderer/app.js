@@ -22740,25 +22740,70 @@ function bindCoverHoldZoom(wrapEl) {
     });
   }
 
-  // Browser Login & Extension Pairing Dialog (SimpMusic Architecture)
+    // Browser Login & Extension Pairing Dialog (SimpMusic Architecture)
   const browserLoginDialog = document.getElementById('browser-login-dialog');
   const btnCloseBrowserLogin = document.getElementById('btn-close-browser-login');
   const btnRefreshBrowserProfiles = document.getElementById('btn-refresh-browser-profiles');
   const browserProfilesList = document.getElementById('browser-profiles-list');
+
+  // Stage 1 Elements
+  const btnExportExtension = document.getElementById('btn-export-extension');
+  const btnOpenExtensionFolder = document.getElementById('btn-open-extension-folder');
+  const btnReexportExtension = document.getElementById('btn-reexport-extension');
+  const extensionSavedPathBox = document.getElementById('extension-saved-path-box');
+  const extensionSavedPath = document.getElementById('extension-saved-path');
+
+  // Stage 2 Elements
+  const btnOpenChromeExt = document.getElementById('btn-open-chrome-ext');
+  const btnOpenEdgeExt = document.getElementById('btn-open-edge-ext');
+  const btnOpenBraveExt = document.getElementById('btn-open-brave-ext');
+  const chkExtExtracted = document.getElementById('chk-ext-extracted');
+  const chkExtLoaded = document.getElementById('chk-ext-loaded');
+  const chkExtPinned = document.getElementById('chk-ext-pinned');
+
+  // Stage 3 Elements
+  const chkYtmSignedin = document.getElementById('chk-ytm-signedin');
+  const btnStartExtensionPairing = document.getElementById('btn-start-extension-pairing');
+  const btnCancelExtensionPairing = document.getElementById('btn-cancel-extension-pairing');
   const extensionPairingInfo = document.getElementById('extension-pairing-info');
   const extensionPairingBadge = document.getElementById('extension-pairing-badge');
   const pairingPortVal = document.getElementById('pairing-port-val');
   const pairingNonceVal = document.getElementById('pairing-nonce-val');
+  const btnCopyPairingPort = document.getElementById('btn-copy-pairing-port');
   const btnCopyPairingNonce = document.getElementById('btn-copy-pairing-nonce');
-  const btnStartExtensionPairing = document.getElementById('btn-start-extension-pairing');
-  const btnCancelExtensionPairing = document.getElementById('btn-cancel-extension-pairing');
-  const btnOpenEdgeExt = document.getElementById('btn-open-edge-ext');
-  const btnOpenChromeExt = document.getElementById('btn-open-chrome-ext');
+  const btnCopyAllDetails = document.getElementById('btn-copy-all-details');
+  const pairingCountdownVal = document.getElementById('pairing-countdown-val');
+
   const browserLoginError = document.getElementById('browser-login-error');
+  const tabLoginProfiles = document.getElementById('tab-login-profiles');
+  const tabLoginExtension = document.getElementById('tab-login-extension');
+  const paneLoginProfiles = document.getElementById('pane-login-profiles');
+  const paneLoginExtension = document.getElementById('pane-login-extension');
+
+  let extensionSavedFilePath = '';
+  let pairingCountdownInterval = null;
+  let activePairingExpiresAt = null;
 
   if (!browserLoginDialog) {
     console.error('[BrowserLogin] Critical initialization error: #browser-login-dialog not found in DOM');
   }
+
+  function switchBrowserLoginTab(mode) {
+    if (mode === 'profiles') {
+      if (tabLoginProfiles) tabLoginProfiles.classList.add('active');
+      if (tabLoginExtension) tabLoginExtension.classList.remove('active');
+      if (paneLoginProfiles) paneLoginProfiles.classList.remove('hidden');
+      if (paneLoginExtension) paneLoginExtension.classList.add('hidden');
+    } else {
+      if (tabLoginExtension) tabLoginExtension.classList.add('active');
+      if (tabLoginProfiles) tabLoginProfiles.classList.remove('active');
+      if (paneLoginExtension) paneLoginExtension.classList.remove('hidden');
+      if (paneLoginProfiles) paneLoginProfiles.classList.add('hidden');
+    }
+  }
+
+  if (tabLoginProfiles) tabLoginProfiles.addEventListener('click', () => switchBrowserLoginTab('profiles'));
+  if (tabLoginExtension) tabLoginExtension.addEventListener('click', () => switchBrowserLoginTab('extension'));
 
   function openBrowserLoginModal() {
     if (!browserLoginDialog) {
@@ -22770,6 +22815,7 @@ function bindCoverHoldZoom(wrapEl) {
     }
     browserLoginDialog.classList.remove('hidden');
     browserLoginDialog.classList.add('visible');
+    switchBrowserLoginTab('profiles');
     refreshBrowserProfilesUI();
   }
 
@@ -22777,33 +22823,124 @@ function bindCoverHoldZoom(wrapEl) {
     if (!browserLoginDialog) return;
     browserLoginDialog.classList.remove('visible');
     browserLoginDialog.classList.add('hidden');
+    stopPairingCountdown();
     if (window.electronAPI && window.electronAPI.browserLoginCancelPairing) {
       window.electronAPI.browserLoginCancelPairing().catch(() => {});
     }
     resetPairingUI();
   }
 
+  function stopPairingCountdown() {
+    if (pairingCountdownInterval) {
+      clearInterval(pairingCountdownInterval);
+      pairingCountdownInterval = null;
+    }
+    activePairingExpiresAt = null;
+  }
+
+  function updateStartPairingState() {
+    const isStage2Confirmed = !!(chkExtExtracted && chkExtExtracted.checked && chkExtLoaded && chkExtLoaded.checked && chkExtPinned && chkExtPinned.checked);
+    const isStage3Ready = !!(chkYtmSignedin && chkYtmSignedin.checked);
+    const canStart = isStage2Confirmed && isStage3Ready;
+    if (btnStartExtensionPairing && !pairingCountdownInterval) {
+      btnStartExtensionPairing.disabled = !canStart;
+    }
+  }
+
+  [chkExtExtracted, chkExtLoaded, chkExtPinned, chkYtmSignedin].forEach((chk) => {
+    if (chk) chk.addEventListener('change', updateStartPairingState);
+  });
+
   function resetPairingUI() {
+    stopPairingCountdown();
     if (extensionPairingInfo) extensionPairingInfo.classList.add('hidden');
     if (btnStartExtensionPairing) {
-      btnStartExtensionPairing.disabled = false;
       btnStartExtensionPairing.classList.remove('hidden');
+      updateStartPairingState();
     }
     if (btnCancelExtensionPairing) btnCancelExtensionPairing.classList.add('hidden');
     if (extensionPairingBadge) {
       extensionPairingBadge.textContent = 'Ready';
-      extensionPairingBadge.style.color = '#94a3b8';
-      extensionPairingBadge.style.background = 'rgba(148,163,184,0.15)';
+      extensionPairingBadge.className = 'pairing-badge';
     }
+    if (pairingPortVal) pairingPortVal.textContent = '--';
+    if (pairingNonceVal) {
+      pairingNonceVal.textContent = '--';
+      pairingNonceVal.title = '';
+    }
+    if (pairingCountdownVal) pairingCountdownVal.textContent = '120';
     if (browserLoginError) {
       browserLoginError.textContent = '';
       browserLoginError.classList.add('hidden');
     }
   }
 
+  async function handleExportExtension() {
+    if (!window.electronAPI || !window.electronAPI.browserLoginExportExtension) {
+      showBrowserLoginError('Export extension IPC not supported in this runtime');
+      return;
+    }
+    if (btnExportExtension) btnExportExtension.disabled = true;
+    try {
+      const res = await window.electronAPI.browserLoginExportExtension();
+      if (res && res.success && res.filePath) {
+        extensionSavedFilePath = res.filePath;
+        if (extensionSavedPath) {
+          extensionSavedPath.textContent = res.filePath;
+          extensionSavedPath.title = res.filePath;
+        }
+        if (extensionSavedPathBox) extensionSavedPathBox.classList.remove('hidden');
+        if (btnExportExtension) btnExportExtension.classList.add('hidden');
+        if (btnOpenExtensionFolder) btnOpenExtensionFolder.classList.remove('hidden');
+        if (btnReexportExtension) btnReexportExtension.classList.remove('hidden');
+        if (typeof showToast === 'function') {
+          showToast('Companion extension package saved', 'success');
+        }
+      } else if (res && res.canceled) {
+        // user canceled save dialog
+      } else {
+        showBrowserLoginError((res && res.error) || 'Failed to export companion extension');
+      }
+    } catch (err) {
+      showBrowserLoginError(err.message || 'Error exporting companion extension');
+    } finally {
+      if (btnExportExtension) btnExportExtension.disabled = false;
+    }
+  }
+
+  if (btnExportExtension) btnExportExtension.addEventListener('click', handleExportExtension);
+  if (btnReexportExtension) btnReexportExtension.addEventListener('click', handleExportExtension);
+  if (btnOpenExtensionFolder) {
+    btnOpenExtensionFolder.addEventListener('click', () => {
+      if (window.electronAPI && window.electronAPI.showItemInFolder && extensionSavedFilePath) {
+        window.electronAPI.showItemInFolder(extensionSavedFilePath);
+      }
+    });
+  }
+
+  async function openExtensionManager(browserType) {
+    if (window.electronAPI && window.electronAPI.browserLoginOpenExtensionManager) {
+      const res = await window.electronAPI.browserLoginOpenExtensionManager(browserType);
+      if (res && !res.success && res.error) {
+        showBrowserLoginError(res.error);
+      }
+    } else if (window.electronAPI && window.electronAPI.openExternal) {
+      const urls = {
+        chrome: 'chrome://extensions',
+        edge: 'edge://extensions',
+        brave: 'brave://extensions'
+      };
+      window.electronAPI.openExternal(urls[browserType] || 'chrome://extensions');
+    }
+  }
+
+  if (btnOpenChromeExt) btnOpenChromeExt.addEventListener('click', () => openExtensionManager('chrome'));
+  if (btnOpenEdgeExt) btnOpenEdgeExt.addEventListener('click', () => openExtensionManager('edge'));
+  if (btnOpenBraveExt) btnOpenBraveExt.addEventListener('click', () => openExtensionManager('brave'));
+
   async function refreshBrowserProfilesUI() {
     if (!browserProfilesList) return;
-    browserProfilesList.innerHTML = '<div style="text-align: center; color: #64748b; font-size: 13px; padding: 12px;">Discovering browser profiles...</div>';
+    browserProfilesList.innerHTML = '<div class="browser-profiles-empty">Discovering browser profiles...</div>';
     try {
       if (window.electronAPI && window.electronAPI.browserLoginGetProfiles) {
         const res = await window.electronAPI.browserLoginGetProfiles();
@@ -22811,10 +22948,12 @@ function bindCoverHoldZoom(wrapEl) {
           browserProfilesList.innerHTML = '';
           for (const p of res.profiles) {
             const card = document.createElement('div');
-            card.style.cssText = 'background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center;';
+            card.className = 'browser-profile-item';
             const info = document.createElement('div');
-            info.innerHTML = `<div style="font-size: 13px; font-weight: 600; color: #f1f5f9;">${p.browser} <span style="font-size: 11px; font-weight: normal; color: #94a3b8;">(${p.profileName})</span></div>
-              <div style="font-size: 11px; color: ${p.status === 'COOKIES_FOUND' ? '#4ade80' : '#94a3b8'}; margin-top: 2px;">${p.requiresExtension ? 'Extension pairing available' : (p.status === 'COOKIES_FOUND' ? 'YouTube session detected' : p.status)}</div>`;
+            const statusClass = p.status === 'COOKIES_FOUND' ? 'browser-profile-status found' : 'browser-profile-status muted';
+            const statusText = p.requiresExtension ? 'Extension pairing available' : (p.status === 'COOKIES_FOUND' ? 'YouTube session detected' : p.status);
+            info.innerHTML = `<div class="browser-profile-name">${p.browser} <span class="browser-profile-sub">(${p.profileName})</span></div>
+              <div class="${statusClass}">${statusText}</div>`;
             card.appendChild(info);
 
             const btnConnect = document.createElement('button');
@@ -22823,6 +22962,7 @@ function bindCoverHoldZoom(wrapEl) {
             btnConnect.textContent = p.requiresExtension ? 'Pair via Extension' : 'Connect';
             btnConnect.addEventListener('click', async () => {
               if (p.requiresExtension) {
+                switchBrowserLoginTab('extension');
                 startExtensionPairingFlow();
               } else {
                 btnConnect.disabled = true;
@@ -22847,34 +22987,70 @@ function bindCoverHoldZoom(wrapEl) {
             browserProfilesList.appendChild(card);
           }
         } else {
-          browserProfilesList.innerHTML = '<div style="text-align: center; color: #94a3b8; font-size: 12px; padding: 12px;">No Gecko profiles (Firefox/Zen) found. Use the Eclipse Extension below for Edge/Chrome.</div>';
+          browserProfilesList.innerHTML = '<div class="browser-profiles-empty">No Gecko profiles (Firefox/Zen) found. Switch to the <strong>Extension Pairing</strong> tab for Chrome, Edge, and Brave.</div>';
         }
       }
     } catch (e) {
-      browserProfilesList.innerHTML = `<div style="color: #f87171; font-size: 12px; padding: 8px;">Discovery error: ${e.message}</div>`;
+      browserProfilesList.innerHTML = `<div class="browser-login-error-box">Discovery error: ${e.message}</div>`;
     }
+  }
+
+  function startPairingTimer(expiresAt) {
+    stopPairingCountdown();
+    activePairingExpiresAt = typeof expiresAt === 'number' && expiresAt > Date.now() ? expiresAt : (Date.now() + 120000);
+    const update = () => {
+      const now = Date.now();
+      const remainingSeconds = Math.max(0, Math.ceil((activePairingExpiresAt - now) / 1000));
+      if (pairingCountdownVal) {
+        pairingCountdownVal.textContent = remainingSeconds;
+      }
+      if (remainingSeconds <= 0) {
+        stopPairingCountdown();
+        if (extensionPairingBadge) {
+          extensionPairingBadge.textContent = 'Expired';
+          extensionPairingBadge.className = 'pairing-badge expired';
+        }
+        if (btnStartExtensionPairing) {
+          btnStartExtensionPairing.disabled = false;
+          btnStartExtensionPairing.classList.remove('hidden');
+        }
+        if (btnCancelExtensionPairing) {
+          btnCancelExtensionPairing.classList.add('hidden');
+        }
+        showBrowserLoginError('Pairing session expired after 120s. Please start pairing again.');
+        if (window.electronAPI && window.electronAPI.browserLoginCancelPairing) {
+          window.electronAPI.browserLoginCancelPairing().catch(() => {});
+        }
+      }
+    };
+    update();
+    pairingCountdownInterval = setInterval(update, 1000);
   }
 
   async function startExtensionPairingFlow() {
     resetPairingUI();
-    if (btnStartExtensionPairing) btnStartExtensionPairing.classList.add('hidden');
-    if (btnCancelExtensionPairing) btnCancelExtensionPairing.classList.remove('hidden');
-    if (extensionPairingBadge) {
-      extensionPairingBadge.textContent = 'Listening...';
-      extensionPairingBadge.style.color = '#c084fc';
-      extensionPairingBadge.style.background = 'rgba(168,85,247,0.2)';
+    if (btnStartExtensionPairing) {
+      btnStartExtensionPairing.disabled = true;
+      btnStartExtensionPairing.classList.add('hidden');
     }
+    if (btnCancelExtensionPairing) btnCancelExtensionPairing.classList.remove('hidden');
 
     try {
       if (window.electronAPI && window.electronAPI.browserLoginStartPairing) {
         const res = await window.electronAPI.browserLoginStartPairing();
         if (res && res.success) {
+          // Show Listening badge only after server starts successfully
+          if (extensionPairingBadge) {
+            extensionPairingBadge.textContent = 'Listening...';
+            extensionPairingBadge.className = 'pairing-badge listening';
+          }
           if (pairingPortVal) pairingPortVal.textContent = res.port;
           if (pairingNonceVal) {
             pairingNonceVal.textContent = res.nonce;
             pairingNonceVal.title = res.nonce;
           }
           if (extensionPairingInfo) extensionPairingInfo.classList.remove('hidden');
+          startPairingTimer(res.expiresAt);
         } else {
           showBrowserLoginError(res.error || 'Could not start pairing server');
           resetPairingUI();
@@ -22893,6 +23069,7 @@ function bindCoverHoldZoom(wrapEl) {
   }
 
   function onLoginSuccess(account) {
+    stopPairingCountdown();
     googleConnected = true;
     updateGoogleAuthUI();
     if (googleLoginStatus) {
@@ -22921,33 +23098,50 @@ function bindCoverHoldZoom(wrapEl) {
   if (btnRefreshBrowserProfiles) btnRefreshBrowserProfiles.addEventListener('click', refreshBrowserProfilesUI);
   if (btnStartExtensionPairing) btnStartExtensionPairing.addEventListener('click', startExtensionPairingFlow);
   if (btnCancelExtensionPairing) btnCancelExtensionPairing.addEventListener('click', () => {
+    stopPairingCountdown();
     if (window.electronAPI && window.electronAPI.browserLoginCancelPairing) {
       window.electronAPI.browserLoginCancelPairing().catch(() => {});
     }
     resetPairingUI();
   });
+
+  if (btnCopyPairingPort && pairingPortVal) {
+    btnCopyPairingPort.addEventListener('click', () => {
+      const port = pairingPortVal.textContent;
+      if (port && port !== '--') {
+        navigator.clipboard.writeText(port).then(() => {
+          btnCopyPairingPort.textContent = 'Copied!';
+          if (typeof showToast === 'function') showToast('Pairing Port copied to clipboard', 'success');
+          setTimeout(() => { btnCopyPairingPort.textContent = 'Copy Port'; }, 2000);
+        }).catch(() => {});
+      }
+    });
+  }
+
   if (btnCopyPairingNonce && pairingNonceVal) {
     btnCopyPairingNonce.addEventListener('click', () => {
       const nonce = pairingNonceVal.textContent;
       if (nonce && nonce !== '--') {
         navigator.clipboard.writeText(nonce).then(() => {
           btnCopyPairingNonce.textContent = 'Copied!';
-          setTimeout(() => { btnCopyPairingNonce.textContent = 'Copy'; }, 2000);
+          if (typeof showToast === 'function') showToast('Pairing Nonce copied to clipboard', 'success');
+          setTimeout(() => { btnCopyPairingNonce.textContent = 'Copy Nonce'; }, 2000);
         }).catch(() => {});
       }
     });
   }
-  if (btnOpenEdgeExt) {
-    btnOpenEdgeExt.addEventListener('click', () => {
-      if (window.electronAPI && window.electronAPI.openExternal) {
-        window.electronAPI.openExternal('edge://extensions');
-      }
-    });
-  }
-  if (btnOpenChromeExt) {
-    btnOpenChromeExt.addEventListener('click', () => {
-      if (window.electronAPI && window.electronAPI.openExternal) {
-        window.electronAPI.openExternal('chrome://extensions');
+
+  if (btnCopyAllDetails && pairingPortVal && pairingNonceVal) {
+    btnCopyAllDetails.addEventListener('click', () => {
+      const port = pairingPortVal.textContent;
+      const nonce = pairingNonceVal.textContent;
+      if (port && port !== '--' && nonce && nonce !== '--') {
+        const text = `Port: ${port}\nNonce: ${nonce}`;
+        navigator.clipboard.writeText(text).then(() => {
+          btnCopyAllDetails.textContent = 'All Details Copied!';
+          if (typeof showToast === 'function') showToast('Pairing Port & Nonce copied to clipboard', 'success');
+          setTimeout(() => { btnCopyAllDetails.textContent = 'Copy All Details'; }, 2000);
+        }).catch(() => {});
       }
     });
   }

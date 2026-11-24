@@ -134,6 +134,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   browserLoginStartPairing: () => ipcRenderer.invoke('browser-login:start-pairing'),
   browserLoginCancelPairing: () => ipcRenderer.invoke('browser-login:cancel-pairing'),
   browserLoginImportProfile: (profile) => ipcRenderer.invoke('browser-login:import-profile', profile),
+  browserLoginOpenExtensionManager: (browser) => ipcRenderer.invoke('browser-login:open-extension-manager', browser),
+  browserLoginExportExtension: () => ipcRenderer.invoke('browser-login:export-extension'),
   onBrowserLoginPairingResult: (cb) => {
     const sub = (e, d) => cb(d);
     ipcRenderer.on('browser-login:pairing-result', sub);

@@ -11866,3 +11866,408 @@ body.perf .tv-karaoke[data-tvk-anim="focus"] .lyric-word.active-word {
     filter: none !important;
   }
 }
+
+/* ==========================================================================
+   Browser Login & Extension Pairing Modal (Theme-Synced Glassmorphism)
+   ========================================================================== */
+.browser-login-dialog-card {
+  width: 480px;
+  max-width: 90vw;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+.browser-login-desc {
+  font-size: calc(13px * var(--font-scale, 1));
+  color: var(--md-sys-color-on-surface-variant);
+  line-height: 1.5;
+}
+
+.browser-login-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.browser-pane-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.browser-pane-title {
+  font-size: calc(12px * var(--font-scale, 1));
+  font-weight: 600;
+  color: var(--md-sys-color-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.browser-profiles-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 60px;
+}
+
+.browser-profiles-empty {
+  text-align: center;
+  color: var(--md-sys-color-outline);
+  font-size: calc(12px * var(--font-scale, 1));
+  padding: 16px 8px;
+  line-height: 1.5;
+  background: color-mix(in srgb, var(--md-sys-color-surface) 30%, transparent);
+  border-radius: var(--md-shape-corner-medium, 12px);
+  border: 1px dashed var(--md-sys-color-outline-variant, rgba(255, 255, 255, 0.08));
+}
+
+.browser-profile-item {
+  background: var(--md-sys-color-surface-container, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--md-sys-color-outline-variant, rgba(255, 255, 255, 0.08));
+  border-radius: var(--md-shape-corner-medium, 12px);
+  padding: 10px 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: background var(--transition-short, 0.2s), border-color var(--transition-short, 0.2s);
+}
+
+.browser-profile-item:hover {
+  background: var(--md-sys-color-surface-container-high, rgba(255, 255, 255, 0.08));
+  border-color: color-mix(in srgb, var(--md-sys-color-primary) 50%, transparent);
+}
+
+.browser-profile-name {
+  font-size: calc(13px * var(--font-scale, 1));
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface);
+}
+
+.browser-profile-sub {
+  font-size: calc(11px * var(--font-scale, 1));
+  font-weight: normal;
+  color: var(--md-sys-color-outline);
+}
+
+.browser-profile-status {
+  font-size: calc(11px * var(--font-scale, 1));
+  margin-top: 2px;
+}
+
+.browser-profile-status.found {
+  color: var(--md-sys-color-primary);
+}
+
+.browser-profile-status.muted {
+  color: var(--md-sys-color-outline);
+}
+
+/* Pairing Card */
+.pairing-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--md-sys-color-surface-container, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--md-sys-color-outline-variant, rgba(255, 255, 255, 0.08));
+  border-radius: var(--md-shape-corner-medium, 14px);
+  padding: 16px;
+}
+
+.pairing-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.pairing-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pairing-label {
+  font-size: calc(13px * var(--font-scale, 1));
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface);
+}
+
+.pairing-sublabel {
+  font-size: calc(11px * var(--font-scale, 1));
+  color: var(--md-sys-color-outline);
+}
+
+.pairing-badge {
+  font-size: calc(11px * var(--font-scale, 1));
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) 10%, transparent);
+  color: var(--md-sys-color-outline);
+  transition: background var(--transition-short, 0.2s), color var(--transition-short, 0.2s);
+}
+
+.pairing-badge.listening {
+  background: color-mix(in srgb, var(--md-sys-color-primary) 18%, transparent);
+  color: var(--md-sys-color-primary);
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-primary) 50%, transparent);
+}
+
+.pairing-badge.expired {
+  background: color-mix(in srgb, var(--md-sys-color-error, #f87171) 18%, transparent);
+  color: var(--md-sys-color-error, #f87171);
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-error, #f87171) 50%, transparent);
+}
+
+.pairing-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 6px;
+}
+
+.pairing-stage {
+  background: color-mix(in srgb, var(--md-sys-color-surface) 40%, transparent);
+  border: 1px solid var(--md-sys-color-outline-variant, rgba(255, 255, 255, 0.08));
+  border-radius: var(--md-shape-corner-medium, 12px);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pairing-stage-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stage-tag {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--md-sys-color-primary) 20%, transparent);
+  color: var(--md-sys-color-primary);
+}
+
+.stage-title {
+  font-size: calc(12px * var(--font-scale, 1));
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface);
+}
+
+.stage-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stage-desc {
+  margin: 0;
+  font-size: calc(12px * var(--font-scale, 1));
+  color: var(--md-sys-color-on-surface-variant);
+  line-height: 1.4;
+}
+
+.stage-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.extension-path-box {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: color-mix(in srgb, var(--md-sys-color-surface) 60%, transparent);
+  border: 1px solid var(--md-sys-color-outline-variant, rgba(255, 255, 255, 0.06));
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.extension-path-label {
+  font-size: 10px;
+  color: var(--md-sys-color-outline);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.extension-path-code {
+  font-size: 11px;
+  font-family: monospace;
+  color: var(--md-sys-color-primary);
+  word-break: break-all;
+}
+
+.pairing-instruction-list {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: calc(11.5px * var(--font-scale, 1));
+  color: var(--md-sys-color-on-surface-variant);
+  line-height: 1.4;
+}
+
+.pairing-instruction-list code {
+  font-family: monospace;
+  color: var(--md-sys-color-primary);
+  background: color-mix(in srgb, var(--md-sys-color-surface) 60%, transparent);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.pairing-confirmations {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--md-sys-color-outline-variant, rgba(255, 255, 255, 0.06));
+}
+
+.pairing-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: calc(12px * var(--font-scale, 1));
+  color: var(--md-sys-color-on-surface);
+  cursor: pointer;
+  user-select: none;
+}
+
+.pairing-checkbox {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--md-sys-color-primary);
+  cursor: pointer;
+}
+
+.prerequisite-checkbox {
+  font-weight: 500;
+  color: var(--md-sys-color-on-surface);
+  padding: 4px 0;
+}
+
+.pairing-code-action {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pairing-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.pairing-step-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.step-num {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--md-sys-color-surface-container-highest, rgba(255, 255, 255, 0.1));
+  color: var(--md-sys-color-primary);
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.step-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+
+.step-text {
+  font-size: calc(12px * var(--font-scale, 1));
+  color: var(--md-sys-color-on-surface-variant);
+  line-height: 1.4;
+}
+
+.pairing-browser-actions,
+.pairing-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pairing-info-box {
+  background: color-mix(in srgb, var(--md-sys-color-primary) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-primary) 28%, transparent);
+  border-radius: var(--md-shape-corner-small, 10px);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.pairing-field-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: calc(12px * var(--font-scale, 1));
+}
+
+.pairing-field-label {
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.pairing-code {
+  color: var(--md-sys-color-primary);
+  font-family: monospace;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--md-sys-color-surface) 60%, transparent);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.pairing-code-truncate {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pairing-nonce-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pairing-waiting-text {
+  font-size: calc(11px * var(--font-scale, 1));
+  color: var(--md-sys-color-outline);
+  font-style: italic;
+  margin-top: 2px;
+}
+
+.browser-login-error-box {
+  color: var(--md-sys-color-error, #f87171);
+  font-size: calc(12px * var(--font-scale, 1));
+  line-height: 1.4;
+  background: color-mix(in srgb, var(--md-sys-color-error, #f87171) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-error, #f87171) 24%, transparent);
+  padding: 8px 12px;
+  border-radius: var(--md-shape-corner-small, 8px);
+}

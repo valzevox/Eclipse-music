@@ -3942,66 +3942,154 @@
   <div class="toast-container" id="toast-container"></div>
 
   <!-- Browser Login & Extension Pairing Dialog (SimpMusic Style) -->
-  <div id="browser-login-dialog" class="modal-backdrop hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(12px); align-items: center; justify-content: center; z-index: 10000;">
-    <div class="dialog-card glass-panel" style="width: 480px; max-width: 90vw; max-height: 85vh; background: #14121e; border: 1px solid rgba(255,255,255,0.12); border-radius: 16px; padding: 24px; box-shadow: 0 16px 40px rgba(0,0,0,0.6); display: flex; flex-direction: column; gap: 16px; overflow-y: auto;">
-      <div style="display: flex; justify-content: space-between; align-items: center;">
-        <h3 style="margin: 0; font-size: 18px; font-weight: 600; color: #fff;">Connect YouTube Music</h3>
-        <button type="button" id="btn-close-browser-login" style="background: transparent; border: none; color: #94a3b8; font-size: 20px; cursor: pointer; padding: 4px;">&times;</button>
-      </div>
-      <div style="font-size: 13px; color: #94a3b8; line-height: 1.4;">
-        Choose a browser profile to connect your YouTube Music session or pair via the Eclipse extension.
-      </div>
-
-      <!-- Section: Browser Profiles -->
-      <div style="display: flex; flex-direction: column; gap: 8px;">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-size: 12px; font-weight: 600; color: #a855f7; text-transform: uppercase; letter-spacing: 0.5px;">Browser Profiles</span>
-          <button type="button" id="btn-refresh-browser-profiles" class="btn-outline-pill" style="padding: 4px 10px; font-size: 11px;">Refresh</button>
+  <div id="browser-login-dialog" class="modal-backdrop hidden">
+    <div class="dialog-card browser-login-dialog-card">
+      <div class="dialog-header">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--md-sys-color-primary);"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+          <h3 style="margin: 0;">Connect YouTube Music</h3>
         </div>
-        <div id="browser-profiles-list" style="display: flex; flex-direction: column; gap: 8px; min-height: 60px;">
-          <div style="text-align: center; color: #64748b; font-size: 13px; padding: 12px;">Discovering browser profiles...</div>
-        </div>
+        <button class="btn-icon-pill" id="btn-close-browser-login" type="button" title="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="browser-login-desc">
+        Connect your YouTube Music account using local browser profiles or the Eclipse companion extension.
       </div>
 
-      <!-- Section: Extension Pairing -->
-      <div style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 14px; display: flex; flex-direction: column; gap: 10px;">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-size: 12px; font-weight: 600; color: #a855f7; text-transform: uppercase; letter-spacing: 0.5px;">Eclipse Browser Extension</span>
-          <span id="extension-pairing-badge" style="font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(148,163,184,0.15); color: #94a3b8;">Ready</span>
+      <div class="sp-modes" id="browser-login-modes">
+        <button type="button" class="active" data-mode="profiles" id="tab-login-profiles">Browser Profiles</button>
+        <button type="button" data-mode="extension" id="tab-login-extension">Extension Pairing</button>
+      </div>
+
+      <!-- Tab Pane 1: Browser Profiles -->
+      <div class="browser-login-pane sp-pane" id="pane-login-profiles" data-mode="profiles">
+        <div class="browser-pane-header">
+          <span class="browser-pane-title">Detected Profiles</span>
+          <button type="button" id="btn-refresh-browser-profiles" class="btn-outline-pill">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 4px;"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+            Refresh
+          </button>
         </div>
-        <div style="font-size: 12px; color: #94a3b8; line-height: 1.4;">
-          For Google Chrome, Microsoft Edge, and Brave Browser on Windows:
+        <div id="browser-profiles-list" class="browser-profiles-list">
+          <div class="browser-profiles-empty">Discovering browser profiles...</div>
         </div>
-        
-        <div id="extension-pairing-info" class="hidden" style="background: rgba(168,85,247,0.08); border: 1px solid rgba(168,85,247,0.2); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px;">
-          <div style="display: flex; justify-content: space-between; font-size: 12px;">
-            <span style="color: #cbd5e1;">Pairing Port:</span>
-            <code id="pairing-port-val" style="color: #c084fc; font-weight: bold;">--</code>
+      </div>
+
+      <!-- Tab Pane 2: Extension Pairing -->
+      <div class="browser-login-pane sp-pane hidden" id="pane-login-extension" data-mode="extension">
+        <div class="pairing-card">
+          <div class="pairing-header">
+            <div class="pairing-title-group">
+              <span class="pairing-label">Eclipse Companion Extension</span>
+              <span class="pairing-sublabel">For Google Chrome, Microsoft Edge, and Brave Browser</span>
+            </div>
+            <span id="extension-pairing-badge" class="pairing-badge">Ready</span>
           </div>
-          <div style="display: flex; justify-content: space-between; font-size: 12px; align-items: center;">
-            <span style="color: #cbd5e1;">One-Time Nonce:</span>
-            <div style="display: flex; gap: 6px; align-items: center;">
-              <code id="pairing-nonce-val" style="color: #c084fc; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">--</code>
-              <button type="button" id="btn-copy-pairing-nonce" class="btn-outline-pill" style="padding: 2px 8px; font-size: 11px;">Copy</button>
+
+          <div class="pairing-stages">
+            <!-- Stage 1: Get Extension -->
+            <div class="pairing-stage" id="stage-get-extension">
+              <div class="pairing-stage-header">
+                <span class="stage-tag">Stage 1</span>
+                <span class="stage-title">Get Extension</span>
+              </div>
+              <div class="stage-body">
+                <p class="stage-desc">Download the extension ZIP package to load into your browser.</p>
+                <div class="stage-actions">
+                  <button type="button" id="btn-export-extension" class="btn-pill-primary">Download Extension (.zip)</button>
+                  <button type="button" id="btn-open-extension-folder" class="btn-outline-pill hidden">Open Folder</button>
+                  <button type="button" id="btn-reexport-extension" class="btn-outline-pill hidden">Re-download</button>
+                </div>
+                <div id="extension-saved-path-box" class="extension-path-box hidden">
+                  <span class="extension-path-label">Saved to:</span>
+                  <code id="extension-saved-path" class="extension-path-code"></code>
+                </div>
+              </div>
+            </div>
+
+            <!-- Stage 2: Browser Setup -->
+            <div class="pairing-stage" id="stage-browser-setup">
+              <div class="pairing-stage-header">
+                <span class="stage-tag">Stage 2</span>
+                <span class="stage-title">Browser Setup</span>
+              </div>
+              <div class="stage-body">
+                <div class="pairing-browser-actions">
+                  <button type="button" id="btn-open-chrome-ext" class="btn-outline-pill">Open Chrome</button>
+                  <button type="button" id="btn-open-edge-ext" class="btn-outline-pill">Open Edge</button>
+                  <button type="button" id="btn-open-brave-ext" class="btn-outline-pill">Open Brave</button>
+                </div>
+                <ol class="pairing-instruction-list">
+                  <li><strong>Extract ZIP:</strong> Unzip the downloaded file to a local folder.</li>
+                  <li><strong>Open Extensions page:</strong> Click your browser button above or go to <code>chrome://extensions</code> (or <code>edge://extensions</code>, <code>brave://extensions</code>).</li>
+                  <li><strong>Enable Developer Mode:</strong> Toggle the "Developer mode" switch in the top-right corner.</li>
+                  <li><strong>Load unpacked:</strong> Click the "Load unpacked" button in the top toolbar.</li>
+                  <li><strong>Select folder:</strong> Choose the extracted extension folder.</li>
+                  <li><strong>Pin to toolbar:</strong> Pin Eclipse Connect to your browser toolbar for quick access.</li>
+                </ol>
+                <div class="pairing-confirmations">
+                  <label class="pairing-checkbox-label">
+                    <input type="checkbox" id="chk-ext-extracted" class="pairing-checkbox">
+                    <span>1. ZIP extracted to folder</span>
+                  </label>
+                  <label class="pairing-checkbox-label">
+                    <input type="checkbox" id="chk-ext-loaded" class="pairing-checkbox">
+                    <span>2. Extension loaded unpacked in browser</span>
+                  </label>
+                  <label class="pairing-checkbox-label">
+                    <input type="checkbox" id="chk-ext-pinned" class="pairing-checkbox">
+                    <span>3. Extension pinned to toolbar</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <!-- Stage 3: Pair Session -->
+            <div class="pairing-stage" id="stage-pair-session">
+              <div class="pairing-stage-header">
+                <span class="stage-tag">Stage 3</span>
+                <span class="stage-title">Pair Session</span>
+              </div>
+              <div class="stage-body">
+                <label class="pairing-checkbox-label prerequisite-checkbox">
+                  <input type="checkbox" id="chk-ytm-signedin" class="pairing-checkbox">
+                  <span>Signed in to YouTube Music in this browser profile</span>
+                </label>
+                <div class="pairing-actions">
+                  <button type="button" id="btn-start-extension-pairing" class="btn-pill-primary" disabled>Start Pairing</button>
+                  <button type="button" id="btn-cancel-extension-pairing" class="btn-outline-pill hidden">Cancel Pairing</button>
+                </div>
+
+                <div id="extension-pairing-info" class="pairing-info-box hidden">
+                  <div class="pairing-field-row">
+                    <span class="pairing-field-label">Pairing Port:</span>
+                    <div class="pairing-code-action">
+                      <code id="pairing-port-val" class="pairing-code">--</code>
+                      <button type="button" id="btn-copy-pairing-port" class="btn-outline-pill" style="padding: 2px 8px; font-size: 11px;">Copy Port</button>
+                    </div>
+                  </div>
+                  <div class="pairing-field-row">
+                    <span class="pairing-field-label">One-Time Nonce:</span>
+                    <div class="pairing-nonce-row">
+                      <code id="pairing-nonce-val" class="pairing-code pairing-code-truncate">--</code>
+                      <button type="button" id="btn-copy-pairing-nonce" class="btn-outline-pill" style="padding: 2px 8px; font-size: 11px;">Copy Nonce</button>
+                    </div>
+                  </div>
+                  <div class="pairing-field-row" style="margin-top: 4px;">
+                    <button type="button" id="btn-copy-all-details" class="btn-outline-pill" style="width: 100%; font-size: 12px; padding: 4px 10px;">Copy All Details</button>
+                  </div>
+                  <div id="pairing-countdown-box" class="pairing-waiting-text">
+                    Waiting for extension connection (<span id="pairing-countdown-val">120</span>s remaining)...
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
-          <div style="font-size: 11px; color: #94a3b8; font-style: italic;">
-            Waiting for extension connection (expires in 120s)...
-          </div>
-        </div>
-
-        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-          <button type="button" id="btn-start-extension-pairing" class="btn-pill-primary" style="flex: 1; padding: 8px 12px; font-size: 12px; justify-content: center;">Start Pairing</button>
-          <button type="button" id="btn-cancel-extension-pairing" class="btn-outline-pill hidden" style="padding: 8px 12px; font-size: 12px;">Cancel</button>
-        </div>
-
-        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px;">
-          <button type="button" id="btn-open-edge-ext" class="btn-outline-pill" style="flex: 1; padding: 6px 10px; font-size: 11px; justify-content: center;">Open Edge Extensions</button>
-          <button type="button" id="btn-open-chrome-ext" class="btn-outline-pill" style="flex: 1; padding: 6px 10px; font-size: 11px; justify-content: center;">Open Chrome Extensions</button>
         </div>
       </div>
 
-      <div id="browser-login-error" class="hidden" style="color: #f87171; font-size: 12px; line-height: 1.4; background: rgba(248,113,113,0.1); padding: 8px 12px; border-radius: 6px;"></div>
+      <div id="browser-login-error" class="browser-login-error-box hidden"></div>
     </div>
   </div>
 
