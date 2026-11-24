@@ -1,7 +1,7 @@
 /**
  * Eclipse Browser Extension Manager
- * Handles browser executable discovery, extension package export, archive validation,
- * and extension manager launching with dependency injection.
+ * Handles browser executable discovery, transactional extension package export,
+ * archive validation, and extension manager launching with dependency injection.
  */
 
 const path = require('path');
@@ -21,16 +21,9 @@ function createBrowserExtensionManager(injectedDeps = {}) {
     shell: injectedDeps.shell || shell,
     app: injectedDeps.app || app,
     BrowserWindow: injectedDeps.BrowserWindow || BrowserWindow,
+    getExtensionZipPath: injectedDeps.getExtensionZipPath || (() => null),
     processPlatform: injectedDeps.processPlatform || process.platform,
-    env: injectedDeps.env || process.env,
-    buildExtensionZip: injectedDeps.buildExtensionZip || (() => {
-      try {
-        const { buildExtensionZip } = require('../../scripts/build-extension');
-        return buildExtensionZip();
-      } catch (_) {
-        return null;
-      }
-    })
+    env: injectedDeps.env || process.env
   };
 
   let lastExportedExtensionPath = null;
@@ -107,7 +100,7 @@ function createBrowserExtensionManager(injectedDeps = {}) {
       throw new Error(`Extension package not found at: ${zipPath}`);
     }
 
-    const tmpDir = deps.path.join(deps.os.tmpdir(), `eclipse-ext-verify-${Date.now()}-${Math.floor(Math.random() * 10000)}`);
+    const tmpDir = deps.path.join(deps.os.tmpdir(), `eclipse-ext-verify-${Date.now()}-${Math.floor(Math.random() * 100000)}`);
     deps.fs.mkdirSync(tmpDir, { recursive: true });
     try {
       if (deps.processPlatform === 'win32') {
@@ -118,6 +111,11 @@ function createBrowserExtensionManager(injectedDeps = {}) {
       const manifestPath = deps.path.join(tmpDir, 'manifest.json');
       if (!deps.fs.existsSync(manifestPath)) {
         throw new Error('manifest.json missing inside extension archive');
+      }
+      // Guard against zip-slip: verify manifest path resolves inside tmpDir
+      const relative = deps.path.relative(tmpDir, manifestPath);
+      if (relative.startsWith('..') || deps.path.isAbsolute(relative)) {
+        throw new Error('Path traversal detected in extension archive');
       }
       const manifest = JSON.parse(deps.fs.readFileSync(manifestPath, 'utf8'));
       if (!manifest || manifest.manifest_version !== 3) {
@@ -186,69 +184,94 @@ function createBrowserExtensionManager(injectedDeps = {}) {
       }
       if (!win) win = mainWindow;
 
-      const appPath = deps.app && deps.app.getAppPath ? deps.app.getAppPath() : process.cwd();
-      const resourcesPath = (deps.process && deps.process.resourcesPath) || process.resourcesPath || '';
-
-      const candidates = [
-        deps.path.join(resourcesPath, 'extension', 'eclipse-connect.zip'),
-        deps.path.join(appPath, 'dist', 'extension', 'eclipse-connect.zip'),
-        deps.path.join(__dirname, '..', '..', 'dist', 'extension', 'eclipse-connect.zip')
-      ];
-
-      let sourceZip = candidates.find(c => c && deps.fs.existsSync(c));
-      if (!sourceZip) {
-        // Lazy build fallback in dev environment
-        try {
-          sourceZip = deps.buildExtensionZip();
-        } catch (_) {}
-      }
-
+      // 1. Explicitly resolve bundled source ZIP path
+      const sourceZip = typeof deps.getExtensionZipPath === 'function' ? deps.getExtensionZipPath() : null;
       if (!sourceZip || !deps.fs.existsSync(sourceZip)) {
         return { success: false, error: 'Extension package (eclipse-connect.zip) not found' };
       }
 
-      // Pre-export validation
+      // 2. Validate bundled source ZIP archive
       validateExtensionZipArchive(sourceZip);
 
       const defaultDownloadDir = deps.app && deps.app.getPath ? deps.app.getPath('downloads') : deps.os.tmpdir();
       const defaultSavePath = deps.path.join(defaultDownloadDir, 'eclipse-connect.zip');
 
+      // 3. Show native Save Dialog
       const saveResult = await deps.dialog.showSaveDialog(win, {
         title: 'Export Eclipse Connect Extension',
         defaultPath: defaultSavePath,
         filters: [{ name: 'ZIP Archive', extensions: ['zip'] }]
       });
 
-      // Cancellation preserves any previously successful export path
+      // Cancellation preserves previous lastExportedExtensionPath
       if (saveResult.canceled || !saveResult.filePath) {
         return { canceled: true };
       }
 
-      const targetPath = saveResult.filePath;
-      deps.fs.copyFileSync(sourceZip, targetPath);
-
-      // Verify destination post-copy
-      if (!deps.fs.existsSync(targetPath)) {
-        return { success: false, error: 'Failed to verify exported extension: file does not exist after copy' };
+      const destinationPath = saveResult.filePath;
+      if (!destinationPath.toLowerCase().endsWith('.zip')) {
+        return { success: false, error: 'Destination path must have a .zip extension' };
       }
 
-      const stat = deps.fs.statSync(targetPath);
-      if (!stat.isFile()) {
-        return { success: false, error: 'Failed to verify exported extension: destination is not a file' };
+      // 4. Transactional export: write to a temp file in destination directory
+      const destDir = deps.path.dirname(destinationPath);
+      const tempFileName = `.eclipse-ext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp.zip`;
+      const tempFilePath = deps.path.join(destDir, tempFileName);
+
+      let backupFilePath = null;
+      try {
+        deps.fs.copyFileSync(sourceZip, tempFilePath);
+
+        // Verify temp file existence, file type, extension, and archive integrity
+        if (!deps.fs.existsSync(tempFilePath)) {
+          throw new Error('Temporary export file was not created');
+        }
+        const tempStat = deps.fs.statSync(tempFilePath);
+        if (!tempStat.isFile()) {
+          throw new Error('Temporary export path is not a file');
+        }
+        validateExtensionZipArchive(tempFilePath);
+
+        // Atomic replacement with rollback strategy
+        const destExists = deps.fs.existsSync(destinationPath);
+        if (destExists) {
+          backupFilePath = deps.path.join(destDir, `.eclipse-dest-backup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp`);
+          deps.fs.renameSync(destinationPath, backupFilePath);
+        }
+
+        try {
+          deps.fs.renameSync(tempFilePath, destinationPath);
+        } catch (renameErr) {
+          // Rollback destination from backup if rename failed
+          if (backupFilePath && deps.fs.existsSync(backupFilePath)) {
+            try { deps.fs.renameSync(backupFilePath, destinationPath); } catch (_) {}
+          }
+          throw renameErr;
+        }
+
+        // Clean up backup file upon successful replacement
+        if (backupFilePath && deps.fs.existsSync(backupFilePath)) {
+          try { deps.fs.unlinkSync(backupFilePath); } catch (_) {}
+        }
+      } catch (transErr) {
+        // Clean up any remaining temp files on error
+        if (deps.fs.existsSync(tempFilePath)) {
+          try { deps.fs.unlinkSync(tempFilePath); } catch (_) {}
+        }
+        if (backupFilePath && deps.fs.existsSync(backupFilePath) && !deps.fs.existsSync(destinationPath)) {
+          try { deps.fs.renameSync(backupFilePath, destinationPath); } catch (_) {}
+        }
+        return { success: false, error: `Failed to export extension: ${transErr.message}` };
       }
 
-      if (!targetPath.toLowerCase().endsWith('.zip')) {
-        return { success: false, error: 'Failed to verify exported extension: destination must end in .zip' };
-      }
-
-      // Only update state after full verification succeeds
-      lastExportedExtensionPath = targetPath;
+      // 5. Update state and reveal only after replacement succeeds
+      lastExportedExtensionPath = destinationPath;
 
       if (deps.shell && deps.shell.showItemInFolder) {
-        deps.shell.showItemInFolder(targetPath);
+        deps.shell.showItemInFolder(destinationPath);
       }
 
-      return { success: true, filePath: targetPath };
+      return { success: true, filePath: destinationPath };
     } catch (err) {
       return { success: false, error: err.message };
     }
@@ -290,7 +313,9 @@ function createBrowserExtensionManager(injectedDeps = {}) {
     resolveBrowserExecutable,
     validateExtensionZipArchive,
     openExtensionManager,
+    launchBrowserExtensionManager: openExtensionManager,
     exportExtension,
+    exportExtensionPackage: exportExtension,
     revealExportedExtension,
     getLastExportedExtensionPath,
     setLastExportedExtensionPath

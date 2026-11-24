@@ -23126,6 +23126,16 @@ function bindCoverHoldZoom(wrapEl) {
     }
   }
 
+  // Expose pairing controller for automated test verification
+  if (typeof window !== 'undefined') {
+    window.__eclipsePairingController = {
+      updateStartPairingState,
+      startPairingTimer,
+      stopPairingCountdown,
+      resetPairingUI
+    };
+  }
+
   if (btnCloseBrowserLogin) btnCloseBrowserLogin.addEventListener('click', closeBrowserLoginModal);
   if (browserLoginDialog) {
     browserLoginDialog.addEventListener('click', (e) => {

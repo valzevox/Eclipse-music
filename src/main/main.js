@@ -1915,6 +1915,22 @@ ipcMain.on('window-minimize', () => {
         }
       });
 
+      function resolveExtensionZipPath() {
+        const candidates = [
+          path.join(process.resourcesPath || '', 'extension', 'eclipse-connect.zip'),
+          path.join(app.getAppPath(), 'dist', 'extension', 'eclipse-connect.zip'),
+          path.join(__dirname, '..', '..', 'dist', 'extension', 'eclipse-connect.zip')
+        ];
+        let zipPath = candidates.find(c => c && fs.existsSync(c));
+        if (!zipPath) {
+          try {
+            const { buildExtensionZip } = require('../../scripts/build-extension');
+            zipPath = buildExtensionZip();
+          } catch (_) {}
+        }
+        return zipPath || null;
+      }
+
       const browserExtensionManager = createBrowserExtensionManager({
         fs,
         path,
@@ -1925,6 +1941,7 @@ ipcMain.on('window-minimize', () => {
         shell,
         app,
         BrowserWindow,
+        getExtensionZipPath: resolveExtensionZipPath,
         processPlatform: process.platform,
         env: process.env
       });
