@@ -18,6 +18,7 @@ const {
   executeGoogleLogout
 } = require('./google-oauth');
 const { fetchYouTubeLibrary } = require('./youtube-data');
+const { LibraryDatabase } = require('./db/library-database');
 const googleOAuthCfg = require('./google-oauth');
 const GOOGLE_CLIENT_ID = String(googleOAuthCfg.GOOGLE_CLIENT_ID || process.env.ECLIPSE_GOOGLE_CLIENT_ID || '').trim();
 const RFACC_KEY = crypto.createHash('sha256').update('riff-account-key-v1').digest();
@@ -278,6 +279,116 @@ function runGUI() {
     if (storageDirty && latestStorageSnapshot) {
       storageDirty = false;
       writeStorageDiskSync(latestStorageSnapshot);
+    }
+    if (libraryDb) {
+      try { libraryDb.close(); } catch (_) {}
+    }
+  });
+
+  // --- SQLite Library Database (node:sqlite) ---
+  let libraryDb = null;
+  function getLibraryDb() {
+    if (!libraryDb) {
+      const dbPath = path.join(app.getPath('userData'), 'eclipse-library.db');
+      libraryDb = new LibraryDatabase(dbPath);
+    }
+    return libraryDb;
+  }
+
+  ipcMain.handle('library-db:load-all', async (event, accountId = 'default') => {
+    try {
+      return { success: true, data: getLibraryDb().loadAllLibrary(accountId) };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('library-db:save-albums', async (event, { albums, accountId = 'default' } = {}) => {
+    try {
+      getLibraryDb().setSavedAlbums(albums, accountId);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('library-db:delete-album', async (event, { id, accountId = 'default', entityType = 'Album' } = {}) => {
+    try {
+      getLibraryDb().deleteAlbum(id, accountId, entityType);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('library-db:save-playlists', async (event, { playlists, accountId = 'default' } = {}) => {
+    try {
+      getLibraryDb().setPlaylists(playlists, accountId);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('library-db:delete-playlist', async (event, { id } = {}) => {
+    try {
+      getLibraryDb().deletePlaylist(id);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('library-db:save-favorites', async (event, { tracks, accountId = 'default' } = {}) => {
+    try {
+      getLibraryDb().setFavorites(tracks, accountId);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('library-db:add-favorite', async (event, { track, accountId = 'default' } = {}) => {
+    try {
+      getLibraryDb().addFavorite(track, accountId);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('library-db:remove-favorite', async (event, { trackId, accountId = 'default' } = {}) => {
+    try {
+      getLibraryDb().removeFavorite(trackId, accountId);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('library-db:record-history', async (event, { track, source = null } = {}) => {
+    try {
+      getLibraryDb().recordHistory(track, source);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('library-db:get-history', async (event, { limit = 100 } = {}) => {
+    try {
+      return { success: true, data: getLibraryDb().getHistory(limit) };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('library-db:migrate-legacy', async (event, { payload, accountId = 'default' } = {}) => {
+    try {
+      const res = getLibraryDb().migrateFromLegacy(payload, accountId);
+      return res;
+    } catch (err) {
+      return { success: false, error: err.message };
     }
   });
 

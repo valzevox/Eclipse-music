@@ -52,8 +52,22 @@ if (migrated) {
 window.electronAPI.storageSaveSync(diskMap);
 }
 
-function flushAsync() {
+function flushAsync(key, val) {
 window.electronAPI.storageSaveBatch(diskMap);
+if (window.electronAPI && window.electronAPI.libraryDb) {
+  try {
+    if (key === 'devsize_playlists' && typeof window.electronAPI.libraryDb.savePlaylists === 'function') {
+      const parsed = JSON.parse(val);
+      if (Array.isArray(parsed)) window.electronAPI.libraryDb.savePlaylists(parsed, 'default').catch(() => {});
+    } else if (key === 'devsize_favorites' && typeof window.electronAPI.libraryDb.saveFavorites === 'function') {
+      const parsed = JSON.parse(val);
+      if (Array.isArray(parsed)) window.electronAPI.libraryDb.saveFavorites(parsed, 'default').catch(() => {});
+    } else if (key === 'eclipse_saved_albums' && typeof window.electronAPI.libraryDb.saveAlbums === 'function') {
+      const parsed = JSON.parse(val);
+      if (Array.isArray(parsed)) window.electronAPI.libraryDb.saveAlbums(parsed, 'default').catch(() => {});
+    }
+  } catch (_) {}
+}
 }
 
 Storage.prototype.getItem = function(key) {
@@ -70,7 +84,7 @@ const k = String(key);
 const v = String(val);
 if (diskMap[k] === v) return;
 diskMap[k] = v;
-flushAsync();
+flushAsync(k, v);
 return;
 }
 origSet.call(this, key, val);
@@ -9777,20 +9791,29 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     btnDMDislike.addEventListener('click', () => handleDailyMixRating(false));
   }
 
+  let cachedSavedAlbums = null;
+
   function getSavedAlbums() {
+    if (Array.isArray(cachedSavedAlbums)) return cachedSavedAlbums;
     try {
       const raw = (localStorage.getItem('eclipse_saved_albums') || localStorage.getItem('eclipse_saved_albums'));
       const parsed = raw ? JSON.parse(raw) : [];
-      return Array.isArray(parsed) ? parsed : [];
+      cachedSavedAlbums = Array.isArray(parsed) ? parsed : [];
+      return cachedSavedAlbums;
     } catch (_) {
-      return [];
+      cachedSavedAlbums = [];
+      return cachedSavedAlbums;
     }
   }
 
   function setSavedAlbums(list) {
+    cachedSavedAlbums = Array.isArray(list) ? list : [];
     try {
-      localStorage.setItem('eclipse_saved_albums', JSON.stringify(list)); localStorage.setItem('eclipse_saved_albums', JSON.stringify(list));
+      localStorage.setItem('eclipse_saved_albums', JSON.stringify(cachedSavedAlbums));
     } catch (_) {}
+    if (window.electronAPI && window.electronAPI.libraryDb && typeof window.electronAPI.libraryDb.saveAlbums === 'function') {
+      window.electronAPI.libraryDb.saveAlbums(cachedSavedAlbums, 'default').catch(() => {});
+    }
     updateAlbumsCount();
   }
 
@@ -29339,6 +29362,75 @@ function bindCoverHoldZoom(wrapEl) {
     checkGoogleAuthStatus().catch(() => {});
   }
   emitPluginEvent('ready');
+
+  // --- SQLite Library Storage Integration & Migration ---
+  (async function initSqliteLibraryStore() {
+    if (!window.electronAPI || !window.electronAPI.libraryDb || typeof window.electronAPI.libraryDb.loadAll !== 'function') {
+      return;
+    }
+    try {
+      const res = await window.electronAPI.libraryDb.loadAll('default');
+      if (res && res.success && res.data) {
+        const { albums, playlists, favorites, history } = res.data;
+        const dbHasData = (Array.isArray(albums) && albums.length > 0) ||
+                          (Array.isArray(playlists) && playlists.length > 0) ||
+                          (Array.isArray(favorites) && favorites.length > 0);
+
+        if (dbHasData) {
+          // Hydrate memory state directly from SQLite
+          if (Array.isArray(albums) && albums.length > 0) {
+            cachedSavedAlbums = albums;
+            try { localStorage.setItem('eclipse_saved_albums', JSON.stringify(albums)); } catch (_) {}
+            updateAlbumsCount();
+            if (state.currentView === 'albums') renderSavedAlbums();
+          }
+          if (Array.isArray(playlists) && playlists.length > 0) {
+            state.playlists = playlists;
+            try { localStorage.setItem('devsize_playlists', JSON.stringify(playlists)); } catch (_) {}
+            if (typeof renderPlaylistsList === 'function') renderPlaylistsList();
+          }
+          if (Array.isArray(favorites) && favorites.length > 0) {
+            state.favorites = favorites;
+            try { localStorage.setItem('devsize_favorites', JSON.stringify(favorites.map(sanitizeTrackForStorage))); } catch (_) {}
+            updateFavCount();
+            if (state.currentView === 'favorites') renderFavorites();
+          }
+          if (Array.isArray(history) && history.length > 0) {
+            state.history = history;
+            try { localStorage.setItem('devsize_history', JSON.stringify(history.map(sanitizeTrackForStorage))); } catch (_) {}
+            if (state.currentView === 'history') renderHistory();
+          }
+        } else {
+          // Auto-migrate legacy localStorage data to SQLite backend
+          const localAlbums = getSavedAlbums();
+          const localPlaylists = Array.isArray(state.playlists) ? state.playlists : [];
+          const localFavorites = Array.isArray(state.favorites) ? state.favorites : [];
+          const localHistory = Array.isArray(state.history) ? state.history : [];
+
+          const hasLegacy = localAlbums.length > 0 || localPlaylists.length > 0 || localFavorites.length > 0;
+          if (hasLegacy) {
+            const migrationPayload = {
+              albums: localAlbums,
+              playlists: localPlaylists,
+              favorites: localFavorites,
+              history: localHistory
+            };
+            const migRes = await window.electronAPI.libraryDb.migrateLegacy(migrationPayload, 'default');
+            if (migRes && migRes.success) {
+              // Backup legacy keys safely
+              try {
+                if (localAlbums.length > 0) localStorage.setItem('eclipse_saved_albums_backup_v1', JSON.stringify(localAlbums));
+                if (localPlaylists.length > 0) localStorage.setItem('devsize_playlists_backup_v1', JSON.stringify(localPlaylists));
+                if (localFavorites.length > 0) localStorage.setItem('devsize_favorites_backup_v1', JSON.stringify(localFavorites));
+              } catch (_) {}
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[initSqliteLibraryStore] Initialization warning:', err);
+    }
+  })();
 });
 
 document.addEventListener('DOMContentLoaded', () => {

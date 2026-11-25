@@ -155,4 +155,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   storageSaveSync: (data) => ipcRenderer.sendSync('storage-save-sync'),
   getI18nDictSync: (lang) => ipcRenderer.sendSync('get-i18n-dict-sync', lang),
   getI18nDict: (lang) => ipcRenderer.invoke('get-i18n-dict', lang),
+  libraryDb: {
+    loadAll: (accountId) => ipcRenderer.invoke('library-db:load-all', accountId),
+    saveAlbums: (albums, accountId) => ipcRenderer.invoke('library-db:save-albums', { albums, accountId }),
+    deleteAlbum: (id, accountId, entityType) => ipcRenderer.invoke('library-db:delete-album', { id, accountId, entityType }),
+    savePlaylists: (playlists, accountId) => ipcRenderer.invoke('library-db:save-playlists', { playlists, accountId }),
+    deletePlaylist: (id) => ipcRenderer.invoke('library-db:delete-playlist', { id }),
+    saveFavorites: (tracks, accountId) => ipcRenderer.invoke('library-db:save-favorites', { tracks, accountId }),
+    addFavorite: (track, accountId) => ipcRenderer.invoke('library-db:add-favorite', { track, accountId }),
+    removeFavorite: (trackId, accountId) => ipcRenderer.invoke('library-db:remove-favorite', { trackId, accountId }),
+    recordHistory: (track, source) => ipcRenderer.invoke('library-db:record-history', { track, source }),
+    getHistory: (limit) => ipcRenderer.invoke('library-db:get-history', { limit }),
+    migrateLegacy: (payload, accountId) => ipcRenderer.invoke('library-db:migrate-legacy', { payload, accountId })
+  }
 });
