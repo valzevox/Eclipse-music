@@ -9310,19 +9310,37 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         : X;
       if (leadSec > 0 && !window._autoMixHandlingEnd && !crossfadeTriggered && !state.isRepeat && dur > Math.max(leadSec * 3, 20) && (!hlsInstance || dur >= (state.currentTrack?.duration || 0) * 0.9) && cur >= dur - leadSec && (!audioEngine || !audioEngine.isLiveStream(el.nativeAudio))) {
         crossfadeTriggered = true;
-        if (autoMixActive && typeof window.autoMixDjInstance.startCrossfade === 'function') {
+        const incomingAudio = el.auxAudio || (audioEngine && audioEngine.auxAudio) || null;
+        const nextTrack = (state.queue && state.queue[state.queueIndex + 1]) ? state.queue[state.queueIndex + 1] : null;
+        if (autoMixActive && incomingAudio && nextTrack && typeof window.autoMixDjInstance.executeCrossfade === 'function') {
           window._autoMixHandlingEnd = true;
-          Promise.resolve(window.autoMixDjInstance.startCrossfade({
-            outgoingAudio: el.nativeAudio,
-            currentTrack: state.currentTrack,
-            nextTrack: state.queue && state.queue[state.queueIndex + 1] ? state.queue[state.queueIndex + 1] : null,
-            durationSec: leadSec
-          })).catch((err) => {
-            console.warn('[AutoMixDJ] startCrossfade failed, falling back to playNext:', err);
-            playNext();
-          }).finally(() => {
+          const nextUrl = (state.prefetchedNextStream && state.prefetchedNextStream.id === nextTrack.id && state.prefetchedNextStream.url)
+            ? state.prefetchedNextStream.url
+            : (nextTrack.streamUrl || nextTrack.url || '');
+          if (nextUrl) {
+            incomingAudio.src = nextUrl;
+            incomingAudio.currentTime = 0;
+            Promise.resolve(window.autoMixDjInstance.executeCrossfade(el.nativeAudio, incomingAudio, leadSec, {
+              outgoingBpm: state.currentTrack && state.currentTrack.bpm,
+              incomingBpm: nextTrack.bpm
+            })).then((ok) => {
+              if (ok !== false) {
+                state._isNaturalEnding = true;
+                try { playNext(); } finally { state._isNaturalEnding = false; }
+              }
+            }).catch((err) => {
+              console.warn('[AutoMixDJ] executeCrossfade failed, falling back to playNext:', err);
+              playNext();
+            }).finally(() => {
+              window._autoMixHandlingEnd = false;
+            });
+          } else {
             window._autoMixHandlingEnd = false;
-          });
+            crossfadeFadeInPending = true;
+            if (audioEngine) audioEngine.fadeOut(leadSec / 2);
+            state._isNaturalEnding = true;
+            try { playNext(); } finally { state._isNaturalEnding = false; }
+          }
         } else {
           crossfadeFadeInPending = true;
           if (audioEngine) audioEngine.fadeOut(leadSec / 2);
