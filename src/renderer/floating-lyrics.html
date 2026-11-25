@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Eclipse Floating Lyrics</title>
+  <title>Eclipse Mini Player</title>
   <style>
     * {
       box-sizing: border-box;
@@ -22,14 +22,14 @@
       height: 100%;
       display: flex;
       flex-direction: column;
-      justify-content: center;
-      padding: 10px 18px;
-      background: rgba(14, 14, 18, 0.78);
-      backdrop-filter: blur(24px) saturate(190%);
-      -webkit-backdrop-filter: blur(24px) saturate(190%);
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: rgba(14, 14, 18, 0.82);
+      backdrop-filter: blur(28px) saturate(200%);
+      -webkit-backdrop-filter: blur(28px) saturate(200%);
       border: 1px solid rgba(255, 255, 255, 0.14);
       border-radius: 20px;
-      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.5);
+      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.55);
       color: #ffffff;
       cursor: grab;
       -webkit-app-region: drag;
@@ -37,20 +37,22 @@
       transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
     }
     .floating-container:hover {
-      background: rgba(18, 18, 24, 0.88);
-      border-color: rgba(255, 255, 255, 0.22);
-      box-shadow: 0 20px 42px rgba(0, 0, 0, 0.65);
+      background: rgba(18, 18, 24, 0.92);
+      border-color: rgba(255, 255, 255, 0.24);
+      box-shadow: 0 20px 42px rgba(0, 0, 0, 0.7);
     }
     .floating-container:active {
       cursor: grabbing;
     }
+
+    /* Top Controls Row */
     .floating-controls {
       position: absolute;
       top: 6px;
       right: 12px;
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 5px;
       opacity: 0;
       transition: opacity 0.2s cubic-bezier(0.23, 1, 0.32, 1);
       -webkit-app-region: no-drag;
@@ -60,8 +62,8 @@
       opacity: 1;
     }
     .ctrl-btn {
-      width: 26px;
-      height: 26px;
+      width: 24px;
+      height: 24px;
       border-radius: 50%;
       border: none;
       background: rgba(255, 255, 255, 0.12);
@@ -70,7 +72,7 @@
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      transition: background 0.15s, transform 0.12s;
+      transition: background 0.15s, transform 0.12s, color 0.15s;
     }
     .ctrl-btn:hover {
       background: rgba(255, 255, 255, 0.25);
@@ -79,12 +81,46 @@
     .ctrl-btn:active {
       transform: scale(0.92);
     }
+    .ctrl-btn.active-fav {
+      color: #ec4899;
+      background: rgba(236, 72, 153, 0.2);
+    }
+
+    /* Main Content Row */
+    .mini-main-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex: 1;
+      min-width: 0;
+      margin-top: 2px;
+    }
+
+    .mini-cover {
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      object-fit: cover;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      flex-shrink: 0;
+      display: block;
+      transition: width 0.2s, height 0.2s;
+    }
+
+    .mini-lyrics-block {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
 
     /* Current active line container */
     .lyrics-active-line {
-      font-size: 19px;
+      font-size: 16px;
       font-weight: 700;
-      line-height: 1.35;
+      line-height: 1.3;
       color: #ffffff;
       text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7);
       white-space: nowrap;
@@ -93,7 +129,7 @@
       display: flex;
       align-items: baseline;
       gap: 5px;
-      min-height: 27px;
+      min-height: 22px;
     }
 
     /* Word span styling */
@@ -114,7 +150,7 @@
       color: #ffffff;
     }
 
-    /* Smooth continuous line gradient fallback (when word-by-word timestamps are missing) */
+    /* Smooth continuous line gradient fallback */
     .lyrics-active-line.gradient-fill {
       background: linear-gradient(90deg, #ffffff var(--prog, 0%), rgba(255, 255, 255, 0.45) calc(var(--prog, 0%) + 15%));
       -webkit-background-clip: text;
@@ -124,40 +160,128 @@
 
     /* Next line preview */
     .lyrics-next-line {
-      font-size: 13.5px;
+      font-size: 12px;
       font-weight: 500;
-      line-height: 1.3;
-      margin-top: 4px;
+      line-height: 1.25;
+      margin-top: 2px;
       color: rgba(255, 255, 255, 0.5);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      transition: opacity 0.25s ease, transform 0.25s cubic-bezier(0.25, 1, 0.5, 1);
+      transition: opacity 0.25s ease;
+    }
+
+    /* Bottom Interactive Seek Bar Row */
+    .mini-seek-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 4px;
+      -webkit-app-region: no-drag;
+      opacity: 0.65;
+      transition: opacity 0.2s ease;
+    }
+    .floating-container:hover .mini-seek-row {
+      opacity: 1;
+    }
+    .mini-time-label {
+      font-size: 10px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: rgba(255, 255, 255, 0.6);
+      min-width: 26px;
+    }
+    .mini-seek-slider {
+      flex: 1;
+      height: 4px;
+      border-radius: 999px;
+      -webkit-appearance: none;
+      appearance: none;
+      background: rgba(255, 255, 255, 0.15);
+      outline: none;
+      cursor: pointer;
+    }
+    .mini-seek-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--md-sys-color-primary, #a78bfa);
+      cursor: pointer;
+      box-shadow: 0 0 6px rgba(167, 139, 250, 0.8);
+      transition: transform 0.1s ease;
+    }
+    .mini-seek-slider:hover::-webkit-slider-thumb {
+      transform: scale(1.3);
+    }
+
+    /* Responsive Breakpoints */
+    /* Compact < 280px: hide next line & cover, shrink active font */
+    @media (max-width: 280px) {
+      .mini-cover { display: none; }
+      .lyrics-next-line { display: none; }
+      .lyrics-active-line { font-size: 14px; }
+      .mini-time-label { display: none; }
+    }
+    /* Full > 480px: larger cover & font */
+    @media (min-width: 480px) {
+      .mini-cover { width: 52px; height: 52px; border-radius: 12px; }
+      .lyrics-active-line { font-size: 18px; }
+      .lyrics-next-line { font-size: 13px; }
     }
   </style>
 </head>
 <body>
   <div class="floating-container" id="floating-box">
     <div class="floating-controls">
-      <button class="ctrl-btn" id="btn-prev" title="Previous">⏮</button>
-      <button class="ctrl-btn" id="btn-playpause" title="Play/Pause">⏸</button>
-      <button class="ctrl-btn" id="btn-next" title="Next">⏭</button>
-      <button class="ctrl-btn" id="btn-close" title="Close Overlay" style="margin-left: 4px;">✕</button>
+      <button class="ctrl-btn" id="btn-fav" title="Favorite">♥</button>
+      <button class="ctrl-btn" id="btn-mute" title="Mute">♪</button>
+      <button class="ctrl-btn" id="btn-prev" title="Previous">◀</button>
+      <button class="ctrl-btn" id="btn-playpause" title="Play/Pause">▶</button>
+      <button class="ctrl-btn" id="btn-next" title="Next">▶</button>
+      <button class="ctrl-btn" id="btn-close" title="Close" style="margin-left: 2px;">✕</button>
     </div>
-    <div class="lyrics-active-line" id="lyric-current">Eclipse Music Player</div>
-    <div class="lyrics-next-line" id="lyric-next">Play a track with synced lyrics</div>
+
+    <div class="mini-main-row">
+      <img class="mini-cover" id="mini-cover" src="" alt="Album cover" style="display: none;">
+      <div class="mini-lyrics-block">
+        <div class="lyrics-active-line" id="lyric-current">Eclipse Music</div>
+        <div class="lyrics-next-line" id="lyric-next">Play a track with synced lyrics</div>
+      </div>
+    </div>
+
+    <div class="mini-seek-row">
+      <span class="mini-time-label" id="mini-time-cur">0:00</span>
+      <input type="range" class="mini-seek-slider" id="mini-seek-bar" min="0" max="1000" step="1" value="0">
+      <span class="mini-time-label" id="mini-time-dur" style="text-align: right;">0:00</span>
+    </div>
   </div>
 
   <script>
     const curEl = document.getElementById('lyric-current');
     const nextEl = document.getElementById('lyric-next');
+    const coverEl = document.getElementById('mini-cover');
     const btnPlayPause = document.getElementById('btn-playpause');
+    const btnFav = document.getElementById('btn-fav');
+    const btnMute = document.getElementById('btn-mute');
+    const seekSlider = document.getElementById('mini-seek-bar');
+    const timeCurEl = document.getElementById('mini-time-cur');
+    const timeDurEl = document.getElementById('mini-time-dur');
 
     let currentLineText = '';
     let currentWords = null;
     let smoothProgress = 0;
     let targetProgress = 0;
     let animFrame = null;
+    let isDraggingSeek = false;
+    let cachedDuration = 0;
+
+    function formatTime(sec) {
+      if (!sec || isNaN(sec) || sec < 0) return '0:00';
+      const m = Math.floor(sec / 60);
+      const s = Math.floor(sec % 60);
+      return `${m}:${s < 10 ? '0' : ''}${s}`;
+    }
 
     // Smooth animation loop for continuous gradient progression
     function updateAnimation() {
@@ -174,14 +298,13 @@
       curEl.classList.remove('gradient-fill');
       curEl.style.removeProperty('--prog');
 
-      // Check if DOM already matches words count
       const existingSpans = curEl.querySelectorAll('.lyric-w');
       if (existingSpans.length !== words.length) {
         curEl.innerHTML = '';
         words.forEach((w) => {
           const span = document.createElement('span');
           span.className = 'lyric-w';
-          span.textContent = w.word + ' ';
+          span.textContent = (w.word || w.text || '') + ' ';
           curEl.appendChild(span);
         });
       }
@@ -190,8 +313,8 @@
       words.forEach((w, idx) => {
         const span = spans[idx];
         if (!span) return;
-        const wStart = w.start;
-        const wEnd = w.end || (words[idx + 1] ? words[idx + 1].start : wStart + 0.4);
+        const wStart = w.start !== undefined ? w.start : (w.time || 0);
+        const wEnd = w.end !== undefined ? w.end : (w.endTime || (words[idx + 1] ? words[idx + 1].start : wStart + 0.4));
 
         if (currentTime >= wEnd) {
           span.className = 'lyric-w past-word';
@@ -219,7 +342,36 @@
 
           // Playback state
           if (data.isPlaying !== undefined && btnPlayPause) {
-            btnPlayPause.textContent = data.isPlaying ? '⏸' : '▶';
+            btnPlayPause.textContent = data.isPlaying ? '❚❚' : '▶';
+          }
+
+          // Favorite state
+          if (data.isLiked !== undefined && btnFav) {
+            btnFav.classList.toggle('active-fav', !!data.isLiked);
+          }
+
+          // Mute state
+          if (data.isMuted !== undefined && btnMute) {
+            btnMute.textContent = data.isMuted ? '✕' : '♪';
+            btnMute.style.opacity = data.isMuted ? '0.5' : '1';
+          }
+
+          // Cover Art
+          if (data.thumbnail && coverEl) {
+            if (coverEl.src !== data.thumbnail) coverEl.src = data.thumbnail;
+            coverEl.style.display = 'block';
+          }
+
+          // Seek progress & duration
+          if (typeof data.duration === 'number' && data.duration > 0) {
+            cachedDuration = data.duration;
+            if (timeDurEl) timeDurEl.textContent = formatTime(data.duration);
+          }
+          if (typeof data.currentTime === 'number' && !isDraggingSeek) {
+            if (timeCurEl) timeCurEl.textContent = formatTime(data.currentTime);
+            if (seekSlider && cachedDuration > 0) {
+              seekSlider.value = Math.round((data.currentTime / cachedDuration) * 1000);
+            }
           }
 
           const lineChanged = (currentLineText !== data.current);
@@ -229,13 +381,11 @@
             targetProgress = 0;
           }
 
-          // Case 1: True Word-by-Word Timestamps Available
+          // Word-by-word timestamps
           if (data.words && Array.isArray(data.words) && data.words.length > 0) {
             currentWords = data.words;
             renderWords(data.words, data.currentTime || 0);
-          }
-          // Case 2: Smooth continuous line gradient progression
-          else {
+          } else {
             if (lineChanged || curEl.querySelector('.lyric-w')) {
               curEl.innerHTML = '';
               curEl.textContent = currentLineText || 'Eclipse';
@@ -259,8 +409,28 @@
       document.getElementById('btn-next').addEventListener('click', () => {
         window.electronAPI.floatingCommand('next');
       });
+      document.getElementById('btn-fav').addEventListener('click', () => {
+        window.electronAPI.floatingCommand('favorite');
+      });
+      document.getElementById('btn-mute').addEventListener('click', () => {
+        window.electronAPI.floatingCommand('mute');
+      });
       document.getElementById('btn-close').addEventListener('click', () => {
         window.electronAPI.closeFloatingLyrics();
+      });
+
+      // Seek Slider input
+      seekSlider.addEventListener('input', () => {
+        isDraggingSeek = true;
+        const frac = Number(seekSlider.value) / 1000;
+        if (cachedDuration > 0 && timeCurEl) {
+          timeCurEl.textContent = formatTime(frac * cachedDuration);
+        }
+      });
+      seekSlider.addEventListener('change', () => {
+        isDraggingSeek = false;
+        const frac = Math.max(0, Math.min(1, Number(seekSlider.value) / 1000));
+        window.electronAPI.floatingCommand({ type: 'seek-percent', percent: frac });
       });
     }
   </script>

@@ -674,6 +674,8 @@ function createFloatingLyricsWindow() {
   floatingLyricsWindow = new BrowserWindow({
     width: 660,
     height: 105,
+    minWidth: 260,
+    minHeight: 88,
     x: Math.round((screenWidth - 660) / 2),
     y: screenHeight - 160,
     frame: false,

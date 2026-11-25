@@ -12491,3 +12491,310 @@ body.perf .tv-karaoke[data-tvk-anim="focus"] .lyric-word.active-word {
   gap: 4px;
 }
 
+
+/* ==========================================================================
+   Fullscreen Lyrics & Karaoke Parity: Zen Mode, TVK Top Actions, Offset, Share Modal
+   ========================================================================== */
+
+/* TV Karaoke Top Actions Button Group */
+.tvk-top-actions {
+  position: absolute;
+  top: 28px;
+  right: 28px;
+  z-index: 35;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: opacity 0.3s ease;
+}
+
+.tv-karaoke.tv-idle .tvk-top-actions {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tvk-top-actions .tv-karaoke-close {
+  position: static !important;
+  top: auto !important;
+  right: auto !important;
+}
+
+/* TV Karaoke Offset Floating Capsule */
+.tvk-offset-control {
+  position: fixed;
+  bottom: 32px;
+  right: 32px;
+  z-index: 35;
+  display: flex;
+  align-items: center;
+  background: rgba(20, 20, 28, 0.72);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  padding: 4px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  transition: opacity 0.3s ease, transform 0.25s cubic-bezier(0.2, 0, 0, 1), background-color 0.2s ease;
+}
+
+.tvk-offset-control.hidden {
+  display: none !important;
+}
+
+.tv-karaoke.tv-idle .tvk-offset-control {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tvk-offset-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.2s ease, transform 0.15s ease, color 0.2s ease;
+}
+
+.tvk-offset-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  transform: scale(1.05);
+}
+
+.tvk-offset-expandable {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px 0 2px;
+}
+
+.tvk-offset-control.expanded .tvk-offset-expandable {
+  display: flex;
+}
+
+.tvk-offset-step-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+.tvk-offset-step-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: scale(1.04);
+}
+
+.tvk-offset-badge {
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 8px;
+  cursor: pointer;
+  color: var(--md-sys-color-primary, #a78bfa);
+  user-select: none;
+  transition: opacity 0.15s ease;
+}
+
+.tvk-offset-badge:hover {
+  opacity: 0.75;
+}
+
+/* Pure View / Zen Mode Transitions */
+.tv-karaoke.tvk-zen-mode .tv-side {
+  opacity: 0 !important;
+  width: 0 !important;
+  max-width: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  pointer-events: none !important;
+  overflow: hidden !important;
+  transition: opacity 0.4s cubic-bezier(0.2, 0, 0, 1), width 0.45s cubic-bezier(0.2, 0, 0, 1) !important;
+}
+
+.tv-karaoke.tvk-zen-mode .tv-karaoke-content {
+  width: 100% !important;
+  max-width: 1100px !important;
+  margin: 0 auto !important;
+  transition: max-width 0.45s cubic-bezier(0.2, 0, 0, 1) !important;
+}
+
+.tv-karaoke.tvk-zen-mode .tv-karaoke-content .lyric-line {
+  font-size: calc(clamp(2.2rem, 4.2vw, 3.8rem) * var(--tvk-scale, 1)) !important;
+  text-align: center !important;
+}
+
+.tv-karaoke.tvk-zen-mode #tvk-visualizer {
+  width: 100vw !important;
+  left: 0 !important;
+  right: 0 !important;
+}
+
+#btn-tvk-zen.active {
+  background: rgba(167, 139, 250, 0.28) !important;
+  color: var(--md-sys-color-primary, #a78bfa) !important;
+  border-color: rgba(167, 139, 250, 0.4) !important;
+}
+
+/* Share Lyrics Modal Glassmorphism Styling */
+.share-lyrics-modal-card {
+  width: 760px !important;
+  max-width: 94vw !important;
+  background: rgba(18, 16, 26, 0.88) !important;
+  backdrop-filter: blur(32px) saturate(190%) !important;
+  -webkit-backdrop-filter: blur(32px) saturate(190%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  border-radius: 28px !important;
+  padding: 24px !important;
+}
+
+.share-lyrics-content {
+  display: flex;
+  flex-direction: row;
+  gap: 24px;
+  margin-top: 14px;
+  min-height: 440px;
+}
+
+.share-lyrics-lines-col {
+  flex: 1.1;
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 20px;
+  padding: 14px;
+  overflow: hidden;
+}
+
+.share-lyrics-col-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.7);
+  margin-bottom: 12px;
+  padding: 0 4px;
+}
+
+.share-lyrics-selection-counter {
+  background: rgba(167, 139, 250, 0.16);
+  color: var(--md-sys-color-primary, #a78bfa);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.share-lyrics-lines-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 380px;
+  padding-right: 4px;
+}
+
+.share-lyrics-line-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  font-size: 14px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.85);
+  user-select: none;
+}
+
+.share-lyrics-line-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.share-lyrics-line-item.selected {
+  background: rgba(167, 139, 250, 0.18);
+  border-color: rgba(167, 139, 250, 0.4);
+  color: #ffffff;
+}
+
+.share-lyrics-line-checkbox {
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  border: 1.5px solid rgba(255, 255, 255, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.share-lyrics-line-item.selected .share-lyrics-line-checkbox {
+  background: var(--md-sys-color-primary, #a78bfa);
+  border-color: var(--md-sys-color-primary, #a78bfa);
+}
+
+.share-lyrics-line-checkbox::after {
+  content: "";
+  display: none;
+  width: 4px;
+  height: 8px;
+  border: solid #000;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+  margin-bottom: 2px;
+}
+
+.share-lyrics-line-item.selected .share-lyrics-line-checkbox::after {
+  display: block;
+}
+
+.share-lyrics-preview-col {
+  flex: 0.9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 20px;
+  padding: 14px;
+  overflow: hidden;
+}
+
+.share-lyrics-preview-wrap {
+  width: 100%;
+  max-width: 320px;
+  aspect-ratio: 4 / 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#share-lyrics-canvas {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 16px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
+}
+
+@media (max-width: 760px) {
+  .share-lyrics-content {
+    flex-direction: column;
+  }
+}

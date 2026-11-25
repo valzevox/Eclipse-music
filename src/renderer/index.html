@@ -2447,6 +2447,9 @@
             <button class="lyrics-action-btn" id="btn-floating-lyrics" title="Picture-in-Picture Floating Lyrics" aria-label="Floating lyrics">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
             </button>
+            <button class="lyrics-action-btn" id="btn-share-lyrics" title="Share lyrics card" aria-label="Share lyrics card">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path><polyline points="16 6 12 2 8 6"></polyline><line x1="12" y1="2" x2="12" y2="15"></line></svg>
+            </button>
             <button class="lyrics-action-btn" id="btn-tv-karaoke" title="Fullscreen karaoke" aria-label="Fullscreen karaoke">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
             </button>
@@ -3756,9 +3759,17 @@
         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
       </svg>
     </button>
-    <button class="tv-karaoke-close" id="btn-close-tv-karaoke" title="Close (Esc)" aria-label="Close">
+    <div class="tvk-top-actions" id="tvk-top-actions">
+      <button class="tv-karaoke-close" id="btn-tvk-pip" title="Picture-in-Picture Mini Player" aria-label="Mini Player">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+      </button>
+      <button class="tv-karaoke-close" id="btn-tvk-zen" title="Pure View / Zen Mode (Z)" aria-label="Zen mode">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="4"></circle></svg>
+      </button>
+      <button class="tv-karaoke-close" id="btn-close-tv-karaoke" title="Close (Esc)" aria-label="Close">
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
     </button>
+    </div>
     <div class="tvk-panel" id="tvk-panel">
       <div class="tvk-panel-inner" id="tvk-panel-inner">
         <div class="tvk-row">
@@ -3863,6 +3874,10 @@
           <input type="range" class="pill-range" id="tvk-speed" min="150" max="900" step="25" value="900">
         </div>
         <div class="tvk-row tvk-row-toggle">
+          <span class="tvk-label">Auto Zen on idle (4s)</span>
+          <button type="button" class="effect-switch-btn" id="btn-tvk-auto-zen"><span class="thumb"></span></button>
+        </div>
+        <div class="tvk-row tvk-row-toggle">
           <span class="tvk-label">No-lyrics visualizer</span>
           <button type="button" class="effect-switch-btn active" id="btn-tvk-visualizer"><span class="thumb"></span></button>
         </div>
@@ -3931,6 +3946,16 @@
         </div>
       </div>
       <div class="tv-karaoke-content" id="tv-karaoke-content"></div>
+    </div>
+    <div class="tvk-offset-control hidden" id="tvk-offset-control" title="Adjust lyrics sync">
+      <button class="tvk-offset-btn" id="btn-tvk-offset-toggle" title="Lyrics offset" type="button">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+      </button>
+      <div class="tvk-offset-expandable" id="tvk-offset-expandable">
+        <button class="tvk-offset-step-btn" id="btn-tvk-offset-minus" title="Earlier (-0.2s)" type="button">-0.2s</button>
+        <span class="tvk-offset-badge" id="btn-tvk-offset-badge" title="Click to reset offset">0.0s</span>
+        <button class="tvk-offset-step-btn" id="btn-tvk-offset-plus" title="Later (+0.2s)" type="button">+0.2s</button>
+      </div>
     </div>
     <div class="tvk-visualizer" id="tvk-visualizer">
       <canvas id="tvk-visualizer-canvas"></canvas>
@@ -4359,5 +4384,35 @@
   </div>
 
   <div class="modal-backdrop hidden" id="offline-mode-modal"><div class="dialog-card" style="max-width:380px;text-align:center;align-items:center;gap:14px;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg><p style="margin:0;font-size:15px;font-weight:600;line-height:1.45;color:var(--md-sys-color-on-surface);" data-i18n>You are in offline mode because there is no WiFi connection.</p><div class="dialog-actions" style="justify-content:center;width:100%;gap:10px;"><button type="button" class="btn-outline-pill" id="btn-offline-ok" style="flex:1;justify-content:center;" data-i18n>OK</button><button type="button" class="btn-pill-primary" id="btn-offline-retry" style="flex:1;justify-content:center;" data-i18n>Retry</button></div></div></div>
+  <!-- Share Lyrics Card Modal -->
+  <div class="modal-backdrop hidden" id="share-lyrics-modal">
+    <div class="dialog-card share-lyrics-modal-card">
+      <div class="dialog-header">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--md-sys-color-primary, #a78bfa);"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path><polyline points="16 6 12 2 8 6"></polyline><line x1="12" y1="2" x2="12" y2="15"></line></svg>
+          <h3 style="margin: 0;">Share Lyrics Card</h3>
+        </div>
+        <button class="modal-close-btn" id="btn-close-share-lyrics" title="Close" aria-label="Close">✕</button>
+      </div>
+      <div class="share-lyrics-content">
+        <div class="share-lyrics-lines-col">
+          <div class="share-lyrics-col-header">
+            <span>Select 1–5 lines to share</span>
+            <span class="share-lyrics-selection-counter" id="share-lyrics-counter">0/5</span>
+          </div>
+          <div class="share-lyrics-lines-list" id="share-lyrics-lines-list"></div>
+        </div>
+        <div class="share-lyrics-preview-col">
+          <div class="share-lyrics-preview-wrap">
+            <canvas id="share-lyrics-canvas" width="400" height="500"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="dialog-actions" style="justify-content: flex-end; gap: 10px; margin-top: 14px;">
+        <button type="button" class="btn-outline-pill" id="btn-copy-lyrics-image">Copy Image</button>
+        <button type="button" class="btn-pill-primary" id="btn-download-lyrics-card">Save PNG</button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>
