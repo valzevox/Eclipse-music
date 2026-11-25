@@ -12,12 +12,58 @@ const commentsCache = new Map();
 const innertubeClients = new Map();
 const inFlightComments = new Map();
 
+let cachedAutoRegion = null;
+let cachedAutoRegionAt = 0;
+
+/**
+ * Resolve user's 2-letter country code from explicit override, IP geo (2s timeout, 6h cache), or system locale.
+ */
+async function resolveUserRegion(overrideCountry = '') {
+  const cleanOverride = String(overrideCountry || '').trim().toUpperCase();
+  if (cleanOverride && cleanOverride !== 'AUTO') {
+    return cleanOverride;
+  }
+
+  const now = Date.now();
+  if (cachedAutoRegion && (now - cachedAutoRegionAt) < NEW_RELEASES_TTL_MS) {
+    return cachedAutoRegion;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
+    const resp = await fetch('https://ipapi.co/country/', { signal: controller.signal });
+    clearTimeout(timer);
+    if (resp.ok) {
+      const code = (await resp.text()).trim().toUpperCase();
+      if (/^[A-Z]{2}$/.test(code)) {
+        cachedAutoRegion = code;
+        cachedAutoRegionAt = now;
+        return code;
+      }
+    }
+  } catch (_) {}
+
+  try {
+    const loc = Intl.DateTimeFormat().resolvedOptions().locale || '';
+    const match = loc.match(/[-_]([A-Za-z]{2})\b/);
+    if (match && match[1]) {
+      cachedAutoRegion = match[1].toUpperCase();
+      cachedAutoRegionAt = now;
+      return cachedAutoRegion;
+    }
+  } catch (_) {}
+
+  return 'US';
+}
+
 /**
  * Get or create Innertube client with singleton promise cache
  */
-async function getInnertube(country = 'VN') {
-  const gl = country.toUpperCase() === 'GLOBAL' ? 'US' : country.toUpperCase();
-  const hl = country.toUpperCase() === 'VN' ? 'vi' : 'en';
+async function getInnertube(country = '') {
+  const resolved = await resolveUserRegion(country);
+  const gl = resolved === 'GLOBAL' ? 'US' : resolved;
+  const hl = gl === 'VN' ? 'vi' : 'en';
   const clientKey = `${gl}_${hl}`;
 
   if (!innertubeClients.has(clientKey)) {
@@ -33,8 +79,8 @@ async function getInnertube(country = 'VN') {
 /**
  * Get New Releases (Albums, Singles, MVs)
  */
-async function getNewReleases(country = 'VN') {
-  const normCountry = country.toUpperCase();
+async function getNewReleases(country = '') {
+  const normCountry = await resolveUserRegion(country);
   const cacheKey = `new_releases_${normCountry}`;
   const now = Date.now();
   const cached = newReleasesCache.get(cacheKey);
