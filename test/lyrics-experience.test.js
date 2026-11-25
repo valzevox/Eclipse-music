@@ -64,6 +64,28 @@ describe('Fullscreen Lyrics & Karaoke Parity Unit Tests', () => {
     assert.ok(miniHtml.includes('seek-percent'), 'seek-percent command must be wired');
   });
 
+  test('P3: Floating Lyrics mini player supports Square layout and Keyboard Shortcuts', () => {
+    const miniHtml = fs.readFileSync(path.join(__dirname, '../src/renderer/floating-lyrics.html'), 'utf8');
+
+    assert.ok(miniHtml.includes('square-mode'), 'square-mode CSS and DOM support must exist');
+    assert.ok(miniHtml.includes('mini-track-meta'), 'mini-track-meta must exist for square mode');
+    assert.ok(miniHtml.includes('mini-track-title'), 'mini-track-title must exist for square mode');
+    assert.ok(miniHtml.includes('mini-track-artist'), 'mini-track-artist must exist for square mode');
+    assert.ok(miniHtml.includes("e.code === 'Space'"), 'Space key shortcut must be wired');
+    assert.ok(miniHtml.includes("e.code === 'ArrowLeft'"), 'ArrowLeft key shortcut must be wired');
+    assert.ok(miniHtml.includes("e.code === 'ArrowRight'"), 'ArrowRight key shortcut must be wired');
+    assert.ok(miniHtml.includes('aspectRatio <= 1.35'), 'aspect ratio threshold must evaluate square mode');
+  });
+
+  test('P3: Main process implements separate mini player bounds persistence', () => {
+    const mainJs = fs.readFileSync(path.join(__dirname, '../src/main/main.js'), 'utf8');
+
+    assert.ok(mainJs.includes('mini-player-state.json'), 'Must use dedicated mini-player-state.json');
+    assert.ok(mainJs.includes('loadMiniPlayerBounds'), 'loadMiniPlayerBounds must exist');
+    assert.ok(mainJs.includes('saveMiniPlayerBounds'), 'saveMiniPlayerBounds must exist');
+    assert.ok(mainJs.includes('screen.getAllDisplays()'), 'Must validate bounds against active displays');
+  });
+
   test('P0-P3: CSS contains styles for TVK offset, zen mode, share lyrics modal, and mini player', () => {
     const css = fs.readFileSync(path.join(__dirname, '../src/renderer/styles.css'), 'utf8');
 

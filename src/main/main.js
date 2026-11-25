@@ -661,6 +661,43 @@ ipcMain.on('update-thumbar', (event, isPlaying) => {
 
 
 let floatingLyricsWindow = null;
+const MINI_PLAYER_STATE_FILE = path.join(app.getPath('userData'), 'mini-player-state.json');
+
+function loadMiniPlayerBounds() {
+  try {
+    if (fs.existsSync(MINI_PLAYER_STATE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(MINI_PLAYER_STATE_FILE, 'utf8'));
+      if (data && typeof data.width === 'number' && typeof data.height === 'number') {
+        const displays = screen.getAllDisplays();
+        const minW = 220;
+        const minH = 76;
+        const w = Math.max(minW, data.width);
+        const h = Math.max(minH, data.height);
+
+        if (typeof data.x === 'number' && typeof data.y === 'number') {
+          const isVisible = displays.some(d => {
+            const b = d.bounds;
+            return data.x >= b.x - 20 && data.x <= b.x + b.width - 50 &&
+                   data.y >= b.y - 20 && data.y <= b.y + b.height - 50;
+          });
+          if (isVisible) {
+            return { x: data.x, y: data.y, width: w, height: h };
+          }
+        }
+        return { width: w, height: h };
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+function saveMiniPlayerBounds() {
+  if (!floatingLyricsWindow || floatingLyricsWindow.isDestroyed()) return;
+  try {
+    const b = floatingLyricsWindow.getBounds();
+    fs.writeFileSync(MINI_PLAYER_STATE_FILE, JSON.stringify(b, null, 2), 'utf8');
+  } catch (_) {}
+}
 
 function createFloatingLyricsWindow() {
   if (floatingLyricsWindow && !floatingLyricsWindow.isDestroyed()) {
@@ -671,13 +708,19 @@ function createFloatingLyricsWindow() {
   const primaryDisplay = screen.getPrimaryDisplay();
   const { width: screenWidth, height: screenHeight } = primaryDisplay.workAreaSize;
 
+  const savedBounds = loadMiniPlayerBounds();
+  const initWidth = savedBounds ? savedBounds.width : 660;
+  const initHeight = savedBounds ? savedBounds.height : 105;
+  const initX = (savedBounds && typeof savedBounds.x === 'number') ? savedBounds.x : Math.round((screenWidth - initWidth) / 2);
+  const initY = (savedBounds && typeof savedBounds.y === 'number') ? savedBounds.y : (screenHeight - initHeight - 55);
+
   floatingLyricsWindow = new BrowserWindow({
-    width: 660,
-    height: 105,
-    minWidth: 260,
-    minHeight: 88,
-    x: Math.round((screenWidth - 660) / 2),
-    y: screenHeight - 160,
+    width: initWidth,
+    height: initHeight,
+    minWidth: 220,
+    minHeight: 76,
+    x: initX,
+    y: initY,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -694,6 +737,15 @@ function createFloatingLyricsWindow() {
     }
   });
 
+  let saveTimer = null;
+  const debounceSaveBounds = () => {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveMiniPlayerBounds, 400);
+  };
+
+  floatingLyricsWindow.on('resize', debounceSaveBounds);
+  floatingLyricsWindow.on('move', debounceSaveBounds);
+
   floatingLyricsWindow.loadFile(path.join(__dirname, '../renderer/floating-lyrics.html'));
   floatingLyricsWindow.once('ready-to-show', () => {
     if (floatingLyricsWindow && !floatingLyricsWindow.isDestroyed()) {
@@ -702,6 +754,7 @@ function createFloatingLyricsWindow() {
   });
 
   floatingLyricsWindow.on('closed', () => {
+    if (saveTimer) clearTimeout(saveTimer);
     floatingLyricsWindow = null;
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('floating-lyrics-state', false);

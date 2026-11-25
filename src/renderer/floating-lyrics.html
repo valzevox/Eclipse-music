@@ -24,7 +24,7 @@
       flex-direction: column;
       justify-content: space-between;
       padding: 10px 14px;
-      background: rgba(14, 14, 18, 0.82);
+      background: rgba(14, 14, 18, 0.84);
       backdrop-filter: blur(28px) saturate(200%);
       -webkit-backdrop-filter: blur(28px) saturate(200%);
       border: 1px solid rgba(255, 255, 255, 0.14);
@@ -37,7 +37,7 @@
       transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
     }
     .floating-container:hover {
-      background: rgba(18, 18, 24, 0.92);
+      background: rgba(18, 18, 24, 0.94);
       border-color: rgba(255, 255, 255, 0.24);
       box-shadow: 0 20px 42px rgba(0, 0, 0, 0.7);
     }
@@ -86,7 +86,7 @@
       background: rgba(236, 72, 153, 0.2);
     }
 
-    /* Main Content Row */
+    /* Main Content Row (Landscape default) */
     .mini-main-row {
       display: flex;
       align-items: center;
@@ -94,6 +94,7 @@
       flex: 1;
       min-width: 0;
       margin-top: 2px;
+      transition: all 0.25s cubic-bezier(0.2, 0, 0, 1);
     }
 
     .mini-cover {
@@ -105,7 +106,7 @@
       border: 1px solid rgba(255, 255, 255, 0.12);
       flex-shrink: 0;
       display: block;
-      transition: width 0.2s, height 0.2s;
+      transition: width 0.25s cubic-bezier(0.2, 0, 0, 1), height 0.25s cubic-bezier(0.2, 0, 0, 1), border-radius 0.25s ease, box-shadow 0.25s ease;
     }
 
     .mini-lyrics-block {
@@ -114,6 +115,29 @@
       display: flex;
       flex-direction: column;
       justify-content: center;
+    }
+
+    .mini-track-meta {
+      display: none;
+      margin-bottom: 4px;
+    }
+    .mini-track-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #ffffff;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.25;
+    }
+    .mini-track-artist {
+      font-size: 11px;
+      font-weight: 500;
+      color: rgba(255, 255, 255, 0.65);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.25;
     }
 
     /* Current active line container */
@@ -215,19 +239,80 @@
       transform: scale(1.3);
     }
 
-    /* Responsive Breakpoints */
-    /* Compact < 280px: hide next line & cover, shrink active font */
-    @media (max-width: 280px) {
-      .mini-cover { display: none; }
-      .lyrics-next-line { display: none; }
-      .lyrics-active-line { font-size: 14px; }
-      .mini-time-label { display: none; }
+    /* =========================================================
+       SQUARE / TALL LAYOUT (aspect-ratio <= 1.3 && height >= 180px)
+       ========================================================= */
+    .floating-container.square-mode {
+      padding: 14px 16px;
+      justify-content: flex-start;
+      gap: 10px;
     }
-    /* Full > 480px: larger cover & font */
+    .floating-container.square-mode .floating-controls {
+      opacity: 1;
+      top: 10px;
+      right: 12px;
+    }
+    .floating-container.square-mode .mini-main-row {
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      margin-top: 18px;
+      gap: 12px;
+      flex: 1;
+    }
+    .floating-container.square-mode .mini-cover {
+      width: clamp(100px, 46vmin, 180px);
+      height: clamp(100px, 46vmin, 180px);
+      border-radius: 16px;
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.6), 0 0 20px rgba(167, 139, 250, 0.2);
+    }
+    .floating-container.square-mode .mini-track-meta {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+    }
+    .floating-container.square-mode .mini-track-title {
+      font-size: 15px;
+      max-width: 90%;
+    }
+    .floating-container.square-mode .mini-track-artist {
+      font-size: 12px;
+      max-width: 85%;
+    }
+    .floating-container.square-mode .mini-lyrics-block {
+      align-items: center;
+      text-align: center;
+      width: 100%;
+    }
+    .floating-container.square-mode .lyrics-active-line {
+      font-size: 15px;
+      justify-content: center;
+      text-align: center;
+      width: 100%;
+    }
+    .floating-container.square-mode .lyrics-next-line {
+      font-size: 12px;
+      text-align: center;
+      width: 100%;
+    }
+    .floating-container.square-mode .mini-seek-row {
+      width: 100%;
+      margin-top: 8px;
+      opacity: 0.85;
+    }
+
+    /* Responsive Breakpoints */
+    @media (max-width: 280px) {
+      .floating-container:not(.square-mode) .mini-cover { display: none; }
+      .floating-container:not(.square-mode) .lyrics-next-line { display: none; }
+      .floating-container:not(.square-mode) .lyrics-active-line { font-size: 14px; }
+      .floating-container:not(.square-mode) .mini-time-label { display: none; }
+    }
     @media (min-width: 480px) {
-      .mini-cover { width: 52px; height: 52px; border-radius: 12px; }
-      .lyrics-active-line { font-size: 18px; }
-      .lyrics-next-line { font-size: 13px; }
+      .floating-container:not(.square-mode) .mini-cover { width: 52px; height: 52px; border-radius: 12px; }
+      .floating-container:not(.square-mode) .lyrics-active-line { font-size: 18px; }
+      .floating-container:not(.square-mode) .lyrics-next-line { font-size: 13px; }
     }
   </style>
 </head>
@@ -236,14 +321,18 @@
     <div class="floating-controls">
       <button class="ctrl-btn" id="btn-fav" title="Favorite">♥</button>
       <button class="ctrl-btn" id="btn-mute" title="Mute">♪</button>
-      <button class="ctrl-btn" id="btn-prev" title="Previous">◀</button>
-      <button class="ctrl-btn" id="btn-playpause" title="Play/Pause">▶</button>
-      <button class="ctrl-btn" id="btn-next" title="Next">▶</button>
+      <button class="ctrl-btn" id="btn-prev" title="Previous (Left Arrow)">◀</button>
+      <button class="ctrl-btn" id="btn-playpause" title="Play/Pause (Space)">▶</button>
+      <button class="ctrl-btn" id="btn-next" title="Next (Right Arrow)">▶</button>
       <button class="ctrl-btn" id="btn-close" title="Close" style="margin-left: 2px;">✕</button>
     </div>
 
     <div class="mini-main-row">
       <img class="mini-cover" id="mini-cover" src="" alt="Album cover" style="display: none;">
+      <div class="mini-track-meta" id="mini-track-meta">
+        <div class="mini-track-title" id="mini-track-title">Eclipse</div>
+        <div class="mini-track-artist" id="mini-track-artist">Studio</div>
+      </div>
       <div class="mini-lyrics-block">
         <div class="lyrics-active-line" id="lyric-current">Eclipse Music</div>
         <div class="lyrics-next-line" id="lyric-next">Play a track with synced lyrics</div>
@@ -258,9 +347,12 @@
   </div>
 
   <script>
+    const boxEl = document.getElementById('floating-box');
     const curEl = document.getElementById('lyric-current');
     const nextEl = document.getElementById('lyric-next');
     const coverEl = document.getElementById('mini-cover');
+    const metaTitleEl = document.getElementById('mini-track-title');
+    const metaArtistEl = document.getElementById('mini-track-artist');
     const btnPlayPause = document.getElementById('btn-playpause');
     const btnFav = document.getElementById('btn-fav');
     const btnMute = document.getElementById('btn-mute');
@@ -276,6 +368,18 @@
     let isDraggingSeek = false;
     let cachedDuration = 0;
 
+    // Detect Square vs Landscape layout based on aspect ratio
+    function evaluateLayoutMode() {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      const aspectRatio = w / Math.max(1, h);
+      const isSquareOrTall = aspectRatio <= 1.35 && h >= 170;
+      boxEl.classList.toggle('square-mode', isSquareOrTall);
+    }
+
+    window.addEventListener('resize', evaluateLayoutMode);
+    evaluateLayoutMode();
+
     function formatTime(sec) {
       if (!sec || isNaN(sec) || sec < 0) return '0:00';
       const m = Math.floor(sec / 60);
@@ -283,24 +387,21 @@
       return `${m}:${s < 10 ? '0' : ''}${s}`;
     }
 
-    // Smooth animation loop for continuous gradient progression
-    function updateAnimation() {
-      if (Math.abs(targetProgress - smoothProgress) > 0.05) {
-        smoothProgress += (targetProgress - smoothProgress) * 0.2;
-        curEl.style.setProperty('--prog', smoothProgress.toFixed(2) + '%');
+    function animateSmoothProgress() {
+      if (curEl.classList.contains('gradient-fill')) {
+        const diff = targetProgress - smoothProgress;
+        smoothProgress += diff * 0.18;
+        curEl.style.setProperty('--prog', `${smoothProgress.toFixed(1)}%`);
       }
-      animFrame = requestAnimationFrame(updateAnimation);
+      animFrame = requestAnimationFrame(animateSmoothProgress);
     }
-    animFrame = requestAnimationFrame(updateAnimation);
+    animFrame = requestAnimationFrame(animateSmoothProgress);
 
     function renderWords(words, currentTime) {
-      if (!words || words.length === 0) return;
-      curEl.classList.remove('gradient-fill');
-      curEl.style.removeProperty('--prog');
-
       const existingSpans = curEl.querySelectorAll('.lyric-w');
       if (existingSpans.length !== words.length) {
         curEl.innerHTML = '';
+        curEl.classList.remove('gradient-fill');
         words.forEach((w) => {
           const span = document.createElement('span');
           span.className = 'lyric-w';
@@ -326,6 +427,29 @@
       });
     }
 
+    // In-Window Keyboard Shortcuts (Space: Play/Pause, ArrowLeft: Prev, ArrowRight: Next)
+    window.addEventListener('keydown', (e) => {
+      // Guard against holding key repeat
+      if (e.repeat) return;
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (window.electronAPI && window.electronAPI.floatingCommand) {
+          window.electronAPI.floatingCommand('toggle');
+        }
+      } else if (e.code === 'ArrowLeft') {
+        e.preventDefault();
+        if (window.electronAPI && window.electronAPI.floatingCommand) {
+          window.electronAPI.floatingCommand('prev');
+        }
+      } else if (e.code === 'ArrowRight') {
+        e.preventDefault();
+        if (window.electronAPI && window.electronAPI.floatingCommand) {
+          window.electronAPI.floatingCommand('next');
+        }
+      }
+    });
+
     if (window.electronAPI) {
       if (window.electronAPI.onFloatingLyricsUpdate) {
         window.electronAPI.onFloatingLyricsUpdate((data) => {
@@ -338,6 +462,14 @@
               nextEl.textContent = data.next || '';
               nextEl.style.opacity = '1';
             }, 100);
+          }
+
+          // Metadata Title & Artist for Square Mode
+          if (data.title && metaTitleEl && metaTitleEl.textContent !== data.title) {
+            metaTitleEl.textContent = data.title;
+          }
+          if (data.artist && metaArtistEl && metaArtistEl.textContent !== data.artist) {
+            metaArtistEl.textContent = data.artist;
           }
 
           // Playback state
