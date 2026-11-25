@@ -9303,15 +9303,35 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
       const X = parseInt(localStorage.getItem('eclipse_crossfade') || '0', 10);
       const autoMixActive = !!(window.autoMixDjInstance && window.autoMixDjInstance.enabled);
-      if (X > 0 && !autoMixActive && !window._autoMixHandlingEnd && !crossfadeTriggered && !state.isRepeat && dur > Math.max(X * 3, 30) && (!hlsInstance || dur >= (state.currentTrack?.duration || 0) * 0.9) && cur >= dur - X && (!audioEngine || !audioEngine.isLiveStream(el.nativeAudio))) {
+      const leadSec = autoMixActive
+        ? (typeof window.autoMixDjInstance.getTransitionLeadSeconds === 'function'
+            ? window.autoMixDjInstance.getTransitionLeadSeconds(dur)
+            : (X > 0 ? X : 8))
+        : X;
+      if (leadSec > 0 && !window._autoMixHandlingEnd && !crossfadeTriggered && !state.isRepeat && dur > Math.max(leadSec * 3, 20) && (!hlsInstance || dur >= (state.currentTrack?.duration || 0) * 0.9) && cur >= dur - leadSec && (!audioEngine || !audioEngine.isLiveStream(el.nativeAudio))) {
         crossfadeTriggered = true;
-        crossfadeFadeInPending = true;
-        if (audioEngine) audioEngine.fadeOut(X / 2);
-        state._isNaturalEnding = true;
-        try {
-          playNext();
-        } finally {
-          state._isNaturalEnding = false;
+        if (autoMixActive && typeof window.autoMixDjInstance.startCrossfade === 'function') {
+          window._autoMixHandlingEnd = true;
+          Promise.resolve(window.autoMixDjInstance.startCrossfade({
+            outgoingAudio: el.nativeAudio,
+            currentTrack: state.currentTrack,
+            nextTrack: state.queue && state.queue[state.queueIndex + 1] ? state.queue[state.queueIndex + 1] : null,
+            durationSec: leadSec
+          })).catch((err) => {
+            console.warn('[AutoMixDJ] startCrossfade failed, falling back to playNext:', err);
+            playNext();
+          }).finally(() => {
+            window._autoMixHandlingEnd = false;
+          });
+        } else {
+          crossfadeFadeInPending = true;
+          if (audioEngine) audioEngine.fadeOut(leadSec / 2);
+          state._isNaturalEnding = true;
+          try {
+            playNext();
+          } finally {
+            state._isNaturalEnding = false;
+          }
         }
       }
 
