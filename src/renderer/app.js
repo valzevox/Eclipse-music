@@ -4833,6 +4833,14 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     }
 
     try {
+      if (!track._preloadedStreamUrl && globalPreloadManager) {
+        const cachedPreload = globalPreloadManager.getCached(track);
+        if (cachedPreload && (cachedPreload.proxyUrl || cachedPreload.streamUrl)) {
+          track._preloadedStreamUrl = cachedPreload.proxyUrl || cachedPreload.streamUrl;
+          if (cachedPreload.resolvedId) track._matchedYtId = cachedPreload.resolvedId;
+        }
+      }
+
       if (track._preloadedStreamUrl && (!track._preloadedStreamUrlExpires || Date.now() < track._preloadedStreamUrlExpires)) {
         if (currentToken !== state.loadToken) return;
         if (hlsInstance) {
@@ -14740,6 +14748,9 @@ function renderClickableArtists(container, rawArtist) {
 
   function switchView(viewName) {
     clearTrackSelection();
+    if (globalPreloadManager && viewName !== 'discover') {
+      globalPreloadManager.clearTrendingQueue();
+    }
     if (state.currentView && state.currentView !== viewName) {
       state.previousView = state.currentView;
     }
@@ -23246,6 +23257,28 @@ function bindCoverHoldZoom(wrapEl) {
 
 
   let activeYtmAccountId = 'default';
+
+  const globalPreloadManager = (window.EclipsePreloadManager && typeof window.EclipsePreloadManager === 'function')
+    ? new window.EclipsePreloadManager({
+        serverPort: state.serverPort || 38472,
+        getServerToken: () => (window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '',
+        isOffline: () => typeof navigator !== 'undefined' && navigator.onLine === false,
+        isDataSaver: () => {
+          if (localStorage.getItem('eclipse_perf_mode') === '1') return true;
+          if (typeof navigator !== 'undefined' && navigator.connection && navigator.connection.saveData === true) return true;
+          return false;
+        },
+        getIsPlaying: () => Boolean(state && state.isPlaying),
+        getCurrentTrackId: () => {
+          const t = state && state.currentTrack;
+          return t ? String(t.id || t.videoId || t.url || `${t.artist}_${t.title}`).trim().toLowerCase() : null;
+        }
+      })
+    : null;
+  if (typeof window !== 'undefined' && globalPreloadManager) {
+    window.__eclipsePreloadManager = globalPreloadManager;
+  }
+
   const librarySyncCoordinator = (window.EclipseAlbumSyncEngine && typeof window.EclipseAlbumSyncEngine.createLibrarySyncCoordinator === 'function')
     ? window.EclipseAlbumSyncEngine.createLibrarySyncCoordinator({
         getActiveAccountId: () => activeYtmAccountId,
@@ -27280,6 +27313,20 @@ function bindCoverHoldZoom(wrapEl) {
         playTrack(track, [...filteredTracks], idx);
       });
 
+      // Hover / focus instant preload with debounce
+      card.addEventListener('mouseenter', () => {
+        if (globalPreloadManager) globalPreloadManager.onTrackHover(track);
+      });
+      card.addEventListener('mouseleave', () => {
+        if (globalPreloadManager) globalPreloadManager.onTrackLeave(track);
+      });
+      card.addEventListener('focusin', () => {
+        if (globalPreloadManager) globalPreloadManager.onTrackHover(track);
+      });
+      card.addEventListener('focusout', () => {
+        if (globalPreloadManager) globalPreloadManager.onTrackLeave(track);
+      });
+
       card.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -27337,6 +27384,9 @@ function bindCoverHoldZoom(wrapEl) {
       renderTrendingHeroSpotlight(heroWrap, cached.tracks);
       renderTrendingRankedGrid(row, cached.tracks);
       hasCachedTracks = true;
+      if (globalPreloadManager) {
+        globalPreloadManager.queueTrendingSequential(cached.tracks);
+      }
     } else {
       renderTrendingShimmer(heroWrap, row);
     }
@@ -27352,6 +27402,11 @@ function bindCoverHoldZoom(wrapEl) {
         renderTrendingHeroSpotlight(heroWrap, data.tracks);
         renderTrendingRankedGrid(row, data.tracks);
         sec.hidden = false;
+
+        // Spec-compliant speculative preload for top 3 trending tracks
+        if (globalPreloadManager) {
+          globalPreloadManager.queueTrendingSequential(data.tracks);
+        }
       } else if (!hasCachedTracks) {
         sec.hidden = true;
       }

@@ -345,6 +345,7 @@ const scClientCache = new Map();
 const downloadingSet = new Set();
 const prefetchingSet = new Set();
 const downloadInFlight = new Map();
+const streamInitialChunkCache = new Map(); // targetUrl -> { buffer, contentType, totalLength, timestamp }
 
 [lyricsCache, searchCache, streamUrlCache, artistCache, scClientCache].forEach(m => {
   const origSet = m.set.bind(m);
@@ -3956,6 +3957,28 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
 
     const isGv = hostLower.endsWith('googlevideo.com');
     const pinnedIp = ssrfCheck.pinnedAddress;
+
+    // Check if initial chunk cache (first 256 KiB) is available for exact Range match
+    const rangeHdr = forward['range'] || '';
+    if (rangeHdr && req.method === 'GET' && streamInitialChunkCache.has(targetUrl)) {
+      const cachedChunk = streamInitialChunkCache.get(targetUrl);
+      if (cachedChunk && (Date.now() - cachedChunk.timestamp < 30 * 60 * 1000)) {
+        if (rangeHdr === 'bytes=0-262143') {
+          // Exact match for the warm-up probe
+          res.writeHead(206, {
+            'Content-Type': cachedChunk.contentType || 'audio/mp4',
+            'Content-Length': String(cachedChunk.buffer.length),
+            'Content-Range': `bytes 0-${cachedChunk.buffer.length - 1}/${cachedChunk.totalLength || '*'}`,
+            'Accept-Ranges': 'bytes',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': '*',
+            'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges'
+          });
+          return res.end(cachedChunk.buffer);
+        }
+      }
+    }
+
     const requestOptions = {
       method: req.method,
       headers: forward
@@ -4006,6 +4029,44 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
       outHeaders['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range, Accept-Ranges';
 
       res.writeHead(proxyRes.statusCode || 200, outHeaders);
+
+      // If this request was a 256 KiB warm-up probe (Range: bytes=0-262143), record the chunk into streamInitialChunkCache
+      const isWarmProbe = rangeHdr === 'bytes=0-262143' && proxyRes.statusCode === 206;
+      if (isWarmProbe) {
+        const chunks = [];
+        const cType = proxyRes.headers['content-type'] || 'audio/mp4';
+        const cRange = proxyRes.headers['content-range'] || '';
+        const totalLen = cRange.includes('/') ? cRange.split('/')[1] : '*';
+        proxyRes.on('data', c => {
+          chunks.push(c);
+          res.write(c);
+        });
+        proxyRes.on('end', () => {
+          const buf = Buffer.concat(chunks);
+          if (streamInitialChunkCache.size >= 25) {
+            const first = streamInitialChunkCache.keys().next().value;
+            streamInitialChunkCache.delete(first);
+          }
+          streamInitialChunkCache.set(targetUrl, {
+            buffer: buf,
+            contentType: cType,
+            totalLength: totalLen,
+            timestamp: Date.now()
+          });
+          res.end();
+        });
+        proxyRes.on('aborted', () => {
+          evictStreamCache(initialUrl);
+          evictStreamCache(targetUrl);
+        });
+        proxyRes.on('error', () => {
+          evictStreamCache(initialUrl);
+          evictStreamCache(targetUrl);
+          try { res.destroy(); } catch (e) {}
+        });
+        return;
+      }
+
       proxyRes.on('aborted', () => {
         evictStreamCache(initialUrl);
         evictStreamCache(targetUrl);
@@ -4037,6 +4098,7 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
     req.on('error', () => { try { proxyReq.destroy(); } catch (e) {} });
     req.pipe(proxyReq);
   } catch (e) {
+    logger.log('error', '[handleAudioProxy] exception: ' + (e && e.stack || e));
     evictStreamCache(initialUrl);
     if (!res.headersSent) {
       res.writeHead(500, { 'Access-Control-Allow-Origin': '*' });
