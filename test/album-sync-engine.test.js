@@ -58,19 +58,24 @@ test('2. Album Metadata: distinguishes loading, unknown, empty, and ignores null
   );
 });
 
-test('3. Dedup & Reconcile: keeps same-title different-ID playlists separate, preserves editions, reconciles removals & reorders', () => {
+test('3. Dedup & Reconcile: keeps same-title different-ID & different-account playlists separate, preserves editions', () => {
   const existing = [
     { id: 'VLPL_1', title: 'Chill', artist: 'User', type: 'Playlist', accountId: 'accA', sortMode: 'duration-desc', tracks: [{ id: 'v1', title: 'A', addedAt: 100 }, { id: 'v2', title: 'B', addedAt: 200 }] }
   ];
   const incoming = [
-    { id: 'VLPL_1', title: 'Chill', artist: 'User', type: 'Playlist', accountId: 'accA', tracks: [{ id: 'v3', title: 'C' }, { id: 'v1', title: 'A' }] },
-    { id: 'VLPL_2', title: 'Chill', artist: 'User', type: 'Playlist', accountId: 'accA', tracks: [{ id: 'v9', title: 'Z' }] }
+    { id: 'VLPL_1', title: 'Chill', artist: 'User', type: 'Playlist', accountId: 'accA', complete: true, failed: false, tracks: [{ id: 'v3', title: 'C' }, { id: 'v1', title: 'A' }] },
+    { id: 'VLPL_2', title: 'Chill', artist: 'User', type: 'Playlist', accountId: 'accA', complete: true, failed: false, tracks: [{ id: 'v9', title: 'Z' }] }
   ];
   const merged = mergeSavedAlbumEntities(existing, incoming, 'accA');
   assert.strictEqual(merged.list.length, 2);
   assert.strictEqual(merged.list[0].sortMode, 'duration-desc');
   assert.deepStrictEqual(merged.list[0].tracks.map(t => t.id), ['v3', 'v1']);
   assert.strictEqual(merged.list[0].tracks[1].addedAt, 100);
+
+  // Account A vs Account B with same-name fallback playlist (no ID) stay separate
+  const accAKey = getEntityIdentityKey({ title: 'Favorites', type: 'Playlist', accountId: 'accA' }, 'accA');
+  const accBKey = getEntityIdentityKey({ title: 'Favorites', type: 'Playlist', accountId: 'accB' }, 'accB');
+  assert.notStrictEqual(accAKey, accBKey);
 
   // Same album title, different artists without ID stay separate
   const k1 = getEntityIdentityKey({ title: 'Greatest Hits', artist: 'Artist A', type: 'Album' }, 'accA');
@@ -83,27 +88,68 @@ test('3. Dedup & Reconcile: keeps same-title different-ID playlists separate, pr
   const tRemix = getTrackDedupKey({ title: 'Song (Remix)', artist: 'Singer' });
   const tExp = getTrackDedupKey({ title: 'Song', artist: 'Singer', isExplicit: true });
   assert.strictEqual(new Set([tOrig, tLive, tRemix, tExp]).size, 4);
-
-  // Reconcile tracks
-  const rec = reconcilePlaylistTracks([{ id: 'a' }, { id: 'b' }], [{ id: 'b' }, { id: 'c' }]);
-  assert.deepStrictEqual(rec.tracks.map(t => t.id), ['b', 'c']);
-  assert.strictEqual(rec.added, 1);
-  assert.strictEqual(rec.removed, 1);
-  assert.strictEqual(rec.reordered, true);
 });
 
-test('4. Background Sync Coordinator: single-flight join, account switch invalidation, HTTP 429 backoff, inactive skip', async () => {
+test('4. P0-2 Non-Destructive Reconciliation: preserves local tracks on failed/timeout/partial/page-cap, allows removal on complete empty', () => {
+  const local = [{ id: 'v1', title: 'Track 1' }, { id: 'v2', title: 'Track 2' }];
+
+  // Failed playlist fetch
+  const onFail = reconcilePlaylistTracks(local, [], { complete: false, failed: true, errorCode: 'HTTP_500' });
+  assert.strictEqual(onFail.preservedDueToIncompleteFetch, true);
+  assert.deepStrictEqual(onFail.tracks.map(t => t.id), ['v1', 'v2']);
+
+  // Timeout
+  const onTimeout = reconcilePlaylistTracks(local, [], { complete: false, failed: true, errorCode: 'ABORTED' });
+  assert.strictEqual(onTimeout.preservedDueToIncompleteFetch, true);
+  assert.deepStrictEqual(onTimeout.tracks.map(t => t.id), ['v1', 'v2']);
+
+  // Partial continuation
+  const onPartial = reconcilePlaylistTracks(local, [{ id: 'v1', title: 'Track 1' }], { complete: false, failed: false, continuationRemaining: true });
+  assert.strictEqual(onPartial.preservedDueToIncompleteFetch, true);
+  assert.deepStrictEqual(onPartial.tracks.map(t => t.id), ['v1', 'v2']);
+
+  // Page cap exhaustion
+  const onCap = reconcilePlaylistTracks(local, [{ id: 'v1', title: 'Track 1' }], { complete: false, failed: false, pagesFetched: 30, continuationRemaining: true });
+  assert.strictEqual(onCap.preservedDueToIncompleteFetch, true);
+  assert.deepStrictEqual(onCap.tracks.map(t => t.id), ['v1', 'v2']);
+
+  // Truly empty, fully fetched upstream playlist removes local tracks
+  const onRealEmpty = reconcilePlaylistTracks(local, [], { complete: true, failed: false, continuationRemaining: false });
+  assert.strictEqual(onRealEmpty.preservedDueToIncompleteFetch, undefined);
+  assert.deepStrictEqual(onRealEmpty.tracks, []);
+  assert.strictEqual(onRealEmpty.removed, 2);
+
+  // Complete reorder & deletion
+  const onReorder = reconcilePlaylistTracks(local, [{ id: 'v2', title: 'Track 2' }, { id: 'v3', title: 'Track 3' }], { complete: true, failed: false, continuationRemaining: false });
+  assert.deepStrictEqual(onReorder.tracks.map(t => t.id), ['v2', 'v3']);
+  assert.strictEqual(onReorder.added, 1);
+  assert.strictEqual(onReorder.removed, 1);
+  assert.strictEqual(onReorder.reordered, true);
+
+  // mergeSavedAlbumEntities also preserves tracks when incoming playlist is failed/incomplete
+  const existingAlb = [{ id: 'VLPL_1', title: 'Mix', type: 'Playlist', accountId: 'accA', tracks: local, trackCount: 2 }];
+  const mergedFail = mergeSavedAlbumEntities(existingAlb, [{ id: 'VLPL_1', title: 'Mix', type: 'Playlist', accountId: 'accA', tracks: [], complete: false, failed: true }], 'accA');
+  assert.strictEqual(mergedFail.list[0].tracks.length, 2);
+  assert.strictEqual(mergedFail.list[0].trackCount, 2);
+});
+
+test('5. Background Sync Coordinator: single-flight join, real timeout cancellation, account switch invalidation, HTTP 429 Retry-After', async () => {
   let activeAccount = 'acc1';
   let appActive = false;
   let calls = 0;
+  let cancelledIds = [];
+  let lastReceivedAccount = null;
   let resolveCall;
 
   const coord = createLibrarySyncCoordinator({
     getActiveAccountId: () => activeAccount,
     isAppActive: () => appActive,
+    timeoutMs: 40,
     baseBackoffMs: 1000,
-    syncFn: () => {
+    cancelFn: (reqId) => { cancelledIds.push(reqId); },
+    syncFn: ({ accountId }) => {
       calls++;
+      lastReceivedAccount = accountId;
       return new Promise(r => { resolveCall = r; });
     }
   });
@@ -113,11 +159,12 @@ test('4. Background Sync Coordinator: single-flight join, account switch invalid
   assert.strictEqual(skipped.skipped, true);
   assert.strictEqual(calls, 0);
 
-  // Manual sync joins active background sync (single-flight)
+  // Manual sync joins active background sync (single-flight) & propagates accountId
   appActive = true;
   const p1 = coord.runSync('background');
   const p2 = coord.runSync('manual');
   assert.strictEqual(calls, 1);
+  assert.strictEqual(lastReceivedAccount, 'acc1');
   assert.strictEqual(coord.getState().status, 'syncing');
   resolveCall({ success: true });
   const [r1, r2] = await Promise.all([p1, p2]);
@@ -126,19 +173,27 @@ test('4. Background Sync Coordinator: single-flight join, account switch invalid
   assert.strictEqual(coord.getState().status, 'success');
   assert.ok(coord.getState().lastSync > 0);
 
-  // Account switch during in-flight discards stale result
+  // Timeout triggers real cancelFn with requestId
+  const timeoutRes = await coord.runSync('manual');
+  assert.strictEqual(timeoutRes.success, false);
+  assert.strictEqual(timeoutRes.errorCode, 'SYNC_TIMEOUT');
+  assert.strictEqual(cancelledIds.length, 1);
+
+  // Account switch during in-flight cancels & discards stale result
   const p3 = coord.runSync('manual');
   activeAccount = 'acc2';
   coord.invalidateAccount('account_switched');
+  assert.strictEqual(cancelledIds.length, 2);
   resolveCall({ success: true, stalePayload: true });
   const r3 = await p3;
   assert.strictEqual(r3.discarded, true);
 
-  // HTTP 429 triggers backoff
+  // HTTP 429 honors Retry-After
   const p4 = coord.runSync('background');
-  resolveCall({ success: false, status: 429, retryAfter: 60 });
+  resolveCall({ success: false, status: 429, retryAfter: 120 });
   const r4 = await p4;
   assert.strictEqual(r4.rateLimited, true);
+  assert.strictEqual(r4.retryAfter, 120);
   assert.strictEqual(coord.getState().status, 'failed');
   const r5 = await coord.runSync('background');
   assert.strictEqual(r5.skipped, true);

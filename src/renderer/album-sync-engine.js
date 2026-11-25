@@ -123,9 +123,19 @@
     return `meta:${title}::${artist}::${version}`;
   }
 
-  function reconcilePlaylistTracks(localTracks, upstreamTracks) {
+  function reconcilePlaylistTracks(localTracks, upstreamTracks, fetchMeta) {
     const local = Array.isArray(localTracks) ? localTracks : [];
     const upstream = Array.isArray(upstreamTracks) ? upstreamTracks : [];
+    // P0-2: Never destructively reconcile when upstream fetch is incomplete or failed
+    if (fetchMeta && (fetchMeta.failed === true || fetchMeta.complete === false || fetchMeta.continuationRemaining === true)) {
+      return {
+        tracks: local.slice(),
+        added: 0,
+        removed: 0,
+        reordered: false,
+        preservedDueToIncompleteFetch: true
+      };
+    }
     const localByKey = new Map();
     for (const t of local) {
       const k = getTrackDedupKey(t);
@@ -208,12 +218,20 @@
         if (tagged.artist && !prev.artist) next.artist = tagged.artist;
         if (tagged.cover) next.cover = tagged.cover;
         if (tagged.year && !prev.year) next.year = tagged.year;
-        if (Array.isArray(tagged.tracks) && tagged.tracks.length > 0) {
-          const rec = reconcilePlaylistTracks(prev.tracks || [], tagged.tracks);
-          next.tracks = rec.tracks;
-          const meta = computeAlbumMetadata(rec.tracks);
-          next.trackCount = meta.trackCount;
-          next.totalDurationSec = meta.totalDurationSec;
+        const hasTracks = Array.isArray(tagged.tracks);
+        const isFetchComplete = tagged.failed !== true && tagged.complete !== false && tagged.continuationRemaining !== true;
+        if (hasTracks && isFetchComplete && (tagged.tracks.length > 0 || tagged.complete === true)) {
+          const rec = reconcilePlaylistTracks(prev.tracks || [], tagged.tracks, {
+            complete: tagged.complete,
+            failed: tagged.failed,
+            continuationRemaining: tagged.continuationRemaining
+          });
+          if (!rec.preservedDueToIncompleteFetch) {
+            next.tracks = rec.tracks;
+            const meta = computeAlbumMetadata(rec.tracks);
+            next.trackCount = meta.trackCount;
+            next.totalDurationSec = meta.totalDurationSec;
+          }
         }
         // Preserve user local preferences (e.g., sortMode, addedAt)
         if (prev.sortMode) next.sortMode = prev.sortMode;
@@ -248,6 +266,8 @@
 
     let generation = 0;
     let inFlight = null;
+    let activeRequestId = null;
+    const cancelFn = typeof opts.cancelFn === 'function' ? opts.cancelFn : null;
     const state = {
       status: 'idle',
       lastSync: null,
@@ -263,6 +283,10 @@
 
     function invalidateAccount(reason) {
       generation++;
+      if (activeRequestId && cancelFn) {
+        try { Promise.resolve(cancelFn(activeRequestId)).catch(() => {}); } catch (_) {}
+      }
+      activeRequestId = null;
       inFlight = null;
       state.status = 'idle';
       state.retryCount = 0;
@@ -286,17 +310,29 @@
 
       const runGen = generation;
       const runAccountId = getActiveAccountId();
+      const requestId = `sync_${runGen}_${now()}_${Math.random().toString(36).slice(2, 8)}`;
+      activeRequestId = requestId;
       state.status = 'syncing';
       state.accountId = runAccountId;
       state.lastError = null;
 
       const promise = (async () => {
         let timer = null;
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
         try {
           const timeoutPromise = new Promise((_, reject) => {
-            timer = setTimeout(() => reject(Object.assign(new Error('Sync timed out'), { code: 'SYNC_TIMEOUT' })), timeoutMs);
+            timer = setTimeout(() => {
+              if (controller) controller.abort();
+              if (cancelFn) {
+                try { Promise.resolve(cancelFn(requestId)).catch(() => {}); } catch (_) {}
+              }
+              reject(Object.assign(new Error('Sync timed out'), { code: 'SYNC_TIMEOUT' }));
+            }, timeoutMs);
           });
-          const result = await Promise.race([syncFn({ accountId: runAccountId, trigger }), timeoutPromise]);
+          const result = await Promise.race([
+            syncFn({ accountId: runAccountId, trigger, requestId, signal: controller ? controller.signal : undefined }),
+            timeoutPromise
+          ]);
           if (timer) clearTimeout(timer);
 
           if (runGen !== generation || getActiveAccountId() !== runAccountId) {
@@ -312,7 +348,7 @@
             state.status = 'failed';
             state.lastError = 'HTTP 429 rate limited';
             state.nextRetryAt = now() + delay;
-            return { success: false, rateLimited: true, nextRetryAt: state.nextRetryAt, state: getState() };
+            return { success: false, rateLimited: true, retryAfter: retryAfterSec || null, nextRetryAt: state.nextRetryAt, state: getState() };
           }
 
           if (result && result.success === false) {
@@ -321,7 +357,7 @@
             state.status = 'failed';
             state.lastError = result.error || 'Sync failed';
             state.nextRetryAt = now() + delay;
-            return { success: false, error: state.lastError, state: getState() };
+            return { success: false, error: state.lastError, errorCode: result.errorCode || null, state: getState() };
           }
 
           state.status = 'success';
@@ -336,13 +372,14 @@
             return { stale: true, discarded: true, state: getState() };
           }
           state.retryCount++;
-          const retryAfterMs = err && err.status === 429 && err.retryAfter ? Number(err.retryAfter) * 1000 : 0;
+          const retryAfterMs = err && (err.status === 429 || err.httpStatus === 429) && err.retryAfter ? Number(err.retryAfter) * 1000 : 0;
           const delay = retryAfterMs || Math.min(maxBackoffMs, baseBackoffMs * Math.pow(2, state.retryCount - 1));
           state.status = 'failed';
           state.lastError = (err && err.message) || 'Sync error';
           state.nextRetryAt = now() + delay;
-          return { success: false, error: state.lastError, rateLimited: Boolean(err && err.status === 429), state: getState() };
+          return { success: false, error: state.lastError, errorCode: (err && err.code) || null, rateLimited: Boolean(err && (err.status === 429 || err.httpStatus === 429)), state: getState() };
         } finally {
+          if (activeRequestId === requestId) activeRequestId = null;
           if (inFlight === promise) inFlight = null;
         }
       })();

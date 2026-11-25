@@ -10074,11 +10074,15 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       let albumArtist = album.artist || '';
       let albumYear = album.year || '';
 
+      let ytmFetchMeta = null;
       if (!tracks && window.electronAPI && window.electronAPI.fetchYouTubeAlbumTracks && (album.platform === 'ytmusic' || String(album.id).startsWith('MPREb_') || String(album.id).startsWith('VL') || String(album.id).startsWith('PL'))) {
         try {
-          const ytRes = await window.electronAPI.fetchYouTubeAlbumTracks(album.id);
-          if (ytRes && ytRes.success && Array.isArray(ytRes.tracks) && ytRes.tracks.length > 0) {
-            tracks = ytRes.tracks;
+          const ytRes = await window.electronAPI.fetchYouTubeAlbumTracks(album.id, { accountId: activeYtmAccountId !== 'default' ? activeYtmAccountId : null });
+          ytmFetchMeta = ytRes;
+          if (ytRes && ytRes.success && !ytRes.failed && Array.isArray(ytRes.tracks)) {
+            if (ytRes.tracks.length > 0 || ytRes.complete === true) {
+              tracks = ytRes.tracks;
+            }
           }
         } catch (_) {}
       }
@@ -10134,18 +10138,27 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       album.trackCount = computedMeta.trackCount;
       album.totalDurationSec = computedMeta.totalDurationSec;
 
-      // Persist hydrated metadata (trackCount, totalDurationSec, year, artist) to storage
-      try {
-        const savedAlbs = getSavedAlbums();
-        const savedIdx = savedAlbs.findIndex(a => (album.id && a.id === album.id) || (album.title && a.title === album.title && a.artist === album.artist));
-        if (savedIdx >= 0) {
-          savedAlbs[savedIdx].trackCount = computedMeta.trackCount;
-          savedAlbs[savedIdx].totalDurationSec = computedMeta.totalDurationSec;
-          if (albumYear && !savedAlbs[savedIdx].year) savedAlbs[savedIdx].year = albumYear;
-          if (albumArtist && !savedAlbs[savedIdx].artist) savedAlbs[savedIdx].artist = albumArtist;
-          setSavedAlbums(savedAlbs);
-        }
-      } catch (_) {}
+      // Persist hydrated metadata (trackCount, totalDurationSec, year, artist) only on complete/non-failed fetch
+      const allowMetadataPersist = !ytmFetchMeta || (ytmFetchMeta.failed !== true && ytmFetchMeta.complete !== false);
+      if (allowMetadataPersist) {
+        try {
+          const savedAlbs = getSavedAlbums();
+          const albumKey = syncEngine ? syncEngine.getEntityIdentityKey(album, album.accountId || activeYtmAccountId) : null;
+          const savedIdx = savedAlbs.findIndex(a => {
+            if (albumKey && syncEngine) {
+              return syncEngine.getEntityIdentityKey(a, a.accountId || activeYtmAccountId) === albumKey;
+            }
+            return (album.id && a.id === album.id && (!a.accountId || !album.accountId || a.accountId === album.accountId));
+          });
+          if (savedIdx >= 0) {
+            savedAlbs[savedIdx].trackCount = computedMeta.trackCount;
+            savedAlbs[savedIdx].totalDurationSec = computedMeta.totalDurationSec;
+            if (albumYear && !savedAlbs[savedIdx].year) savedAlbs[savedIdx].year = albumYear;
+            if (albumArtist && !savedAlbs[savedIdx].artist) savedAlbs[savedIdx].artist = albumArtist;
+            setSavedAlbums(savedAlbs);
+          }
+        } catch (_) {}
+      }
 
       const renderAlbumTrackRows = (trackList) => {
         if (!listEl) return;
@@ -22690,42 +22703,9 @@ function bindCoverHoldZoom(wrapEl) {
       window.__eclipseAutoSyncing = true;
       setTimeout(async () => {
         try {
-          if (!window.electronAPI || !window.electronAPI.googleImportLibrary) return;
-          const impRes = await window.electronAPI.googleImportLibrary({
-            platform: 'ytmusic',
-            doLikes: false,
-            doPlaylists: true
-          });
-          if (!impRes || !impRes.success) {
-            console.warn('[auto-sync] import failed:', impRes && impRes.error);
-            return;
-          }
-          window.__eclipseAutoSyncedAlbums = true;
-          const playlists = impRes.playlists || [];
-          const rawAlbums = impRes.albums || [];
-          const currentSaved = getSavedAlbums();
-          const newSaved = [...currentSaved];
-          let addedCount = 0;
-
-          for (const alb of rawAlbums) {
-            if (!newSaved.some(a => (alb.id && a.id === alb.id) || (a.title && alb.title && a.title.toLowerCase() === alb.title.toLowerCase()))) {
-              newSaved.push({ id: alb.id, title: alb.title, artist: alb.artist || '', cover: alb.cover || '', type: 'Album', platform: 'ytmusic', addedAt: Date.now() });
-              addedCount++;
-            }
-          }
-          for (const pl of playlists) {
-            if (!newSaved.some(a => (pl.id && a.id === pl.id) || (a.title && pl.name && a.title.toLowerCase() === pl.name.toLowerCase()))) {
-              newSaved.push({ id: pl.id, title: pl.name, artist: 'YouTube Music Playlist', cover: pl.cover || '', type: 'Playlist', platform: 'ytmusic', tracks: Array.isArray(pl.tracks) ? pl.tracks : [], addedAt: Date.now() });
-              addedCount++;
-            }
-          }
-          if (addedCount > 0) {
-            setSavedAlbums(newSaved);
-            if (state.currentView === 'albums') renderSavedAlbums();
-            updateAlbumsCount();
-            if (typeof showToast === 'function') {
-              showToast(`Đã tự động đồng bộ ${addedCount} album/playlist từ YouTube Music`, 'success');
-            }
+          if (typeof autoSyncYtmLibraryOnLogin === 'function') {
+            await autoSyncYtmLibraryOnLogin(null, { trigger: 'background' });
+            window.__eclipseAutoSyncedAlbums = true;
           }
         } catch (err) {
           console.warn('[auto-sync] error:', err);
@@ -23271,10 +23251,18 @@ function bindCoverHoldZoom(wrapEl) {
         getActiveAccountId: () => activeYtmAccountId,
         isAppActive: () => typeof document === 'undefined' || !document.hidden,
         timeoutMs: 45000,
-        syncFn: async () => window.electronAPI.googleImportLibrary({
+        cancelFn: async (requestId) => {
+          if (window.electronAPI && typeof window.electronAPI.cancelLibrarySync === 'function') {
+            return window.electronAPI.cancelLibrarySync(requestId);
+          }
+        },
+        syncFn: async ({ accountId, requestId }) => window.electronAPI.googleImportLibrary({
           platform: 'ytmusic',
           doLikes: true,
-          doPlaylists: true
+          doPlaylists: true,
+          doAlbums: true,
+          accountId: accountId && accountId !== 'default' ? accountId : null,
+          requestId
         })
       })
     : null;
@@ -23299,17 +23287,37 @@ function bindCoverHoldZoom(wrapEl) {
       let res;
       if (librarySyncCoordinator) {
         const outcome = await librarySyncCoordinator.runSync(trigger);
-        if (outcome.skipped || outcome.discarded || !outcome.success) {
-          if (outcome.error) console.warn('[autoSyncYtmLibraryOnLogin] sync failed:', outcome.error);
+        if (outcome.skipped) {
+          if (trigger === 'manual' && typeof showToast === 'function') {
+            showToast('Đồng bộ đang tạm hoãn, vui lòng thử lại sau.', 'info');
+          }
+          return outcome;
+        }
+        if (outcome.discarded) return outcome;
+        if (!outcome.success) {
+          const safeMsg = outcome.rateLimited
+            ? 'YouTube Music đang giới hạn tốc độ (HTTP 429). Vui lòng thử lại sau.'
+            : (outcome.error || 'Đồng bộ thư viện thất bại');
+          console.warn('[autoSyncYtmLibraryOnLogin] sync failed:', safeMsg);
+          if (trigger === 'manual' && typeof showToast === 'function') {
+            showToast(safeMsg, 'error');
+          }
           return outcome;
         }
         res = outcome.data;
       } else {
-        res = await window.electronAPI.googleImportLibrary({ platform: 'ytmusic', doLikes: true, doPlaylists: true });
+        res = await window.electronAPI.googleImportLibrary({ platform: 'ytmusic', doLikes: true, doPlaylists: true, doAlbums: true });
       }
       if (!res || !res.success) {
-        console.warn('[autoSyncYtmLibraryOnLogin] auto sync failed:', res && res.error);
+        const errMsg = (res && res.error) || 'Đồng bộ thư viện thất bại';
+        console.warn('[autoSyncYtmLibraryOnLogin] auto sync failed:', errMsg);
+        if (trigger === 'manual' && typeof showToast === 'function') {
+          showToast(errMsg, 'error');
+        }
         return;
+      }
+      if (res.accountId && activeYtmAccountId === 'default') {
+        activeYtmAccountId = String(res.accountId);
       }
       const syncEngine = window.EclipseAlbumSyncEngine || null;
       const likes = res.likes || [];
@@ -23343,19 +23351,25 @@ function bindCoverHoldZoom(wrapEl) {
         for (const pl of playlists) {
           const plTracks = pl.tracks || [];
           const normName = (pl.name || '').trim().toLowerCase();
-          // Match by upstream ID first; only fallback to title when neither has an ID
+          // P1-2: Match by accountId + upstream ID; fallback requires matching accountId + entity type
           const existingPl = state.playlists.find(p =>
-            (pl.id && p.ytId && p.ytId === pl.id && (!p.accountId || p.accountId === activeYtmAccountId)) ||
-            (!pl.id && !p.ytId && normName && (p.name || '').trim().toLowerCase() === normName)
+            (pl.id && p.ytId && p.ytId === pl.id && (p.accountId || 'default') === activeYtmAccountId) ||
+            (!pl.id && !p.ytId && (p.accountId || 'default') === activeYtmAccountId && normName && (p.name || '').trim().toLowerCase() === normName)
           );
           if (existingPl) {
             if (pl.id) existingPl.ytId = pl.id;
             existingPl.accountId = activeYtmAccountId;
             if (pl.cover) existingPl.cover = pl.cover;
             if (syncEngine) {
-              const rec = syncEngine.reconcilePlaylistTracks(existingPl.tracks || [], plTracks.map(t => stampAddedAt(t)));
-              existingPl.tracks = rec.tracks;
-              addedTracks += rec.added;
+              const rec = syncEngine.reconcilePlaylistTracks(
+                existingPl.tracks || [],
+                plTracks.map(t => stampAddedAt(t)),
+                { complete: pl.complete, failed: pl.failed, continuationRemaining: pl.continuationRemaining }
+              );
+              if (!rec.preservedDueToIncompleteFetch) {
+                existingPl.tracks = rec.tracks;
+                addedTracks += rec.added;
+              }
             } else {
               const existingIds = new Set((existingPl.tracks || []).map(t => t.id || t.url || t.title));
               for (const t of plTracks) {
@@ -23412,26 +23426,40 @@ function bindCoverHoldZoom(wrapEl) {
                 platform: 'ytmusic',
                 accountId: activeYtmAccountId,
                 tracks: Array.isArray(pl.tracks) ? pl.tracks : [],
+                complete: pl.complete,
+                failed: pl.failed,
+                continuationRemaining: pl.continuationRemaining,
                 addedAt: Date.now()
               });
             }
           }
+          let addedAlbumsCount = 0;
+          let updatedAlbumsCount = 0;
           if (incomingEntities.length > 0 && syncEngine) {
             const merged = syncEngine.mergeSavedAlbumEntities(currentSaved, incomingEntities, activeYtmAccountId);
+            addedAlbumsCount = merged.added;
+            updatedAlbumsCount = merged.updated;
             if (merged.added > 0 || merged.updated > 0) {
               setSavedAlbums(merged.list);
               if (state.currentView === 'albums' && typeof renderSavedAlbums === 'function') renderSavedAlbums();
               if (typeof updateAlbumsCount === 'function') updateAlbumsCount();
             }
           }
+          if (trigger === 'manual' && typeof showToast === 'function') {
+            const totalChanges = addedTracks + addedPlaylists + addedAlbumsCount + updatedAlbumsCount;
+            if (totalChanges > 0) {
+              showToast(`Đã đồng bộ: +${addedTracks} bài hát, +${addedPlaylists} playlist, +${addedAlbumsCount} mới / ${updatedAlbumsCount} cập nhật`, 'success');
+            } else {
+              showToast('Thư viện đã được cập nhật mới nhất (không có thay đổi).', 'info');
+            }
+          }
         } catch (_) {}
-      }
-
-      if (trigger === 'manual' && typeof showToast === 'function' && (addedTracks > 0 || addedPlaylists > 0 || rawAlbums.length > 0)) {
-        showToast(`Đã đồng bộ ${addedTracks} bài hát, ${addedPlaylists} playlist, ${rawAlbums.length} album từ YouTube Music`, 'success');
       }
     } catch (syncErr) {
       console.warn('[autoSyncYtmLibraryOnLogin] error during sync:', syncErr);
+      if (trigger === 'manual' && typeof showToast === 'function') {
+        showToast(`Lỗi đồng bộ thư viện: ${(syncErr && syncErr.message) || 'Unknown error'}`, 'error');
+      }
     }
   }
 
@@ -24041,31 +24069,45 @@ function bindCoverHoldZoom(wrapEl) {
             }
           } else {
             const normName = (pl.name || '').trim().toLowerCase();
+            const accId = (res && res.accountId) ? String(res.accountId) : activeYtmAccountId;
             const existingPl = state.playlists.find(p =>
-              (pl.id && p.ytId === pl.id) ||
-              (normName && (p.name || '').trim().toLowerCase() === normName)
+              (pl.id && p.ytId && p.ytId === pl.id && (p.accountId || 'default') === accId) ||
+              (!pl.id && !p.ytId && (p.accountId || 'default') === accId && normName && (p.name || '').trim().toLowerCase() === normName)
             );
             if (existingPl) {
               if (pl.id) existingPl.ytId = pl.id;
+              existingPl.accountId = accId;
               if (pl.cover && !existingPl.cover) existingPl.cover = pl.cover;
-              const existingIds = new Set((existingPl.tracks || []).map(t => t.id || t.url || t.title));
-              let addedToExisting = 0;
-              for (const t of plTracks) {
-                const key = t.id || t.url || t.title;
-                if (!existingIds.has(key)) {
-                  existingPl.tracks.push(stampAddedAt(t));
-                  existingIds.add(key);
-                  addedToExisting++;
+              const syncEngine = window.EclipseAlbumSyncEngine;
+              if (syncEngine && typeof syncEngine.reconcilePlaylistTracks === 'function') {
+                const rec = syncEngine.reconcilePlaylistTracks(
+                  existingPl.tracks || [],
+                  plTracks.map(t => stampAddedAt(t)),
+                  pl.fetchMeta || { complete: true, failed: false }
+                );
+                existingPl.tracks = rec.tracks;
+                importedCount += rec.added;
+              } else {
+                const existingIds = new Set((existingPl.tracks || []).map(t => t.id || t.url || t.title));
+                let addedToExisting = 0;
+                for (const t of plTracks) {
+                  const key = t.id || t.url || t.title;
+                  if (!existingIds.has(key)) {
+                    existingPl.tracks.push(stampAddedAt(t));
+                    existingIds.add(key);
+                    addedToExisting++;
+                  }
                 }
+                importedCount += addedToExisting;
               }
-              importedCount += addedToExisting;
               updateProgress(importedCount);
               localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists));
               renderPlaylistsList();
             } else {
               const created = createPlaylist(pl.name, plTracks, pl.cover || '');
-              if (created && pl.id) {
-                created.ytId = pl.id;
+              if (created) {
+                if (pl.id) created.ytId = pl.id;
+                created.accountId = accId;
                 localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists));
               }
               importedCount += plTracks.length;
@@ -24077,51 +24119,47 @@ function bindCoverHoldZoom(wrapEl) {
 
       // Save imported YouTube Music albums & playlists to Saved Albums (eclipse_saved_albums)
       try {
+        const syncEngine = window.EclipseAlbumSyncEngine;
+        const accId = (res && res.accountId) ? String(res.accountId) : activeYtmAccountId;
+        if (res && res.accountId && activeYtmAccountId === 'default') {
+          activeYtmAccountId = String(res.accountId);
+        }
         const currentSaved = getSavedAlbums();
-        const newSaved = [...currentSaved];
-        let addedAlbumsCount = 0;
-
-        // 1. YouTube Music Liked Albums
+        const incomingEntities = [];
         for (const alb of rawAlbums) {
-          const exists = newSaved.some(a => (alb.id && a.id === alb.id) || (a.title && alb.title && a.title.toLowerCase() === alb.title.toLowerCase()));
-          if (!exists) {
-            newSaved.push({
-              id: alb.id,
-              title: alb.title,
-              artist: alb.artist || '',
-              cover: alb.cover || '',
-              type: 'Album',
-              platform: 'ytmusic',
-              addedAt: Date.now()
-            });
-            addedAlbumsCount++;
-          }
+          incomingEntities.push({
+            id: alb.id,
+            title: alb.title,
+            artist: alb.artist || '',
+            cover: alb.cover || '',
+            year: alb.year || '',
+            type: 'Album',
+            platform: 'ytmusic',
+            accountId: accId,
+            addedAt: Date.now()
+          });
         }
-
-        // 2. YouTube Music Playlists as album cards in Albums view
         for (const pl of playlists) {
-          const exists = newSaved.some(a => (pl.id && a.id === pl.id) || (a.title && pl.name && a.title.toLowerCase() === pl.name.toLowerCase()));
-          if (!exists) {
-            newSaved.push({
-              id: pl.id,
-              title: pl.name,
-              artist: 'YouTube Music Playlist',
-              cover: pl.cover || '',
-              type: 'Playlist',
-              platform: 'ytmusic',
-              tracks: Array.isArray(pl.tracks) ? pl.tracks : [],
-              addedAt: Date.now()
-            });
-            addedAlbumsCount++;
-          }
+          incomingEntities.push({
+            id: pl.id,
+            title: pl.name,
+            artist: 'YouTube Music Playlist',
+            cover: pl.cover || '',
+            type: 'Playlist',
+            platform: 'ytmusic',
+            accountId: accId,
+            tracks: Array.isArray(pl.tracks) ? pl.tracks : [],
+            fetchMeta: pl.fetchMeta || { complete: true, failed: false },
+            addedAt: Date.now()
+          });
         }
-
-        if (addedAlbumsCount > 0) {
-          setSavedAlbums(newSaved);
-          if (state.currentView === 'albums') {
-            renderSavedAlbums();
+        if (syncEngine && typeof syncEngine.mergeSavedAlbumEntities === 'function') {
+          const merged = syncEngine.mergeSavedAlbumEntities(currentSaved, incomingEntities, accId);
+          if (merged.added > 0 || merged.updated > 0) {
+            setSavedAlbums(merged.albums);
+            if (state.currentView === 'albums') renderSavedAlbums();
+            updateAlbumsCount();
           }
-          updateAlbumsCount();
         }
       } catch (errSaveAlbums) {
         console.warn('[handleGoogleLoginImport] failed saving albums:', errSaveAlbums);

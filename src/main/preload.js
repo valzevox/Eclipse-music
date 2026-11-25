@@ -144,7 +144,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('browser-login:pairing-result', sub);
   },
   googleImportLibrary: (opts) => ipcRenderer.invoke('google-import-library', opts),
-  fetchYouTubeAlbumTracks: (albumId) => ipcRenderer.invoke('fetch-youtube-album-tracks', albumId),
+  cancelLibrarySync: (requestId) => ipcRenderer.invoke('cancel-library-sync', requestId),
+  fetchYouTubeAlbumTracks: (albumId, opts) => ipcRenderer.invoke('fetch-youtube-album-tracks', albumId, opts),
   savePlaylistsJson: (payload) => ipcRenderer.invoke('save-playlists-json', payload),
   showPlaylistContextMenu: (playlistId) => ipcRenderer.invoke('show-playlist-context-menu', playlistId),
   accountExport: (payload) => ipcRenderer.invoke('account-export', payload),

@@ -1004,8 +1004,8 @@ class YtmAuthManager {
     const requestBody = {
       context: {
         client: {
-          clientName: 'WEB_REMIX',
-          clientVersion: '1.20250312.01.00',
+          clientName: WEB_REMIX_CLIENT.clientName,
+          clientVersion: WEB_REMIX_CLIENT.clientVersion,
           hl: 'en',
           gl: 'US'
         }

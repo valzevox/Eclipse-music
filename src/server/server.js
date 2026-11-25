@@ -22,7 +22,9 @@ const { DATA_DIR, CACHE_DIR, CUSTOM_LYRICS_DIR, LYRICS_DIR, THUMBNAILS_DIR, META
 
 // Services for Phases 1-8
 const YtmAuthManager = require('./ytm-auth');
+const { YtmLibraryService } = require('./ytm-library-service');
 const ytmAuth = new YtmAuthManager(DATA_DIR);
+const ytmLibraryService = new YtmLibraryService(ytmAuth);
 const { getTempCookieManager, isCookiePayloadAuthenticated } = require('../shared/temp-cookie-manager');
 const tempCookieMgr = getTempCookieManager(DATA_DIR);
 // Clean up any orphan temporary jars on server startup
@@ -10045,6 +10047,72 @@ if (parsedUrl.pathname === '/api/ytm/intercept-cookie' && req.method === 'POST')
       res.writeHead(500, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ success: false, error: e.message }));
     }
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/library-full' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const payload = body ? JSON.parse(body) : {};
+        const result = await ytmLibraryService.fetchFullLibrary({
+          doLikes: payload.doLikes !== false,
+          doPlaylists: payload.doPlaylists !== false,
+          doAlbums: payload.doAlbums !== false,
+          expectedAccountId: payload.expectedAccountId || null,
+          requestId: payload.requestId || null
+        });
+        const status = result.success ? 200 : (result.httpStatus || result.status || 500);
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message, errorCode: 'SERVER_ERROR' }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/album-tracks' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const payload = body ? JSON.parse(body) : {};
+        const browseId = String(payload.albumId || payload.browseId || '').trim();
+        if (!browseId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ success: false, tracks: [], complete: false, failed: true, errorCode: 'MISSING_ID', error: 'Missing albumId' }));
+        }
+        const result = await ytmLibraryService.fetchTracksPaginated(browseId, {
+          expectedAccountId: payload.expectedAccountId || null
+        });
+        const status = result.success ? 200 : (result.httpStatus || result.status || 500);
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, tracks: [], complete: false, failed: true, errorCode: 'SERVER_ERROR', error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/library-cancel' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const payload = body ? JSON.parse(body) : {};
+        const cancelled = ytmLibraryService.cancelRequest(payload.requestId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, cancelled }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
   }
 
   if (parsedUrl.pathname === '/api/artist') {
