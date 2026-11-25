@@ -30128,179 +30128,204 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ==========================================================================
-  // Share Lyrics Card Controller
+  // Share Lyrics Card Controller (DOM-Ready Idempotent Initializer)
   // ==========================================================================
-  const shareLyricsModal = document.getElementById('share-lyrics-modal');
-  const btnShareLyrics = document.getElementById('btn-share-lyrics');
-  const btnCloseShareLyrics = document.getElementById('btn-close-share-lyrics');
-  const shareLyricsLinesList = document.getElementById('share-lyrics-lines-list');
-  const shareLyricsCounter = document.getElementById('share-lyrics-counter');
-  const shareLyricsCanvas = document.getElementById('share-lyrics-canvas');
-  const btnCopyLyricsImage = document.getElementById('btn-copy-lyrics-image');
-  const btnDownloadLyricsCard = document.getElementById('btn-download-lyrics-card');
-
+  let isShareLyricsInitialized = false;
   let selectedLyricsIndices = [];
 
-  function openShareLyricsModal() {
-    if (!shareLyricsModal) return;
-    if (!state.syncedLyrics || state.syncedLyrics.length === 0) {
-      showToast('No lyrics available to share', 'warning');
+  function initShareLyricsUI() {
+    if (isShareLyricsInitialized) return;
+
+    const shareLyricsModal = document.getElementById('share-lyrics-modal');
+    const btnShareLyrics = document.getElementById('btn-share-lyrics');
+    const btnCloseShareLyrics = document.getElementById('btn-close-share-lyrics');
+    const shareLyricsLinesList = document.getElementById('share-lyrics-lines-list');
+    const shareLyricsCounter = document.getElementById('share-lyrics-counter');
+    const shareLyricsCanvas = document.getElementById('share-lyrics-canvas');
+    const btnCopyLyricsImage = document.getElementById('btn-copy-lyrics-image');
+    const btnDownloadLyricsCard = document.getElementById('btn-download-lyrics-card');
+
+    if (!shareLyricsModal || !btnShareLyrics) {
       return;
     }
-    selectedLyricsIndices = [];
-    renderShareLyricsLines();
-    updateShareLyricsPreview();
-    shareLyricsModal.classList.remove('hidden');
-    shareLyricsModal.classList.add('visible');
-  }
 
-  function closeShareLyricsModal() {
-    if (!shareLyricsModal) return;
-    shareLyricsModal.classList.remove('visible');
-    shareLyricsModal.classList.add('hidden');
-    selectedLyricsIndices = [];
-  }
+    isShareLyricsInitialized = true;
 
-  function renderShareLyricsLines() {
-    if (!shareLyricsLinesList || !state.syncedLyrics) return;
-    shareLyricsLinesList.innerHTML = '';
-
-    const lines = state.syncedLyrics.map((l, i) => ({
-      index: i,
-      text: (l.text || '').replace(/<[^>]+>/g, '').trim()
-    })).filter(l => l.text.length > 0);
-
-    // Preselect current active line or first line
-    const activeIdx = state.lastActiveLyricIdx >= 0 ? state.lastActiveLyricIdx : 0;
-    const matchLine = lines.find(l => l.index === activeIdx) || lines[0];
-    if (matchLine) selectedLyricsIndices = [matchLine.index];
-
-    lines.forEach(lineItem => {
-      const row = document.createElement('div');
-      row.className = 'share-lyrics-line-item';
-      if (selectedLyricsIndices.includes(lineItem.index)) row.classList.add('selected');
-
-      const chk = document.createElement('div');
-      chk.className = 'share-lyrics-line-checkbox';
-      const textSpan = document.createElement('span');
-      textSpan.textContent = lineItem.text;
-
-      row.appendChild(chk);
-      row.appendChild(textSpan);
-
-      row.addEventListener('click', () => {
-        handleLineSelectionToggle(lineItem.index);
-      });
-
-      shareLyricsLinesList.appendChild(row);
-    });
-
-    updateShareLyricsCounter();
-  }
-
-  function handleLineSelectionToggle(lineIndex) {
-    const existingPos = selectedLyricsIndices.indexOf(lineIndex);
-    if (existingPos !== -1) {
-      selectedLyricsIndices.splice(existingPos, 1);
-    } else {
-      if (selectedLyricsIndices.length >= 5) {
-        showToast('Maximum 5 lines can be selected', 'warning');
+    function openShareLyricsModal() {
+      if (!shareLyricsModal) return;
+      if (!state.syncedLyrics || state.syncedLyrics.length === 0) {
+        showToast('No lyrics available to share', 'warning');
         return;
       }
-      selectedLyricsIndices.push(lineIndex);
-      selectedLyricsIndices.sort((a, b) => a - b);
+      selectedLyricsIndices = [];
+      renderShareLyricsLines();
+      updateShareLyricsPreview();
+      shareLyricsModal.classList.remove('hidden');
+      shareLyricsModal.classList.add('visible');
     }
 
-    if (shareLyricsLinesList) {
-      const items = shareLyricsLinesList.querySelectorAll('.share-lyrics-line-item');
-      items.forEach((item, idx) => {
-        const line = state.syncedLyrics[idx];
-        item.classList.toggle('selected', selectedLyricsIndices.includes(idx));
+    function closeShareLyricsModal() {
+      if (!shareLyricsModal) return;
+      shareLyricsModal.classList.remove('visible');
+      shareLyricsModal.classList.add('hidden');
+      selectedLyricsIndices = [];
+    }
+
+    function renderShareLyricsLines() {
+      if (!shareLyricsLinesList || !state.syncedLyrics) return;
+      shareLyricsLinesList.innerHTML = '';
+
+      const lines = state.syncedLyrics.map((l, i) => ({
+        text: (l.text || '').replace(/<[^>]+>/g, '').trim(),
+        index: i
+      })).filter(l => l.text.length > 0);
+
+      const activeIdx = state.lastActiveLyricIdx >= 0 ? state.lastActiveLyricIdx : 0;
+      const matchLine = lines.find(l => l.index === activeIdx) || lines[0];
+      if (matchLine) selectedLyricsIndices = [matchLine.index];
+
+      lines.forEach(lineItem => {
+        const row = document.createElement('div');
+        row.className = 'share-lyrics-line-item';
+        if (selectedLyricsIndices.includes(lineItem.index)) row.classList.add('selected');
+
+        const chk = document.createElement('div');
+        chk.className = 'share-lyrics-line-checkbox';
+        const textSpan = document.createElement('span');
+        textSpan.textContent = lineItem.text;
+
+        row.appendChild(chk);
+        row.appendChild(textSpan);
+
+        row.addEventListener('click', () => {
+          handleLineSelectionToggle(lineItem.index);
+        });
+
+        shareLyricsLinesList.appendChild(row);
       });
+
+      updateShareLyricsCounter();
     }
 
-    updateShareLyricsCounter();
-    updateShareLyricsPreview();
-  }
+    function handleLineSelectionToggle(lineIndex) {
+      const existingPos = selectedLyricsIndices.indexOf(lineIndex);
+      if (existingPos !== -1) {
+        selectedLyricsIndices.splice(existingPos, 1);
+      } else {
+        if (selectedLyricsIndices.length >= 5) {
+          showToast('Maximum 5 lines can be selected', 'warning');
+          return;
+        }
+        selectedLyricsIndices.push(lineIndex);
+        selectedLyricsIndices.sort((a, b) => a - b);
+      }
 
-  function updateShareLyricsCounter() {
-    if (shareLyricsCounter) {
-      shareLyricsCounter.textContent = `${selectedLyricsIndices.length}/5`;
+      if (shareLyricsLinesList) {
+        const items = shareLyricsLinesList.querySelectorAll('.share-lyrics-line-item');
+        items.forEach((item, idx) => {
+          item.classList.toggle('selected', selectedLyricsIndices.includes(idx));
+        });
+      }
+
+      updateShareLyricsCounter();
+      updateShareLyricsPreview();
     }
-  }
 
-  async function updateShareLyricsPreview() {
-    if (!shareLyricsCanvas || typeof LyricsCardGenerator === 'undefined') return;
-    const linesToRender = selectedLyricsIndices.length > 0
-      ? selectedLyricsIndices.map(i => (state.syncedLyrics[i] ? state.syncedLyrics[i].text : '')).filter(Boolean)
-      : ['(Select 1–5 lines on the left)'];
-
-    const track = state.currentTrack || { title: 'Unknown Title', artist: 'Unknown Artist' };
-    const coverUrl = track.artwork || track.coverUrl || '';
-
-    try {
-      const renderedCanvas = await LyricsCardGenerator.generateCanvasCard({
-        lines: linesToRender,
-        title: track.title || 'Unknown Title',
-        artist: track.artist || 'Unknown Artist',
-        coverUrl: coverUrl,
-        width: 800,
-        height: 1000
-      });
-
-      shareLyricsCanvas.width = 800;
-      shareLyricsCanvas.height = 1000;
-      const ctx = shareLyricsCanvas.getContext('2d');
-      ctx.drawImage(renderedCanvas, 0, 0);
-    } catch (err) {
-      console.warn('Share lyrics preview render warning:', err);
+    function updateShareLyricsCounter() {
+      if (shareLyricsCounter) {
+        shareLyricsCounter.textContent = `${selectedLyricsIndices.length}/5`;
+      }
     }
-  }
 
-  if (btnShareLyrics) btnShareLyrics.addEventListener('click', openShareLyricsModal);
-  if (btnCloseShareLyrics) btnCloseShareLyrics.addEventListener('click', closeShareLyricsModal);
-  if (shareLyricsModal) {
-    shareLyricsModal.addEventListener('click', (e) => {
+    async function updateShareLyricsPreview() {
+      if (!shareLyricsCanvas || typeof LyricsCardGenerator === 'undefined') return;
+      const linesToRender = selectedLyricsIndices.length > 0
+        ? selectedLyricsIndices.map(i => (state.syncedLyrics[i] ? state.syncedLyrics[i].text : '')).filter(Boolean)
+        : ['(Select 1–5 lines on the left)'];
+
+      const track = state.currentTrack || { title: 'Unknown Title', artist: 'Unknown Artist' };
+      const coverUrl = track.artwork || track.coverUrl || '';
+
+      try {
+        const renderedCanvas = await LyricsCardGenerator.generateCanvasCard({
+          lines: linesToRender,
+          title: track.title || 'Unknown Title',
+          artist: track.artist || 'Unknown Artist',
+          coverUrl: coverUrl,
+          width: 800,
+          height: 1000
+        });
+
+        shareLyricsCanvas.width = 800;
+        shareLyricsCanvas.height = 1000;
+        const ctx = shareLyricsCanvas.getContext('2d');
+        ctx.drawImage(renderedCanvas, 0, 0);
+      } catch (err) {
+        console.warn('Share lyrics preview render warning:', err);
+      }
+    }
+
+    btnShareLyrics.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openShareLyricsModal();
+    };
+
+    if (btnCloseShareLyrics) {
+      btnCloseShareLyrics.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        closeShareLyricsModal();
+      };
+    }
+
+    shareLyricsModal.onclick = (e) => {
       if (e.target === shareLyricsModal) closeShareLyricsModal();
-    });
+    };
+
+    if (btnCopyLyricsImage) {
+      btnCopyLyricsImage.onclick = async () => {
+        try {
+          if (!shareLyricsCanvas) return;
+          shareLyricsCanvas.toBlob(async (blob) => {
+            if (!blob) throw new Error('Failed to create image blob');
+            if (navigator.clipboard && navigator.clipboard.write) {
+              await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+              showToast('Lyrics card copied to clipboard', 'info');
+            } else {
+              showToast('Clipboard API unavailable', 'warning');
+            }
+          }, 'image/png');
+        } catch (err) {
+          showToast('Failed to copy: ' + err.message, 'error');
+        }
+      };
+    }
+
+    if (btnDownloadLyricsCard) {
+      btnDownloadLyricsCard.onclick = () => {
+        try {
+          if (!shareLyricsCanvas) return;
+          const dataUrl = shareLyricsCanvas.toDataURL('image/png');
+          const link = document.createElement('a');
+          const safeTitle = (state.currentTrack ? state.currentTrack.title : 'lyrics')
+            .replace(/[^a-zA-Z0-9_-]/g, '_')
+            .toLowerCase();
+          link.download = `${safeTitle}_lyrics_card.png`;
+          link.href = dataUrl;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          showToast('Lyrics card saved', 'info');
+        } catch (err) {
+          showToast('Failed to save image: ' + err.message, 'error');
+        }
+      };
+    }
   }
 
-  if (btnCopyLyricsImage) {
-    btnCopyLyricsImage.addEventListener('click', async () => {
-      try {
-        if (!shareLyricsCanvas) return;
-        shareLyricsCanvas.toBlob(async (blob) => {
-          if (!blob) throw new Error('Failed to create image blob');
-          if (navigator.clipboard && navigator.clipboard.write) {
-            await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-            showToast('Lyrics card copied to clipboard', 'info');
-          } else {
-            showToast('Clipboard API unavailable', 'warning');
-          }
-        }, 'image/png');
-      } catch (err) {
-        showToast('Failed to copy: ' + err.message, 'error');
-      }
-    });
-  }
-
-  if (btnDownloadLyricsCard) {
-    btnDownloadLyricsCard.addEventListener('click', () => {
-      try {
-        if (!shareLyricsCanvas) return;
-        const dataUrl = shareLyricsCanvas.toDataURL('image/png');
-        const link = document.createElement('a');
-        const safeTitle = (state.currentTrack ? state.currentTrack.title : 'lyrics')
-          .replace(/[^a-zA-Z0-9_-]/g, '_')
-          .toLowerCase();
-        link.download = `${safeTitle}_lyrics_card.png`;
-        link.href = dataUrl;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        showToast('Lyrics card saved', 'info');
-      } catch (err) {
-        showToast('Failed to save image: ' + err.message, 'error');
-      }
-    });
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initShareLyricsUI);
+  } else {
+    setTimeout(initShareLyricsUI, 100);
   }

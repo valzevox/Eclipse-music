@@ -8,15 +8,26 @@ const SEARCH_CACHE_TTL_MS = 60 * 60 * 1000;     // 1 hour
 
 const newReleasesCache = new Map();
 const searchCache = new Map();
+const commentsCache = new Map();
+const innertubeClients = new Map();
+const inFlightComments = new Map();
 
 /**
- * Get or create Innertube client
+ * Get or create Innertube client with singleton promise cache
  */
 async function getInnertube(country = 'VN') {
-  return await Innertube.create({
-    gl: country.toUpperCase() === 'GLOBAL' ? 'US' : country.toUpperCase(),
-    hl: country.toUpperCase() === 'VN' ? 'vi' : 'en'
-  });
+  const gl = country.toUpperCase() === 'GLOBAL' ? 'US' : country.toUpperCase();
+  const hl = country.toUpperCase() === 'VN' ? 'vi' : 'en';
+  const clientKey = `${gl}_${hl}`;
+
+  if (!innertubeClients.has(clientKey)) {
+    const clientPromise = Innertube.create({ gl, hl }).catch((err) => {
+      innertubeClients.delete(clientKey);
+      throw err;
+    });
+    innertubeClients.set(clientKey, clientPromise);
+  }
+  return await innertubeClients.get(clientKey);
 }
 
 /**
@@ -287,7 +298,6 @@ async function searchCategorized(query, category = 'all', country = 'VN') {
 }
 
 const songInfoCache = new Map();
-const commentsCache = new Map();
 const podcastsCache = new Map();
 
 function extractTimestampsFromText(text) {
@@ -456,43 +466,69 @@ async function getTrackComments(videoId, country = 'VN') {
   if (!vid) {
     return { success: true, videoId: '', comments: [] };
   }
+  const normCountry = country.toUpperCase() === 'GLOBAL' ? 'US' : (country.toUpperCase() || 'VN');
+  const cacheKey = `comments_${normCountry}_${vid}`;
   const now = Date.now();
-  const cached = commentsCache.get(vid);
-  if (cached && (now - cached.timestamp) < SEARCH_CACHE_TTL_MS) {
+  const cached = commentsCache.get(cacheKey);
+  if (cached && (now - cached.timestamp) < cached.ttl) {
     return cached.data;
   }
 
-  const comments = [];
-  if (/^[a-zA-Z0-9_-]{11}$/.test(vid)) {
-    try {
-      const yt = await getInnertube(country);
-      const thread = await yt.getComments(vid);
-      const items = thread?.contents || [];
-      for (const item of items.slice(0, 30)) {
-        const c = item?.comment || item;
-        const text = c?.content?.toString?.() || c?.text?.toString?.() || '';
-        if (!text) continue;
-        comments.push({
-          id: c?.comment_id || c?.id || `c_${comments.length + 1}`,
-          author: c?.author?.name || 'Music Listener',
-          avatar: c?.author?.thumbnails?.[0]?.url || '',
-          text,
-          likes: c?.like_count?.toString?.() || '0',
-          publishedTime: c?.published?.toString?.() || 'Recently',
-          timestamps: extractTimestampsFromText(text),
-          repliesCount: Number(c?.reply_count) || 0
-        });
-      }
-    } catch (_) {}
+  if (inFlightComments.has(cacheKey)) {
+    return await inFlightComments.get(cacheKey);
   }
 
-  const payload = {
-    success: true,
-    videoId: vid,
-    comments
-  };
-  commentsCache.set(vid, { timestamp: now, data: payload });
-  return payload;
+  const fetchPromise = (async () => {
+    const comments = [];
+    let fetchError = null;
+
+    if (/^[a-zA-Z0-9_-]{11}$/.test(vid)) {
+      try {
+        const yt = await getInnertube(normCountry);
+        const thread = await yt.getComments(vid);
+        const items = thread?.contents || [];
+        for (const item of items.slice(0, 30)) {
+          const c = item?.comment || item;
+          const text = c?.content?.toString?.() || c?.text?.toString?.() || '';
+          if (!text) continue;
+          comments.push({
+            id: c?.comment_id || c?.id || `c_${comments.length + 1}`,
+            author: c?.author?.name || 'Music Listener',
+            avatar: c?.author?.thumbnails?.[0]?.url || '',
+            text,
+            likes: c?.like_count?.toString?.() || '0',
+            publishedTime: c?.published?.toString?.() || 'Recently',
+            timestamps: extractTimestampsFromText(text),
+            repliesCount: Number(c?.reply_count) || 0
+          });
+        }
+      } catch (err) {
+        fetchError = err;
+      }
+    }
+
+    if (fetchError && comments.length === 0) {
+      throw fetchError;
+    }
+
+    const payload = {
+      success: true,
+      videoId: vid,
+      comments
+    };
+
+    // Cache valid comments for 1 hour; genuine empty comments for 60 seconds
+    const ttl = comments.length > 0 ? SEARCH_CACHE_TTL_MS : 60 * 1000;
+    commentsCache.set(cacheKey, { timestamp: Date.now(), ttl, data: payload });
+    return payload;
+  })();
+
+  inFlightComments.set(cacheKey, fetchPromise);
+  try {
+    return await fetchPromise;
+  } finally {
+    inFlightComments.delete(cacheKey);
+  }
 }
 
 /**

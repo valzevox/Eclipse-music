@@ -2053,6 +2053,7 @@ ipcMain.on('window-minimize', () => {
           const sessionInfo = await browserLoginService.startPairingSession(
             (authResult) => {
               try {
+                try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
                 if (sender && !sender.isDestroyed()) {
                   sender.send('browser-login:pairing-result', { success: true, account: authResult.account });
                 } else if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2094,6 +2095,7 @@ ipcMain.on('window-minimize', () => {
           if (!res.ok || !data.success) {
             return { success: false, error: data.error || ('HTTP ' + res.status) };
           }
+          try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
           return { success: true, account: data.account };
         } catch (err) {
           return { success: false, error: err.message };
@@ -2107,6 +2109,7 @@ ipcMain.on('window-minimize', () => {
           }
           browserLoginService.ytmAuthUrl = `http://127.0.0.1:${serverPort || 38472}/api/ytm/intercept-cookie`;
           const authResult = await browserLoginService.importFromGeckoProfile(profile.profilePath);
+          try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
           return { success: true, account: authResult.account };
         } catch (err) {
           return { success: false, error: err.message, reason: err.reason, details: err.details || null };
@@ -2168,7 +2171,7 @@ ipcMain.on('window-minimize', () => {
           let ytmConnected = false;
           let ytmAccount = null;
 
-          if (serverPort && !fs.existsSync(YT_LOGOUT_FLAG)) {
+          if (serverPort) {
             try {
               const sRes = await fetch(`http://127.0.0.1:${serverPort}/api/ytm/accounts`, { signal: AbortSignal.timeout(3000) });
               if (sRes.ok) {
@@ -2176,9 +2179,17 @@ ipcMain.on('window-minimize', () => {
                 if (sData && sData.activeAccount && sData.activeAccount.id && sData.activeAccount.id !== 'unknown') {
                   ytmConnected = true;
                   ytmAccount = sData.activeAccount;
+                  // If backend has verified active account, clear stale logout flag
+                  try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
                 }
               }
-            } catch (_) {}
+            } catch (_) {
+              // If backend check threw network error, respect logout flag if present
+              if (fs.existsSync(YT_LOGOUT_FLAG)) {
+                ytmConnected = false;
+                ytmAccount = null;
+              }
+            }
           }
 
           // loggedIn is an alias of ytmConnected for backward compatibility
