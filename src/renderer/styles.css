@@ -12647,14 +12647,54 @@ body.perf .tv-karaoke[data-tvk-anim="focus"] .lyric-word.active-word {
 
 /* Share Lyrics Modal Glassmorphism Styling */
 .share-lyrics-modal-card {
-  width: 760px !important;
+  width: 780px !important;
   max-width: 94vw !important;
-  background: rgba(18, 16, 26, 0.88) !important;
-  backdrop-filter: blur(32px) saturate(190%) !important;
-  -webkit-backdrop-filter: blur(32px) saturate(190%) !important;
+  background: linear-gradient(160deg, var(--share-tint, rgba(28, 20, 48, 0.92)), rgba(10, 9, 16, 0.96)) !important;
+  backdrop-filter: blur(36px) saturate(190%) !important;
+  -webkit-backdrop-filter: blur(36px) saturate(190%) !important;
   border: 1px solid rgba(255, 255, 255, 0.14) !important;
   border-radius: 28px !important;
   padding: 24px !important;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65) !important;
+  transition: background 0.35s ease !important;
+}
+
+.share-lyrics-swatches {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.share-lyrics-swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  padding: 0;
+}
+
+.share-lyrics-swatch:hover {
+  transform: scale(1.12);
+}
+
+.share-lyrics-swatch.active {
+  border-color: #ffffff;
+  transform: scale(1.15);
+  box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.55);
+}
+
+@media (max-width: 720px) {
+  .share-lyrics-content {
+    flex-direction: column;
+  }
+  .share-lyrics-lines-list {
+    max-height: 220px;
+  }
 }
 
 .share-lyrics-content {

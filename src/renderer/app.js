@@ -29891,11 +29891,14 @@ function bindCoverHoldZoom(wrapEl) {
   // ==========================================================================
   let isShareLyricsInitialized = false;
   let selectedLyricsIndices = [];
+  let selectedCardBackground = '';
 
   function initShareLyricsUI() {
     if (isShareLyricsInitialized) return;
 
     const shareLyricsModal = document.getElementById('share-lyrics-modal');
+    const shareLyricsCard = shareLyricsModal ? shareLyricsModal.querySelector('.share-lyrics-modal-card') : null;
+    const shareLyricsSwatches = document.getElementById('share-lyrics-swatches');
     const btnShareLyrics = document.getElementById('btn-share-lyrics');
     const btnCloseShareLyrics = document.getElementById('btn-close-share-lyrics');
     const shareLyricsLinesList = document.getElementById('share-lyrics-lines-list');
@@ -29938,9 +29941,54 @@ function bindCoverHoldZoom(wrapEl) {
       shareLyricsModal.classList.remove('hidden');
       shareLyricsModal.classList.add('visible');
 
-      // Update preview non-blockingly
-      updateShareLyricsPreview().catch((err) => {
-        console.warn('[ShareLyrics] Preview render failed:', err);
+      // Extract artwork tint & render swatches non-blockingly
+      const track = state.currentTrack || {};
+      const coverUrl = track.artwork || track.coverUrl || '';
+      if (typeof LyricsCardGenerator !== 'undefined' && typeof LyricsCardGenerator.extractDominantColor === 'function') {
+        LyricsCardGenerator.extractDominantColor(coverUrl, '#2e1065').then((autoHex) => {
+          selectedCardBackground = autoHex;
+          if (shareLyricsCard) {
+            shareLyricsCard.style.setProperty('--share-tint', `${autoHex}e6`);
+          }
+          renderShareLyricsSwatches(autoHex);
+          updateShareLyricsPreview().catch(() => {});
+        }).catch(() => {
+          renderShareLyricsSwatches('#2e1065');
+          updateShareLyricsPreview().catch(() => {});
+        });
+      } else {
+        updateShareLyricsPreview().catch((err) => {
+          console.warn('[ShareLyrics] Preview render failed:', err);
+        });
+      }
+    }
+
+    function renderShareLyricsSwatches(autoHex) {
+      if (!shareLyricsSwatches) return;
+      const presets = [
+        { label: 'Artwork Tint', color: autoHex || '#2e1065' },
+        { label: 'Eclipse Neon', color: '#7c3aed' },
+        { label: 'Cyber Cyan', color: '#0891b2' },
+        { label: 'Crimson Pulse', color: '#be123c' },
+        { label: 'Midnight', color: '#0f172a' },
+        { label: 'Paper Light', color: '#f4f1ea' }
+      ];
+      shareLyricsSwatches.innerHTML = '';
+      presets.forEach((p) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'share-lyrics-swatch';
+        if (selectedCardBackground.toLowerCase() === p.color.toLowerCase()) btn.classList.add('active');
+        btn.style.background = p.color;
+        btn.title = p.label;
+        btn.setAttribute('aria-label', p.label);
+        btn.onclick = () => {
+          selectedCardBackground = p.color;
+          shareLyricsSwatches.querySelectorAll('.share-lyrics-swatch').forEach(s => s.classList.remove('active'));
+          btn.classList.add('active');
+          updateShareLyricsPreview().catch(() => {});
+        };
+        shareLyricsSwatches.appendChild(btn);
       });
     }
 
@@ -29988,18 +30036,34 @@ function bindCoverHoldZoom(wrapEl) {
     }
 
     function handleLineSelectionToggle(lineIndex) {
-      const existingPos = selectedLyricsIndices.indexOf(lineIndex);
-      if (existingPos !== -1) {
-        selectedLyricsIndices.splice(existingPos, 1);
+      if (selectedLyricsIndices.length === 0) {
+        selectedLyricsIndices = [lineIndex];
       } else {
-        if (selectedLyricsIndices.length >= 5) {
-          if (typeof showToast === 'function') {
-            showToast('Tối đa chọn 5 câu lời bài hát', 'warning');
+        const minIdx = selectedLyricsIndices[0];
+        const maxIdx = selectedLyricsIndices[selectedLyricsIndices.length - 1];
+        if (selectedLyricsIndices.includes(lineIndex)) {
+          if (selectedLyricsIndices.length === 1) {
+            selectedLyricsIndices = [];
+          } else if (lineIndex === minIdx) {
+            selectedLyricsIndices = selectedLyricsIndices.slice(1);
+          } else if (lineIndex === maxIdx) {
+            selectedLyricsIndices = selectedLyricsIndices.slice(0, -1);
+          } else {
+            selectedLyricsIndices = [lineIndex];
           }
-          return;
+        } else {
+          const newMin = Math.min(minIdx, lineIndex);
+          const newMax = Math.max(maxIdx, lineIndex);
+          if (newMax - newMin + 1 <= 5) {
+            selectedLyricsIndices = [];
+            for (let i = newMin; i <= newMax; i++) selectedLyricsIndices.push(i);
+          } else {
+            if (typeof showToast === 'function') {
+              showToast('Tối đa chọn 5 câu liên tiếp', 'warning');
+            }
+            selectedLyricsIndices = [lineIndex];
+          }
         }
-        selectedLyricsIndices.push(lineIndex);
-        selectedLyricsIndices.sort((a, b) => a - b);
       }
 
       if (shareLyricsLinesList) {
@@ -30034,6 +30098,7 @@ function bindCoverHoldZoom(wrapEl) {
           title: track.title || 'Unknown Title',
           artist: track.artist || 'Unknown Artist',
           coverUrl: coverUrl,
+          background: selectedCardBackground || undefined,
           width: 800,
           height: 1000
         });

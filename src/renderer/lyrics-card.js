@@ -116,6 +116,66 @@ class LyricsCardGenerator {
   }
 
   /**
+   * Relative luminance (0..1) for hex color (#rrggbb)
+   */
+  static getLuminance(hex) {
+    const clean = String(hex || '').replace('#', '');
+    if (clean.length !== 6) return 0.1;
+    const r = parseInt(clean.slice(0, 2), 16) / 255;
+    const g = parseInt(clean.slice(2, 4), 16) / 255;
+    const b = parseInt(clean.slice(4, 6), 16) / 255;
+    const toLin = (c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+    return 0.2126 * toLin(r) + 0.7152 * toLin(g) + 0.0722 * toLin(b);
+  }
+
+  /**
+   * Darken/lerp hex color toward black by factor (0..1)
+   */
+  static darkenHex(hex, factor = 0.35) {
+    const clean = String(hex || '').replace('#', '');
+    if (clean.length !== 6) return '#05030a';
+    const r = Math.round(parseInt(clean.slice(0, 2), 16) * (1 - factor));
+    const g = Math.round(parseInt(clean.slice(2, 4), 16) * (1 - factor));
+    const b = Math.round(parseInt(clean.slice(4, 6), 16) * (1 - factor));
+    return `#${[r, g, b].map(v => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('')}`;
+  }
+
+  /**
+   * Extract dominant color hex from coverUrl (returns fallback on error/headless)
+   */
+  static async extractDominantColor(coverUrl, fallback = '#2e1065') {
+    if (!coverUrl || typeof Image === 'undefined' || typeof document === 'undefined') return fallback;
+    try {
+      const img = await new Promise((resolve, reject) => {
+        const image = new Image();
+        image.crossOrigin = 'anonymous';
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('Image load failed'));
+        image.src = coverUrl;
+      });
+      const c = document.createElement('canvas');
+      c.width = 16;
+      c.height = 16;
+      const cx = c.getContext('2d');
+      cx.drawImage(img, 0, 0, 16, 16);
+      const data = cx.getImageData(0, 0, 16, 16).data;
+      let r = 0, g = 0, b = 0, count = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] < 128) continue;
+        r += data[i];
+        g += data[i + 1];
+        b += data[i + 2];
+        count++;
+      }
+      if (!count) return fallback;
+      const toHex = (v) => Math.round(v / count).toString(16).padStart(2, '0');
+      return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  /**
    * Render high-resolution glassmorphism lyrics card to HTMLCanvasElement
    */
   static async generateCanvasCard(options = {}) {
@@ -125,6 +185,11 @@ class LyricsCardGenerator {
     const coverUrl = options.coverUrl || '';
     const width = options.width || 800;
     const height = options.height || 1000;
+    const bgHex = options.background || '';
+    const isLightBg = bgHex ? this.getLuminance(bgHex) > 0.5 : false;
+    const primaryTextColor = isLightBg ? '#141414' : '#ffffff';
+    const secondaryTextColor = isLightBg ? 'rgba(20, 20, 20, 0.68)' : '#9ca3af';
+    const brandTextColor = isLightBg ? '#5b21b6' : '#a78bfa';
 
     let canvas;
     if (typeof OffscreenCanvas !== 'undefined') {
@@ -139,11 +204,16 @@ class LyricsCardGenerator {
 
     const ctx = canvas.getContext('2d');
 
-    // 1. Deep Space Neon Gradient Base
+    // 1. Gradient Base (custom background or Deep Space Neon)
     const bgGrad = ctx.createLinearGradient(0, 0, width, height);
-    bgGrad.addColorStop(0, '#140b24');
-    bgGrad.addColorStop(0.5, '#0c0717');
-    bgGrad.addColorStop(1, '#05030a');
+    if (bgHex) {
+      bgGrad.addColorStop(0, bgHex);
+      bgGrad.addColorStop(1, this.darkenHex(bgHex, isLightBg ? 0.08 : 0.48));
+    } else {
+      bgGrad.addColorStop(0, '#140b24');
+      bgGrad.addColorStop(0.5, '#0c0717');
+      bgGrad.addColorStop(1, '#05030a');
+    }
     ctx.fillStyle = bgGrad;
     this.roundRect(ctx, 0, 0, width, height, 32);
     ctx.fill();
@@ -194,17 +264,17 @@ class LyricsCardGenerator {
     ctx.fill();
 
     ctx.font = '700 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-    ctx.fillStyle = '#a78bfa';
+    ctx.fillStyle = brandTextColor;
     ctx.fillText('ECLIPSE MUSIC', logoX + 32, logoY + 16);
     ctx.restore();
 
     // 5. Lyrics Section (Centered Vertical Balance with Auto-Wrapping)
     ctx.save();
     ctx.font = '600 28px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-    ctx.fillStyle = '#ffffff';
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
-    ctx.shadowBlur = 12;
-    ctx.shadowOffsetY = 3;
+    ctx.fillStyle = primaryTextColor;
+    ctx.shadowColor = isLightBg ? 'rgba(0, 0, 0, 0)' : 'rgba(0, 0, 0, 0.65)';
+    ctx.shadowBlur = isLightBg ? 0 : 12;
+    ctx.shadowOffsetY = isLightBg ? 0 : 3;
 
     const lyricsMaxW = innerW - 80;
     const wrappedLines = [];
@@ -277,11 +347,11 @@ class LyricsCardGenerator {
     const textOffset = (coverUrl && typeof Image !== 'undefined') ? coverSize + 18 : 22;
     ctx.save();
     ctx.font = '700 22px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = primaryTextColor;
     ctx.fillText(title, footerX + textOffset, footerY + 30);
 
     ctx.font = '500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-    ctx.fillStyle = '#9ca3af';
+    ctx.fillStyle = secondaryTextColor;
     ctx.fillText(artist, footerX + textOffset, footerY + 58);
     ctx.restore();
 
