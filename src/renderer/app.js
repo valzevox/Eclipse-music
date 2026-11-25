@@ -29877,6 +29877,32 @@ document.addEventListener('DOMContentLoaded', () => {
   let activeCommentsTrackId = null;
   let activeCommentsAbortController = null;
 
+  function resolveYouTubeVideoId(track) {
+    if (!track || typeof track !== 'object') return null;
+    const candidates = [
+      track.videoId,
+      track.video_id,
+      track._matchedYtId,
+      track.id
+    ];
+    for (const c of candidates) {
+      if (typeof c === 'string') {
+        const trimmed = c.trim();
+        if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
+          return trimmed;
+        }
+      }
+    }
+    const urlCandidates = [track.url, track.streamUrl, track.sourceUrl];
+    for (const u of urlCandidates) {
+      if (typeof u === 'string' && u.trim()) {
+        const m = u.match(/(?:youtu\.be\/|v\/|u\/\w\/|embed\/|shorts\/|live\/|watch\?v=|&v=)([a-zA-Z0-9_-]{11})/);
+        if (m && m[1]) return m[1];
+      }
+    }
+    return null;
+  }
+
   function seekToTrackPosition(targetSeconds) {
     if (!Number.isFinite(targetSeconds) || targetSeconds < 0) return false;
     abortAutoMixIfActive('seek');
@@ -29892,7 +29918,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.secondaryAudio && !state.secondaryAudio.paused) {
       state.secondaryAudio.currentTime = targetSeconds;
     }
-    if (mvController && mvController.active && el.mvVideo && el.mvVideo.readyState >= 1) {
+    if (typeof mvController !== 'undefined' && mvController && mvController.active && el.mvVideo && el.mvVideo.readyState >= 1) {
       try { el.mvVideo.currentTime = targetSeconds; } catch (_) {}
     }
     if (typeof updateMediaPositionState === 'function') {
@@ -29947,6 +29973,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const subtitleEl = document.getElementById('comments-modal-subtitle');
     if (!container) return;
 
+    // 1. Guard against no active track
     if (!state.currentTrack) {
       container.innerHTML = '<div class="comments-empty-state"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg><span>Vui lòng chọn bài hát để xem bình luận</span></div>';
       if (titleEl) titleEl.textContent = 'Bình luận';
@@ -29955,17 +29982,23 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const track = state.currentTrack;
-    const vid = (mvController && typeof mvController.extractYtId === 'function')
-      ? mvController.extractYtId(track)
-      : (track.id || '');
+    if (titleEl) titleEl.textContent = track.title || 'Bình luận bài hát';
+    if (subtitleEl) subtitleEl.textContent = track.artist || 'YouTube Music';
 
-    if (!vid || !/^[a-zA-Z0-9_-]{11}$/.test(vid)) {
+    // 2. Resolve YouTube video ID inside guarded execution
+    let vid = null;
+    try {
+      vid = resolveYouTubeVideoId(track);
+    } catch (resolveErr) {
+      console.warn('[comments] Failed to resolve video ID:', resolveErr);
+    }
+
+    if (!vid) {
       container.innerHTML = '<div class="comments-empty-state"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg><span>Bài hát này không có ID YouTube hợp lệ</span></div>';
-      if (titleEl) titleEl.textContent = track.title || 'Bình luận';
-      if (subtitleEl) subtitleEl.textContent = track.artist || '';
       return;
     }
 
+    // 3. Set loading state immediately
     if (activeCommentsAbortController) {
       activeCommentsAbortController.abort();
       activeCommentsAbortController = null;
@@ -29974,10 +30007,12 @@ document.addEventListener('DOMContentLoaded', () => {
     activeCommentsAbortController = abortController;
     activeCommentsTrackId = vid;
 
-    if (titleEl) titleEl.textContent = track.title || 'Bình luận bài hát';
-    if (subtitleEl) subtitleEl.textContent = track.artist || 'YouTube Music';
-
     container.innerHTML = '<div class="comments-loading-state"><span class="mv-loading-spinner" style="width: 28px; height: 28px;"></span><span>Đang tải bình luận...</span></div>';
+
+    // 4. Bounded client fetch (15s timeout)
+    const timeoutId = setTimeout(() => {
+      abortController.abort(new Error('Comments request timed out (15s)'));
+    }, 15000);
 
     try {
       const port = state.serverPort || 38472;
@@ -29986,6 +30021,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const url = `http://127.0.0.1:${port}/api/ytm/comments?id=${encodeURIComponent(vid)}&token=${encodeURIComponent(token)}${refreshParam}`;
 
       const resp = await fetch(url, { signal: abortController.signal });
+      clearTimeout(timeoutId);
+
       if (!resp.ok) throw new Error(`Máy chủ phản hồi HTTP ${resp.status}`);
       const data = await resp.json();
 
@@ -30056,9 +30093,14 @@ document.addEventListener('DOMContentLoaded', () => {
         container.appendChild(item);
       }
     } catch (err) {
-      if (err.name === 'AbortError') return;
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError' && (!activeCommentsAbortController || activeCommentsAbortController.signal.reason !== 'Comments request timed out (15s)')) {
+        return;
+      }
       if (activeCommentsTrackId !== vid) return;
-      container.innerHTML = `<div class="comments-error-state"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg><span>${escapeHtml(err.message || 'Lỗi kết nối bình luận')}</span><button type="button" class="btn-outline-pill" id="btn-retry-comments" style="margin-top:8px;">Thử lại</button></div>`;
+      const isTimeout = err.name === 'AbortError' || /timed out/i.test(err.message);
+      const msg = isTimeout ? 'Hết thời gian tải bình luận (15s)' : (err.message || 'Lỗi kết nối bình luận');
+      container.innerHTML = `<div class="comments-error-state"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg><span>${escapeHtml(msg)}</span><button type="button" class="btn-outline-pill" id="btn-retry-comments" style="margin-top:8px;">Thử lại</button></div>`;
       const retryBtn = document.getElementById('btn-retry-comments');
       if (retryBtn) {
         retryBtn.onclick = () => loadTrackComments(true);
@@ -30067,11 +30109,17 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function openCommentsModal() {
-    const modal = document.getElementById('comments-modal');
-    if (!modal) return;
-    modal.classList.remove('hidden');
-    modal.classList.add('visible');
-    loadTrackComments(false);
+    try {
+      const modal = document.getElementById('comments-modal');
+      if (!modal) return;
+      modal.classList.remove('hidden');
+      modal.classList.add('visible');
+      loadTrackComments(false).catch((err) => {
+        console.warn('[comments] loadTrackComments rejected:', err);
+      });
+    } catch (modalErr) {
+      console.warn('[comments] openCommentsModal exception:', modalErr);
+    }
   }
 
   function closeCommentsModal() {
@@ -30124,11 +30172,11 @@ document.addEventListener('DOMContentLoaded', () => {
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initCommentsFeature);
   } else {
-    setTimeout(initCommentsFeature, 100);
+    initCommentsFeature();
   }
 
   // ==========================================================================
-  // Share Lyrics Card Controller (DOM-Ready Idempotent Initializer)
+  // Share Lyrics Card Controller (Independent Top-Level DOM Initializer)
   // ==========================================================================
   let isShareLyricsInitialized = false;
   let selectedLyricsIndices = [];
@@ -30145,23 +30193,44 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnCopyLyricsImage = document.getElementById('btn-copy-lyrics-image');
     const btnDownloadLyricsCard = document.getElementById('btn-download-lyrics-card');
 
-    if (!shareLyricsModal || !btnShareLyrics) {
-      return;
+    const requiredNodes = [
+      { id: 'share-lyrics-modal', el: shareLyricsModal },
+      { id: 'btn-share-lyrics', el: btnShareLyrics },
+      { id: 'btn-close-share-lyrics', el: btnCloseShareLyrics },
+      { id: 'share-lyrics-lines-list', el: shareLyricsLinesList },
+      { id: 'share-lyrics-counter', el: shareLyricsCounter },
+      { id: 'share-lyrics-canvas', el: shareLyricsCanvas },
+      { id: 'btn-copy-lyrics-image', el: btnCopyLyricsImage },
+      { id: 'btn-download-lyrics-card', el: btnDownloadLyricsCard }
+    ];
+
+    const missingNodes = requiredNodes.filter(n => !n.el);
+    if (missingNodes.length > 0) {
+      console.warn('[ShareLyrics] Missing required DOM elements:', missingNodes.map(n => n.id).join(', '));
+      if (!shareLyricsModal || !btnShareLyrics) return;
     }
 
     isShareLyricsInitialized = true;
 
     function openShareLyricsModal() {
       if (!shareLyricsModal) return;
-      if (!state.syncedLyrics || state.syncedLyrics.length === 0) {
-        showToast('No lyrics available to share', 'warning');
+      if (!state.syncedLyrics || !Array.isArray(state.syncedLyrics) || state.syncedLyrics.length === 0) {
+        if (typeof showToast === 'function') {
+          showToast('Không có lời bài hát để chia sẻ', 'warning');
+        }
         return;
       }
       selectedLyricsIndices = [];
       renderShareLyricsLines();
-      updateShareLyricsPreview();
+
+      // Open modal immediately so user gets instant visual response
       shareLyricsModal.classList.remove('hidden');
       shareLyricsModal.classList.add('visible');
+
+      // Update preview non-blockingly
+      updateShareLyricsPreview().catch((err) => {
+        console.warn('[ShareLyrics] Preview render failed:', err);
+      });
     }
 
     function closeShareLyricsModal() {
@@ -30213,7 +30282,9 @@ document.addEventListener('DOMContentLoaded', () => {
         selectedLyricsIndices.splice(existingPos, 1);
       } else {
         if (selectedLyricsIndices.length >= 5) {
-          showToast('Maximum 5 lines can be selected', 'warning');
+          if (typeof showToast === 'function') {
+            showToast('Tối đa chọn 5 câu lời bài hát', 'warning');
+          }
           return;
         }
         selectedLyricsIndices.push(lineIndex);
@@ -30228,7 +30299,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       updateShareLyricsCounter();
-      updateShareLyricsPreview();
+      updateShareLyricsPreview().catch(() => {});
     }
 
     function updateShareLyricsCounter() {
@@ -30241,7 +30312,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!shareLyricsCanvas || typeof LyricsCardGenerator === 'undefined') return;
       const linesToRender = selectedLyricsIndices.length > 0
         ? selectedLyricsIndices.map(i => (state.syncedLyrics[i] ? state.syncedLyrics[i].text : '')).filter(Boolean)
-        : ['(Select 1–5 lines on the left)'];
+        : ['(Chọn 1–5 câu ở danh sách bên trái)'];
 
       const track = state.currentTrack || { title: 'Unknown Title', artist: 'Unknown Artist' };
       const coverUrl = track.artwork || track.coverUrl || '';
@@ -30261,7 +30332,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const ctx = shareLyricsCanvas.getContext('2d');
         ctx.drawImage(renderedCanvas, 0, 0);
       } catch (err) {
-        console.warn('Share lyrics preview render warning:', err);
+        console.warn('[ShareLyrics] Preview render warning:', err);
       }
     }
 
@@ -30288,16 +30359,19 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
           if (!shareLyricsCanvas) return;
           shareLyricsCanvas.toBlob(async (blob) => {
-            if (!blob) throw new Error('Failed to create image blob');
+            if (!blob) {
+              if (typeof showToast === 'function') showToast('Không thể tạo ảnh lời bài hát', 'error');
+              return;
+            }
             if (navigator.clipboard && navigator.clipboard.write) {
               await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-              showToast('Lyrics card copied to clipboard', 'info');
+              if (typeof showToast === 'function') showToast('Đã sao chép ảnh thẻ lời bài hát vào bộ nhớ tạm', 'info');
             } else {
-              showToast('Clipboard API unavailable', 'warning');
+              if (typeof showToast === 'function') showToast('Trình duyệt không hỗ trợ sao chép ảnh', 'warning');
             }
           }, 'image/png');
         } catch (err) {
-          showToast('Failed to copy: ' + err.message, 'error');
+          if (typeof showToast === 'function') showToast('Lỗi sao chép ảnh: ' + err.message, 'error');
         }
       };
     }
@@ -30316,16 +30390,17 @@ document.addEventListener('DOMContentLoaded', () => {
           document.body.appendChild(link);
           link.click();
           document.body.removeChild(link);
-          showToast('Lyrics card saved', 'info');
+          if (typeof showToast === 'function') showToast('Đã lưu ảnh thẻ lời bài hát', 'info');
         } catch (err) {
-          showToast('Failed to save image: ' + err.message, 'error');
+          if (typeof showToast === 'function') showToast('Lỗi lưu ảnh: ' + err.message, 'error');
         }
       };
     }
   }
 
+  // Independent DOM ready trigger without arbitrary delay
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initShareLyricsUI);
   } else {
-    setTimeout(initShareLyricsUI, 100);
+    initShareLyricsUI();
   }

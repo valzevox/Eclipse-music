@@ -1,7 +1,36 @@
 // test/comments-feature.test.js
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
-const { extractTimestampsFromText } = require('../src/server/ytm-discovery');
+const fs = require('node:fs');
+const path = require('node:path');
+const { extractTimestampsFromText, getTrackComments } = require('../src/server/ytm-discovery');
+
+// Helper mirroring pure renderer resolveYouTubeVideoId implementation
+function resolveYouTubeVideoId(track) {
+  if (!track || typeof track !== 'object') return null;
+  const candidates = [
+    track.videoId,
+    track.video_id,
+    track._matchedYtId,
+    track.id
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string') {
+      const trimmed = c.trim();
+      if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
+        return trimmed;
+      }
+    }
+  }
+  const urlCandidates = [track.url, track.streamUrl, track.sourceUrl];
+  for (const u of urlCandidates) {
+    if (typeof u === 'string' && u.trim()) {
+      const m = u.match(/(?:youtu\.be\/|v\/|u\/\w\/|embed\/|shorts\/|live\/|watch\?v=|&v=)([a-zA-Z0-9_-]{11})/);
+      if (m && m[1]) return m[1];
+    }
+  }
+  return null;
+}
 
 describe('YouTube Comments & Timestamps Feature Suite', () => {
   it('parses timestamps in mm:ss, m:ss, and hh:mm:ss accurately', () => {
@@ -18,8 +47,6 @@ describe('YouTube Comments & Timestamps Feature Suite', () => {
   it('rejects invalid timestamps and out-of-range clock values', () => {
     const text = 'Score is 12:70 or invalid 99:99 or ratio 10:100 or non-time 5:5';
     const timestamps = extractTimestampsFromText(text);
-
-    // 12:70 (70s invalid), 99:99 (99s invalid), 10:100 (100s invalid)
     assert.strictEqual(timestamps.length, 0);
   });
 
@@ -76,5 +103,48 @@ describe('YouTube Comments & Timestamps Feature Suite', () => {
     assert.strictEqual(checkSeekAllowed(181), false); // Exceeds duration
     assert.strictEqual(checkSeekAllowed(-5), false);
     assert.strictEqual(checkSeekAllowed(NaN), false);
+  });
+
+  // P0 Hotfix: pure resolveYouTubeVideoId regression test
+  it('resolves valid 11-char direct YouTube video IDs across different schema keys', () => {
+    assert.strictEqual(resolveYouTubeVideoId({ videoId: 'kJQP7kiw5Fk' }), 'kJQP7kiw5Fk');
+    assert.strictEqual(resolveYouTubeVideoId({ video_id: 'kJQP7kiw5Fk' }), 'kJQP7kiw5Fk');
+    assert.strictEqual(resolveYouTubeVideoId({ _matchedYtId: 'kJQP7kiw5Fk' }), 'kJQP7kiw5Fk');
+    assert.strictEqual(resolveYouTubeVideoId({ id: 'kJQP7kiw5Fk' }), 'kJQP7kiw5Fk');
+  });
+
+  it('resolves YouTube video IDs from supported URL formats (watch, youtu.be, embed, shorts, live)', () => {
+    assert.strictEqual(resolveYouTubeVideoId({ url: 'https://www.youtube.com/watch?v=kJQP7kiw5Fk' }), 'kJQP7kiw5Fk');
+    assert.strictEqual(resolveYouTubeVideoId({ url: 'https://youtu.be/kJQP7kiw5Fk' }), 'kJQP7kiw5Fk');
+    assert.strictEqual(resolveYouTubeVideoId({ url: 'https://www.youtube.com/embed/kJQP7kiw5Fk' }), 'kJQP7kiw5Fk');
+    assert.strictEqual(resolveYouTubeVideoId({ url: 'https://www.youtube.com/shorts/kJQP7kiw5Fk' }), 'kJQP7kiw5Fk');
+    assert.strictEqual(resolveYouTubeVideoId({ url: 'https://www.youtube.com/live/kJQP7kiw5Fk' }), 'kJQP7kiw5Fk');
+  });
+
+  it('rejects invalid or non-YouTube formats safely with null', () => {
+    assert.strictEqual(resolveYouTubeVideoId(null), null);
+    assert.strictEqual(resolveYouTubeVideoId(undefined), null);
+    assert.strictEqual(resolveYouTubeVideoId({}), null);
+    assert.strictEqual(resolveYouTubeVideoId({ id: 'local_file_123' }), null);
+    assert.strictEqual(resolveYouTubeVideoId({ id: 'short_id' }), null);
+    assert.strictEqual(resolveYouTubeVideoId({ id: 'invalid_characters!@#' }), null);
+    assert.strictEqual(resolveYouTubeVideoId({ url: 'https://soundcloud.com/artist/track' }), null);
+  });
+
+  it('verifies that renderer source does not rely on mvController for extractYtId', () => {
+    const appSource = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+    const commentSection = appSource.substring(appSource.indexOf('function loadTrackComments'));
+    assert.strictEqual(
+      commentSection.includes('mvController.extractYtId'),
+      false,
+      'loadTrackComments must never call mvController.extractYtId'
+    );
+  });
+
+  it('backend getTrackComments returns empty payload for empty or non-11 char videoId without crashing', async () => {
+    const res = await getTrackComments('');
+    assert.strictEqual(res.success, true);
+    assert.strictEqual(res.videoId, '');
+    assert.deepStrictEqual(res.comments, []);
   });
 });

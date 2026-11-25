@@ -485,7 +485,15 @@ async function getTrackComments(videoId, country = 'VN') {
     if (/^[a-zA-Z0-9_-]{11}$/.test(vid)) {
       try {
         const yt = await getInnertube(normCountry);
-        const thread = await yt.getComments(vid);
+        // Bounded upstream fetch: 12 seconds max
+        const threadPromise = yt.getComments(vid);
+        let timer = null;
+        const timeoutPromise = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Comments upstream request timed out (12s)')), 12000);
+        });
+        const thread = await Promise.race([threadPromise, timeoutPromise]).finally(() => {
+          if (timer) clearTimeout(timer);
+        });
         const items = thread?.contents || [];
         for (const item of items.slice(0, 30)) {
           const c = item?.comment || item;
