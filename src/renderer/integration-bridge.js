@@ -507,15 +507,16 @@
               const freshCoreState = getCoreState();
               const freshTrack = freshCoreState ? freshCoreState.currentTrack : null;
               const freshQueue = freshCoreState ? (freshCoreState.queue || []) : [];
-              const freshIdx = freshCoreState ? freshCoreState.currentIndex : -1;
-              const freshNext = freshQueue[freshIdx + 1];
+              const freshIdx = (freshCoreState && Number.isInteger(freshCoreState.queueIndex)) ? freshCoreState.queueIndex : -1;
+              const freshNext = (Number.isInteger(nextIdx) && nextIdx >= 0 && nextIdx < freshQueue.length) ? freshQueue[nextIdx] : null;
               if (!freshTrack || !currentTrack || (freshTrack.id !== currentTrack.id && freshTrack.videoId !== currentTrack.videoId)) {
-                console.warn('[EclipseBridge] Active track changed during preflight readiness; aborting transition.');
+                console.warn('[EclipseBridge] Active track changed during preflight readiness; aborting transition.', { stage: 'PREFLIGHT_ABORT_TRACK_CHANGED', queueIndex: freshIdx, targetNextIdx: nextIdx });
+                automixTriggeredForTrack = false;
                 window._autoMixHandlingEnd = false;
                 return;
               }
-              if (!freshNext || (nextTrack && freshNext.id !== nextTrack.id && freshNext.videoId !== nextTrack.videoId)) {
-                console.warn('[EclipseBridge] Target queue changed during preflight readiness; resetting trigger to allow transition to new target track.');
+              if (freshIdx < 0 || freshIdx >= freshQueue.length || !freshNext || (nextTrack && freshNext.id !== nextTrack.id && freshNext.videoId !== nextTrack.videoId)) {
+                console.warn('[EclipseBridge] Target queue changed during preflight readiness; resetting trigger to allow transition to new target track.', { stage: 'PREFLIGHT_ABORT_QUEUE_CHANGED', queueIndex: freshIdx, targetNextIdx: nextIdx });
                 automixTriggeredForTrack = false;
                 window._autoMixHandlingEnd = false;
                 return;
