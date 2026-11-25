@@ -106,8 +106,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const selectedCookies = Array.from(byName.values());
 
-      if (selectedCookies.length === 0 || !selectedCookies.some(c => c.name === 'SAPISID' || c.name === '__Secure-3PAPISID' || c.name === 'LOGIN_INFO')) {
+      const hasSigningCred = selectedCookies.some(c => c.name === 'SAPISID' || c.name === '__Secure-3PAPISID');
+      const hasLoginCookie = selectedCookies.some(c => c.name === 'LOGIN_INFO');
+
+      if (selectedCookies.length === 0 || (!hasSigningCred && !hasLoginCookie)) {
         showStatus('No active YouTube Music login found in this browser. Please log in to music.youtube.com first.', 'error');
+        btnPair.disabled = false;
+        return;
+      }
+      if (!hasSigningCred && hasLoginCookie) {
+        showStatus('Session cookie (LOGIN_INFO) found, but missing SAPISID or __Secure-3PAPISID credential needed to sign SAPISIDHASH.', 'error');
         btnPair.disabled = false;
         return;
       }
@@ -137,6 +145,14 @@ document.addEventListener('DOMContentLoaded', () => {
       } else {
         const errMsg = resJson.error || 'Failed to authenticate pairing with Eclipse';
         showStatus(`Error: ${errMsg}`, 'error');
+        if (resJson && resJson.details) {
+          const dc = document.getElementById("diag-container");
+          const dt = document.getElementById("diag-text");
+          if (dc && dt) {
+            dt.value = JSON.stringify(resJson.details, null, 2);
+            dc.style.display = "block";
+          }
+        }
         btnPair.disabled = false;
       }
     } catch (err) {
@@ -148,5 +164,19 @@ document.addEventListener('DOMContentLoaded', () => {
   function showStatus(text, type) {
     statusEl.textContent = text;
     statusEl.className = `status ${type}`;
+  }
+});
+
+
+document.getElementById("btn-copy-diag")?.addEventListener("click", () => {
+  const t = document.getElementById("diag-text");
+  if (t && t.value) {
+    navigator.clipboard.writeText(t.value).then(() => {
+      const b = document.getElementById("btn-copy-diag");
+      if (b) {
+        b.textContent = "Copied!";
+        setTimeout(() => { b.textContent = "Copy Diagnostic Info"; }, 2000);
+      }
+    });
   }
 });

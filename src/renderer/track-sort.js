@@ -1,4 +1,4 @@
-const TRACK_SORT_MODES = ['manual', 'added-desc', 'added-asc', 'title-asc', 'artist-asc', 'duration-asc'];
+const TRACK_SORT_MODES = ['manual', 'added-desc', 'added-asc', 'title-asc', 'artist-asc', 'duration-asc', 'duration-desc'];
 
 function sortTracks(tracks, mode) {
   const list = Array.isArray(tracks) ? tracks.slice() : [];
@@ -33,6 +33,13 @@ function sortTracks(tracks, mode) {
       const aDur = (a && typeof a.duration === 'number' && a.duration > 0) ? a.duration : Number.MAX_SAFE_INTEGER;
       const bDur = (b && typeof b.duration === 'number' && b.duration > 0) ? b.duration : Number.MAX_SAFE_INTEGER;
       return aDur - bDur;
+    });
+  }
+  if (mode === 'duration-desc') {
+    return list.slice().sort((a, b) => {
+      const aDur = (a && typeof a.duration === 'number' && a.duration > 0) ? a.duration : 0;
+      const bDur = (b && typeof b.duration === 'number' && b.duration > 0) ? b.duration : 0;
+      return bDur - aDur;
     });
   }
   return list;

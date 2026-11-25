@@ -1042,4 +1042,21 @@ describe('YTM Auth Verification & Production Diagnostics Suite', () => {
 
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
+
+  it('23. Preflight SAPISIDHASH check: LOGIN_INFO alone without SAPISID is rejected with clear message', async () => {
+    const service = new BrowserLoginService({ ytmAuthUrl: 'http://127.0.0.1:38472/api/ytm/intercept-cookie' });
+    const loginOnlyCookies = [
+      new BrowserCookieRecord({ name: 'LOGIN_INFO', value: 'login_only_val', domain: '.youtube.com', path: '/', secure: true })
+    ];
+
+    await assert.rejects(
+      async () => {
+        await service.authenticateWithRecords(loginOnlyCookies);
+      },
+      (err) => {
+        assert.ok(err.message.includes('SAPISIDHASH') || err.message.includes('SAPISID'));
+        return true;
+      }
+    );
+  });
 });

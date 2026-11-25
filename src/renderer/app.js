@@ -5869,6 +5869,10 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         el.id === 'album-title' ||
         el.id === 'album-artist' ||
         el.id === 'album-track-count' ||
+        el.id === 'album-detail-count' ||
+        el.closest('#album-detail-count') ||
+        el.id === 'album-detail-title' ||
+        el.id === 'album-detail-artist' ||
         el.id === 'artist-header-name' ||
         el.closest('#playlist-track-list') ||
         el.closest('#album-track-list') ||
@@ -5921,7 +5925,6 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     '.cache-stat-label > span:not([class])',
     '.playlist-type-badge',
     '.artist-about-title',
-    '.album-meta-line',
     '.sleep-timer-hint',
     '.hq-label',
     '.sync-mode-badge',
@@ -9804,6 +9807,10 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     const getAlbKey = (a, i) => String(a.id || a.title || i);
     const toolbarHtml = `
       <div style="width:100%;display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:4px 0;">
+        <button id="btn-albums-sync-now" class="btn-outline-pill" style="font-size:13px;height:34px;padding:0 12px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          <span>Đồng bộ thư viện</span>
+        </button>
         <button id="btn-albums-select-toggle" class="btn-text" style="font-size:13px;padding:6px 12px;border-radius:10px;background:rgba(255,255,255,0.06);cursor:pointer;">
           ${__albumSelectMode ? 'Hủy' : 'Chọn nhiều'}
         </button>
@@ -9834,6 +9841,15 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       `;
     }).join('');
 
+    const btnSyncNow = document.getElementById('btn-albums-sync-now');
+    if (btnSyncNow) {
+      btnSyncNow.onclick = (e) => {
+        e.stopPropagation();
+        if (typeof autoSyncYtmLibraryOnLogin === 'function') {
+          autoSyncYtmLibraryOnLogin();
+        }
+      };
+    }
     const btnToggle = document.getElementById('btn-albums-select-toggle');
     if (btnToggle) {
       btnToggle.onclick = () => {
@@ -10013,10 +10029,18 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       artistBtn.onclick = null;
     }
 
+    const syncEngine = window.EclipseAlbumSyncEngine || null;
     const countEl = document.getElementById('album-detail-count');
-    const baseCount = album.trackCount ? `${album.trackCount} track${album.trackCount === 1 ? '' : 's'}` : '';
-    const initialMeta = [album.type || 'Album', album.year, baseCount].filter(Boolean).join(' · ');
-    if (countEl) countEl.textContent = initialMeta || 'Album';
+    const initialMeta = syncEngine
+      ? syncEngine.formatAlbumMetaLine({
+          type: album.type || 'Album',
+          year: album.year || '',
+          status: 'loading',
+          trackCount: (typeof album.trackCount === 'number' && album.trackCount > 0) ? album.trackCount : null,
+          totalDurationSec: (typeof album.totalDurationSec === 'number' && album.totalDurationSec > 0) ? album.totalDurationSec : 0
+        })
+      : [album.type || 'Album', album.year, album.trackCount ? `${album.trackCount} bản nhạc` : 'Đang tải bài hát...'].filter(Boolean).join(' • ');
+    if (countEl) countEl.textContent = initialMeta;
 
     const albumView = document.getElementById('view-album');
     const albumHeroFx = document.getElementById('album-hero-fx');
@@ -10059,7 +10083,8 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         } catch (_) {}
       }
 
-      if (!tracks) {
+      const isYtmEntity = album.platform === 'ytmusic' || String(album.id).startsWith('MPREb_') || String(album.id).startsWith('VL') || String(album.id).startsWith('PL') || (album.type && album.type.toLowerCase().includes('playlist'));
+      if (!tracks && !isYtmEntity) {
         const res = await fetch(`http://127.0.0.1:${state.serverPort}/api/albums/tracks?id=${encodeURIComponent(album.id)}&title=${encodeURIComponent(album.title || '')}&artist=${encodeURIComponent(album.artist || '')}`);
         const data = await res.json();
         if (currentAlbumRunId !== runId) return;
@@ -10071,6 +10096,8 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         tracks = data.tracks;
         if (data.album && data.album.artist) albumArtist = data.album.artist;
         if (data.album && data.album.year) albumYear = data.album.year;
+      } else if (!tracks && isYtmEntity) {
+        throw new Error('Không thể tải danh sách bài hát từ YouTube Music. Vui lòng kiểm tra lại kết nối hoặc tài khoản.');
       }
 
       if (artistBtn && albumArtist) {
@@ -10083,17 +10110,48 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         artistBtn.onclick = null;
       }
 
+      const computedMeta = syncEngine
+        ? syncEngine.computeAlbumMetadata(tracks)
+        : {
+            trackCount: tracks.length,
+            totalDurationSec: tracks.reduce((acc, t) => acc + ((typeof t.duration === 'number' && t.duration > 0) ? t.duration : (typeof t.durationMs === 'number' && t.durationMs > 0 ? Math.round(t.durationMs / 1000) : 0)), 0),
+            state: tracks.length > 0 ? 'ready' : 'empty'
+          };
+
       if (countEl) {
-        const cnt = `${tracks.length} track${tracks.length === 1 ? '' : 's'}`;
-        countEl.textContent = [album.type || 'Album', albumYear, cnt].filter(Boolean).join(' · ');
+        countEl.textContent = syncEngine
+          ? syncEngine.formatAlbumMetaLine({
+              type: album.type || 'Danh sách phát',
+              year: albumYear,
+              status: computedMeta.state,
+              trackCount: computedMeta.trackCount,
+              totalDurationSec: computedMeta.totalDurationSec
+            })
+          : [album.type || 'Danh sách phát', albumYear, `${tracks.length} bản nhạc`].filter(Boolean).join(' • ');
       }
 
       album._tracks = tracks;
+      album.trackCount = computedMeta.trackCount;
+      album.totalDurationSec = computedMeta.totalDurationSec;
 
-      if (listEl) {
+      // Persist hydrated metadata (trackCount, totalDurationSec, year, artist) to storage
+      try {
+        const savedAlbs = getSavedAlbums();
+        const savedIdx = savedAlbs.findIndex(a => (album.id && a.id === album.id) || (album.title && a.title === album.title && a.artist === album.artist));
+        if (savedIdx >= 0) {
+          savedAlbs[savedIdx].trackCount = computedMeta.trackCount;
+          savedAlbs[savedIdx].totalDurationSec = computedMeta.totalDurationSec;
+          if (albumYear && !savedAlbs[savedIdx].year) savedAlbs[savedIdx].year = albumYear;
+          if (albumArtist && !savedAlbs[savedIdx].artist) savedAlbs[savedIdx].artist = albumArtist;
+          setSavedAlbums(savedAlbs);
+        }
+      } catch (_) {}
+
+      const renderAlbumTrackRows = (trackList) => {
+        if (!listEl) return;
         listEl.innerHTML = '';
         const currentCanonicalId = state.currentTrack ? getTrackCanonicalId(state.currentTrack) : '';
-        tracks.forEach((t, idx) => {
+        trackList.forEach((t, idx) => {
           const trackItem = {
             id: t.id || `${album.id}_${t.disc || 1}_${t.no || (idx + 1)}`,
             title: t.title,
@@ -10109,7 +10167,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
             disc: t.disc || 1,
             isExplicit: t.isExplicit
           };
-          const row = createTrackRow(trackItem, idx, currentCanonicalId, 'album', tracks, listEl);
+          const row = createTrackRow(trackItem, idx, currentCanonicalId, 'album', trackList, listEl);
           row.addEventListener('click', (e) => {
             if (e.target.closest('.track-row-actions')) return;
             if (e.target.classList.contains('track-row-artist')) {
@@ -10119,9 +10177,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
             }
             e.stopImmediatePropagation();
             if (trackItem.url || trackItem.platform === 'local' || album.type === 'Daily Mix') {
-              playTrack(trackItem, tracks, idx, 'album');
+              playTrack(trackItem, trackList, idx, 'album');
             } else if (typeof playAlbumFrom === 'function') {
-              playAlbumFrom(album, tracks, idx);
+              playAlbumFrom(album, trackList, idx);
             }
           }, true);
           listEl.appendChild(row);
@@ -10136,6 +10194,65 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
             albumTracksCol.addEventListener('scroll', () => updateFade(albumTracksCol), { passive: true });
           }
         }
+      };
+
+      // Set up sorting
+      const albumSortEl = document.getElementById('album-sort');
+      let currentDisplayTracks = sortTracksFor('album', tracks);
+      renderAlbumTrackRows(currentDisplayTracks);
+
+      if (albumSortEl) {
+        albumSortEl.value = getTrackSortMode('album');
+        albumSortEl.onchange = () => {
+          setTrackSortMode('album', albumSortEl.value);
+          currentDisplayTracks = sortTracksFor('album', tracks);
+          renderAlbumTrackRows(currentDisplayTracks);
+        };
+        if (typeof setupSortDropdown === 'function') {
+          setupSortDropdown('album-sort-dropdown', 'album-sort-trigger', 'album-sort-menu', 'album-sort-label', albumSortEl);
+        }
+      }
+
+      // Set up Play, Shuffle, Download buttons
+      const btnAlbumPlay = document.getElementById('btn-album-play');
+      if (btnAlbumPlay) {
+        btnAlbumPlay.onclick = (e) => {
+          e.stopPropagation();
+          if (currentDisplayTracks.length > 0) {
+            const firstTrack = currentDisplayTracks[0];
+            if (firstTrack.url || firstTrack.platform === 'local' || album.type === 'Daily Mix') {
+              playTrack(firstTrack, currentDisplayTracks, 0, 'album');
+            } else if (typeof playAlbumFrom === 'function') {
+              playAlbumFrom(album, currentDisplayTracks, 0);
+            }
+          }
+        };
+      }
+
+      const btnAlbumShuffle = document.getElementById('btn-album-shuffle');
+      if (btnAlbumShuffle) {
+        btnAlbumShuffle.onclick = (e) => {
+          e.stopPropagation();
+          if (currentDisplayTracks.length > 0) {
+            const shuffled = currentDisplayTracks.slice().sort(() => Math.random() - 0.5);
+            const firstTrack = shuffled[0];
+            if (firstTrack.url || firstTrack.platform === 'local' || album.type === 'Daily Mix') {
+              playTrack(firstTrack, shuffled, 0, 'album');
+            } else if (typeof playAlbumFrom === 'function') {
+              playAlbumFrom(album, shuffled, 0);
+            }
+          }
+        };
+      }
+
+      const btnAlbumDownload = document.getElementById('btn-album-download');
+      if (btnAlbumDownload) {
+        btnAlbumDownload.onclick = (e) => {
+          e.stopPropagation();
+          if (typeof openDownloadAllModal === 'function') {
+            openDownloadAllModal({ name: album.title || 'Album', tracks: currentDisplayTracks });
+          }
+        };
       }
     } catch (err) {
       if (currentAlbumRunId !== runId) return;
@@ -13190,7 +13307,7 @@ function renderClickableArtists(container, rawArtist) {
     setNavCount(el.favoritesCount, state.favorites.length);
   }
 
-  const TRACK_SORT_KEYS = { favorites: 'eclipse_favorites_sort', playlist: 'eclipse_playlist_sort' };
+  const TRACK_SORT_KEYS = { favorites: 'eclipse_favorites_sort', playlist: 'eclipse_playlist_sort', album: 'eclipse_album_sort' };
 
   function getTrackSortMode(kind) {
     const stored = localStorage.getItem(TRACK_SORT_KEYS[kind]);
@@ -23147,6 +23264,177 @@ function bindCoverHoldZoom(wrapEl) {
     browserLoginError.classList.remove('hidden');
   }
 
+
+  let activeYtmAccountId = 'default';
+  const librarySyncCoordinator = (window.EclipseAlbumSyncEngine && typeof window.EclipseAlbumSyncEngine.createLibrarySyncCoordinator === 'function')
+    ? window.EclipseAlbumSyncEngine.createLibrarySyncCoordinator({
+        getActiveAccountId: () => activeYtmAccountId,
+        isAppActive: () => typeof document === 'undefined' || !document.hidden,
+        timeoutMs: 45000,
+        syncFn: async () => window.electronAPI.googleImportLibrary({
+          platform: 'ytmusic',
+          doLikes: true,
+          doPlaylists: true
+        })
+      })
+    : null;
+  if (typeof window !== 'undefined' && librarySyncCoordinator) {
+    window.__eclipseLibrarySyncCoordinator = librarySyncCoordinator;
+  }
+
+  async function autoSyncYtmLibraryOnLogin(account, opts) {
+    if (!window.electronAPI || typeof window.electronAPI.googleImportLibrary !== 'function') return;
+    const trigger = (opts && opts.trigger) || 'manual';
+    if (account && (account.id || account.pageId || account.name)) {
+      const nextAccId = String(account.id || account.pageId || account.name);
+      if (nextAccId !== activeYtmAccountId) {
+        activeYtmAccountId = nextAccId;
+        if (librarySyncCoordinator) librarySyncCoordinator.invalidateAccount('account_changed');
+      }
+    }
+    try {
+      if (trigger === 'manual' && typeof showToast === 'function') {
+        showToast('Đang đồng bộ thư viện YouTube Music...', 'info');
+      }
+      let res;
+      if (librarySyncCoordinator) {
+        const outcome = await librarySyncCoordinator.runSync(trigger);
+        if (outcome.skipped || outcome.discarded || !outcome.success) {
+          if (outcome.error) console.warn('[autoSyncYtmLibraryOnLogin] sync failed:', outcome.error);
+          return outcome;
+        }
+        res = outcome.data;
+      } else {
+        res = await window.electronAPI.googleImportLibrary({ platform: 'ytmusic', doLikes: true, doPlaylists: true });
+      }
+      if (!res || !res.success) {
+        console.warn('[autoSyncYtmLibraryOnLogin] auto sync failed:', res && res.error);
+        return;
+      }
+      const syncEngine = window.EclipseAlbumSyncEngine || null;
+      const likes = res.likes || [];
+      const playlists = res.playlists || [];
+      const rawAlbums = res.albums || [];
+      let addedTracks = 0;
+      let addedPlaylists = 0;
+      let addedFav = false;
+
+      if (likes.length > 0) {
+        const favKeys = new Set(state.favorites.map(f => syncEngine ? syncEngine.getTrackDedupKey(f) : getTrackCanonicalId(f)));
+        for (const track of likes) {
+          const key = syncEngine ? syncEngine.getTrackDedupKey(track) : getTrackCanonicalId(track);
+          if (key && !favKeys.has(key)) {
+            state.favorites.push(stampAddedAt(track));
+            favKeys.add(key);
+            addedFav = true;
+            addedTracks++;
+          }
+        }
+        if (addedFav) {
+          localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites.map(sanitizeTrackForStorage)));
+          if (typeof updateFavoritesBadge === 'function') updateFavoritesBadge();
+          if (typeof updateFavoriteIcon === 'function') updateFavoriteIcon();
+          if (state.currentView === 'favorites' && typeof renderFavoritesView === 'function') renderFavoritesView();
+        }
+        if (typeof hydrateMissingPlaylistCovers === 'function') hydrateMissingPlaylistCovers(state.favorites);
+      }
+
+      if (playlists.length > 0) {
+        for (const pl of playlists) {
+          const plTracks = pl.tracks || [];
+          const normName = (pl.name || '').trim().toLowerCase();
+          // Match by upstream ID first; only fallback to title when neither has an ID
+          const existingPl = state.playlists.find(p =>
+            (pl.id && p.ytId && p.ytId === pl.id && (!p.accountId || p.accountId === activeYtmAccountId)) ||
+            (!pl.id && !p.ytId && normName && (p.name || '').trim().toLowerCase() === normName)
+          );
+          if (existingPl) {
+            if (pl.id) existingPl.ytId = pl.id;
+            existingPl.accountId = activeYtmAccountId;
+            if (pl.cover) existingPl.cover = pl.cover;
+            if (syncEngine) {
+              const rec = syncEngine.reconcilePlaylistTracks(existingPl.tracks || [], plTracks.map(t => stampAddedAt(t)));
+              existingPl.tracks = rec.tracks;
+              addedTracks += rec.added;
+            } else {
+              const existingIds = new Set((existingPl.tracks || []).map(t => t.id || t.url || t.title));
+              for (const t of plTracks) {
+                const key = t.id || t.url || t.title;
+                if (!existingIds.has(key)) {
+                  existingPl.tracks.push(stampAddedAt(t));
+                  existingIds.add(key);
+                  addedTracks++;
+                }
+              }
+            }
+          } else {
+            const created = typeof createPlaylist === 'function' ? createPlaylist(pl.name, plTracks, pl.cover || '') : null;
+            if (created) {
+              if (pl.id) created.ytId = pl.id;
+              created.accountId = activeYtmAccountId;
+            }
+            addedPlaylists++;
+            addedTracks += plTracks.length;
+          }
+        }
+        localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists));
+        if (typeof renderPlaylistsList === 'function') renderPlaylistsList();
+      }
+
+      if (typeof getSavedAlbums === 'function' && typeof setSavedAlbums === 'function') {
+        try {
+          const currentSaved = getSavedAlbums();
+          const incomingEntities = [];
+          if (Array.isArray(rawAlbums)) {
+            for (const alb of rawAlbums) {
+              incomingEntities.push({
+                id: alb.id,
+                title: alb.title,
+                artist: alb.artist || '',
+                cover: alb.cover || '',
+                type: 'Album',
+                entityType: 'album',
+                platform: 'ytmusic',
+                accountId: activeYtmAccountId,
+                addedAt: Date.now()
+              });
+            }
+          }
+          if (Array.isArray(playlists)) {
+            for (const pl of playlists) {
+              incomingEntities.push({
+                id: pl.id,
+                title: pl.name,
+                artist: 'Danh sách phát',
+                cover: pl.cover || '',
+                type: 'Danh sách phát',
+                entityType: 'playlist',
+                platform: 'ytmusic',
+                accountId: activeYtmAccountId,
+                tracks: Array.isArray(pl.tracks) ? pl.tracks : [],
+                addedAt: Date.now()
+              });
+            }
+          }
+          if (incomingEntities.length > 0 && syncEngine) {
+            const merged = syncEngine.mergeSavedAlbumEntities(currentSaved, incomingEntities, activeYtmAccountId);
+            if (merged.added > 0 || merged.updated > 0) {
+              setSavedAlbums(merged.list);
+              if (state.currentView === 'albums' && typeof renderSavedAlbums === 'function') renderSavedAlbums();
+              if (typeof updateAlbumsCount === 'function') updateAlbumsCount();
+            }
+          }
+        } catch (_) {}
+      }
+
+      if (trigger === 'manual' && typeof showToast === 'function' && (addedTracks > 0 || addedPlaylists > 0 || rawAlbums.length > 0)) {
+        showToast(`Đã đồng bộ ${addedTracks} bài hát, ${addedPlaylists} playlist, ${rawAlbums.length} album từ YouTube Music`, 'success');
+      }
+    } catch (syncErr) {
+      console.warn('[autoSyncYtmLibraryOnLogin] error during sync:', syncErr);
+    }
+  }
+
   function onLoginSuccess(account) {
     stopPairingCountdown();
     googleConnected = true;
@@ -23163,6 +23451,7 @@ function bindCoverHoldZoom(wrapEl) {
     }
     closeBrowserLoginModal();
     // Fetch user library metadata without auto-confirming or clicking import
+    autoSyncYtmLibraryOnLogin(account);
     if (state.serverPort) {
       fetch(`http://127.0.0.1:${state.serverPort}/api/ytm/library`).catch(() => {});
     }
@@ -23425,6 +23714,8 @@ function bindCoverHoldZoom(wrapEl) {
         }
       } catch (e) {}
       googleConnected = false;
+      activeYtmAccountId = 'default';
+      if (librarySyncCoordinator) librarySyncCoordinator.invalidateAccount('logout');
       updateGoogleAuthUI();
       if (googleLoginStatus) {
         googleLoginStatus.textContent = 'Chưa kết nối';
@@ -29237,3 +29528,10 @@ document.addEventListener('DOMContentLoaded', () => {
   } else {
     setTimeout(initDonateFeature, 100);
   }
+
+  // Periodic background library sync (only runs when app is active; coordinated via single-flight)
+  setInterval(() => {
+    if (googleConnected && !document.hidden && typeof autoSyncYtmLibraryOnLogin === 'function') {
+      autoSyncYtmLibraryOnLogin(null, { trigger: 'background' }).catch(() => {});
+    }
+  }, 60 * 60 * 1000);

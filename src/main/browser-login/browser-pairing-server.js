@@ -172,7 +172,8 @@ class BrowserPairingServer {
             res.end(JSON.stringify({
               success: false,
               error: verifyErr && verifyErr.message ? verifyErr.message : BrowserLoginFailure.SESSION_REJECTED,
-              reason: verifyErr && verifyErr.reason ? verifyErr.reason : BrowserLoginFailure.SESSION_REJECTED
+              reason: verifyErr && verifyErr.reason ? verifyErr.reason : BrowserLoginFailure.SESSION_REJECTED,
+              details: verifyErr && verifyErr.details ? verifyErr.details : null
             }));
             setTimeout(() => this.close(BrowserLoginFailure.SESSION_REJECTED), 1000);
           }

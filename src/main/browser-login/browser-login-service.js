@@ -53,12 +53,20 @@ class BrowserLoginService {
 
   async authenticateWithRecords(cookieRecords) {
     const targetHost = resolveTargetHost(BrowserLoginTarget.YOUTUBE);
-    const cookieHeader = buildCookieHeader(cookieRecords, targetHost);
+    const endpointPath = '/getAccountSwitcherEndpoint';
+    const cookieHeader = buildCookieHeader(cookieRecords, targetHost, endpointPath);
     const netscapeJar = buildNetscapeJar(cookieRecords, targetHost);
-    const sapisidCredential = extractSapisidCredential(cookieRecords);
+    const sapisidCredential = extractSapisidCredential(cookieRecords, targetHost, endpointPath);
 
-    if (!sapisidCredential && (!cookieHeader || (!cookieHeader.includes('SAPISID') && !cookieHeader.includes('LOGIN_INFO')))) {
+    const hasSessionCookie = Boolean(cookieHeader && (cookieHeader.includes('SAPISID') || cookieHeader.includes('__Secure-3PAPISID') || cookieHeader.includes('LOGIN_INFO')));
+    if (!sapisidCredential && !hasSessionCookie) {
       throw new BrowserLoginException(BrowserLoginFailure.NO_YOUTUBE_COOKIES, 'No valid YouTube Music login cookies found in payload');
+    }
+    if (!sapisidCredential && cookieHeader && cookieHeader.includes('LOGIN_INFO')) {
+      throw new BrowserLoginException(
+        BrowserLoginFailure.NO_YOUTUBE_COOKIES,
+        'Found LOGIN_INFO session cookie, but missing SAPISID or __Secure-3PAPISID credential required to sign SAPISIDHASH'
+      );
     }
 
     // Call backend InnerTube verifier
