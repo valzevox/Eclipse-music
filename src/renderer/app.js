@@ -29720,3 +29720,257 @@ document.addEventListener('DOMContentLoaded', () => {
       autoSyncYtmLibraryOnLogin(null, { trigger: 'background' }).catch(() => {});
     }
   }, 60 * 60 * 1000);
+
+  // --- YOUTUBE COMMENTS & TIMESTAMPS SEEK INTEGRATION ---
+  let activeCommentsTrackId = null;
+  let activeCommentsAbortController = null;
+
+  function seekToTrackPosition(targetSeconds) {
+    if (!Number.isFinite(targetSeconds) || targetSeconds < 0) return false;
+    abortAutoMixIfActive('seek');
+    const dur = typeof getReliableTrackDuration === 'function' ? getReliableTrackDuration() : ((state.currentTrack && state.currentTrack.duration) || 0);
+    if (dur > 0 && targetSeconds > dur) {
+      if (typeof showToast === 'function') showToast('Thời điểm vượt quá độ dài bài hát');
+      return false;
+    }
+
+    if (el.nativeAudio) {
+      el.nativeAudio.currentTime = targetSeconds;
+    }
+    if (state.secondaryAudio && !state.secondaryAudio.paused) {
+      state.secondaryAudio.currentTime = targetSeconds;
+    }
+    if (mvController && mvController.active && el.mvVideo && el.mvVideo.readyState >= 1) {
+      try { el.mvVideo.currentTime = targetSeconds; } catch (_) {}
+    }
+    if (typeof updateMediaPositionState === 'function') {
+      updateMediaPositionState();
+    }
+    if (typeof updateSyncedLyricsHighlight === 'function') {
+      updateSyncedLyricsHighlight(targetSeconds);
+    }
+    return true;
+  }
+
+  function renderCommentTextWithTimestamps(rawText, container) {
+    if (!container) return;
+    container.innerHTML = '';
+    const text = String(rawText || '');
+    const regex = /\b(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\b/g;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        container.appendChild(document.createTextNode(text.substring(lastIndex, match.index)));
+      }
+      const hasHours = match[1] !== undefined;
+      const hours = hasHours ? parseInt(match[1], 10) : 0;
+      const mins = parseInt(match[2], 10);
+      const secs = parseInt(match[3], 10);
+      const totalSecs = hours * 3600 + mins * 60 + secs;
+
+      const tag = document.createElement('span');
+      tag.className = 'comment-timestamp-tag';
+      tag.textContent = match[0];
+      tag.title = `Tua đến ${match[0]}`;
+      tag.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        seekToTrackPosition(totalSecs);
+      });
+      container.appendChild(tag);
+      lastIndex = regex.lastIndex;
+    }
+
+    if (lastIndex < text.length) {
+      container.appendChild(document.createTextNode(text.substring(lastIndex)));
+    }
+  }
+
+  async function loadTrackComments(forceRefresh = false) {
+    const modal = document.getElementById('comments-modal');
+    const container = document.getElementById('comments-container');
+    const titleEl = document.getElementById('comments-modal-title');
+    const subtitleEl = document.getElementById('comments-modal-subtitle');
+    if (!container) return;
+
+    if (!state.currentTrack) {
+      container.innerHTML = '<div class="comments-empty-state"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg><span>Vui lòng chọn bài hát để xem bình luận</span></div>';
+      if (titleEl) titleEl.textContent = 'Bình luận';
+      if (subtitleEl) subtitleEl.textContent = 'Chưa phát bài hát';
+      return;
+    }
+
+    const track = state.currentTrack;
+    const vid = (mvController && typeof mvController.extractYtId === 'function')
+      ? mvController.extractYtId(track)
+      : (track.id || '');
+
+    if (!vid || !/^[a-zA-Z0-9_-]{11}$/.test(vid)) {
+      container.innerHTML = '<div class="comments-empty-state"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg><span>Bài hát này không có ID YouTube hợp lệ</span></div>';
+      if (titleEl) titleEl.textContent = track.title || 'Bình luận';
+      if (subtitleEl) subtitleEl.textContent = track.artist || '';
+      return;
+    }
+
+    if (activeCommentsAbortController) {
+      activeCommentsAbortController.abort();
+      activeCommentsAbortController = null;
+    }
+    const abortController = new AbortController();
+    activeCommentsAbortController = abortController;
+    activeCommentsTrackId = vid;
+
+    if (titleEl) titleEl.textContent = track.title || 'Bình luận bài hát';
+    if (subtitleEl) subtitleEl.textContent = track.artist || 'YouTube Music';
+
+    container.innerHTML = '<div class="comments-loading-state"><span class="mv-loading-spinner" style="width: 28px; height: 28px;"></span><span>Đang tải bình luận...</span></div>';
+
+    try {
+      const port = state.serverPort || 38472;
+      const token = (window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '';
+      const refreshParam = forceRefresh ? '&t=' + Date.now() : '';
+      const url = `http://127.0.0.1:${port}/api/ytm/comments?id=${encodeURIComponent(vid)}&token=${encodeURIComponent(token)}${refreshParam}`;
+
+      const resp = await fetch(url, { signal: abortController.signal });
+      if (!resp.ok) throw new Error(`Máy chủ phản hồi HTTP ${resp.status}`);
+      const data = await resp.json();
+
+      if (activeCommentsTrackId !== vid) return; // Track changed during fetch
+
+      if (!data || !data.success || !Array.isArray(data.comments)) {
+        throw new Error(data && data.error ? data.error : 'Không thể tải bình luận');
+      }
+
+      if (data.comments.length === 0) {
+        container.innerHTML = '<div class="comments-empty-state"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg><span>Chưa có bình luận nào cho bài hát này</span></div>';
+        return;
+      }
+
+      container.innerHTML = '';
+      for (const c of data.comments) {
+        const item = document.createElement('div');
+        item.className = 'comment-item';
+
+        if (c.avatar) {
+          const img = document.createElement('img');
+          img.className = 'comment-avatar';
+          img.src = c.avatar;
+          img.alt = c.author || '';
+          img.onerror = () => {
+            img.style.display = 'none';
+          };
+          item.appendChild(img);
+        } else {
+          const fb = document.createElement('div');
+          fb.className = 'comment-avatar-fallback';
+          fb.textContent = (c.author && c.author[0]) ? c.author[0].toUpperCase() : 'U';
+          item.appendChild(fb);
+        }
+
+        const content = document.createElement('div');
+        content.className = 'comment-content';
+
+        const authorRow = document.createElement('div');
+        authorRow.className = 'comment-author-row';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'comment-author-name';
+        nameSpan.textContent = c.author || 'Người nghe';
+        authorRow.appendChild(nameSpan);
+
+        if (c.publishedTime) {
+          const timeSpan = document.createElement('span');
+          timeSpan.className = 'comment-published-time';
+          timeSpan.textContent = c.publishedTime;
+          authorRow.appendChild(timeSpan);
+        }
+        content.appendChild(authorRow);
+
+        const textDiv = document.createElement('div');
+        textDiv.className = 'comment-text';
+        renderCommentTextWithTimestamps(c.text, textDiv);
+        content.appendChild(textDiv);
+
+        if (c.likes && c.likes !== '0') {
+          const footer = document.createElement('div');
+          footer.className = 'comment-footer';
+          footer.innerHTML = `<span class="comment-like-badge"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-2z"></path></svg> ${escapeHtml(c.likes)}</span>`;
+          content.appendChild(footer);
+        }
+
+        item.appendChild(content);
+        container.appendChild(item);
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      if (activeCommentsTrackId !== vid) return;
+      container.innerHTML = `<div class="comments-error-state"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg><span>${escapeHtml(err.message || 'Lỗi kết nối bình luận')}</span><button type="button" class="btn-outline-pill" id="btn-retry-comments" style="margin-top:8px;">Thử lại</button></div>`;
+      const retryBtn = document.getElementById('btn-retry-comments');
+      if (retryBtn) {
+        retryBtn.onclick = () => loadTrackComments(true);
+      }
+    }
+  }
+
+  function openCommentsModal() {
+    const modal = document.getElementById('comments-modal');
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    modal.classList.add('visible');
+    loadTrackComments(false);
+  }
+
+  function closeCommentsModal() {
+    const modal = document.getElementById('comments-modal');
+    if (!modal) return;
+    modal.classList.remove('visible');
+    modal.classList.add('hidden');
+    if (activeCommentsAbortController) {
+      activeCommentsAbortController.abort();
+      activeCommentsAbortController = null;
+    }
+  }
+
+  function initCommentsFeature() {
+    const btnToggle = document.getElementById('btn-toggle-comments');
+    if (btnToggle) {
+      btnToggle.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openCommentsModal();
+      };
+    }
+
+    const btnClose = document.getElementById('btn-close-comments-modal');
+    if (btnClose) {
+      btnClose.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        closeCommentsModal();
+      };
+    }
+
+    const btnRefresh = document.getElementById('btn-refresh-comments');
+    if (btnRefresh) {
+      btnRefresh.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        loadTrackComments(true);
+      };
+    }
+
+    const modal = document.getElementById('comments-modal');
+    if (modal) {
+      modal.onclick = (e) => {
+        if (e.target === modal) closeCommentsModal();
+      };
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initCommentsFeature);
+  } else {
+    setTimeout(initCommentsFeature, 100);
+  }

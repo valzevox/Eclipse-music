@@ -2558,6 +2558,9 @@
       <button class="btn-icon-pill" id="btn-toggle-lyrics-panel" title="Toggle lyrics">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
       </button>
+      <button class="btn-icon-pill" id="btn-toggle-comments" title="YouTube Comments and Timestamps">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+      </button>
 
       <button class="btn-icon-pill" id="btn-open-settings" title="Audio">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg>
@@ -4324,6 +4327,36 @@
         </div>
       </div>
     </div>
+
+  <div class="modal-backdrop hidden" id="comments-modal">
+    <div class="dialog-card comments-modal-card">
+      <div class="comments-header">
+        <div class="comments-header-left">
+          <div class="comments-header-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+          </div>
+          <div style="min-width: 0;">
+            <h3 class="comments-header-title" id="comments-modal-title">Bình luận bài hát</h3>
+            <span class="comments-header-subtitle" id="comments-modal-subtitle">Đang tải thông tin...</span>
+          </div>
+        </div>
+        <div class="comments-header-actions">
+          <button class="btn-icon-pill" id="btn-refresh-comments" type="button" title="Làm mới bình luận">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg>
+          </button>
+          <button class="btn-icon-pill" id="btn-close-comments-modal" type="button" title="Đóng">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+      </div>
+      <div class="comments-body" id="comments-container">
+        <div class="comments-loading-state">
+          <span class="mv-loading-spinner" style="width: 28px; height: 28px;"></span>
+          <span>Đang kết nối bình luận YouTube Music...</span>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div class="modal-backdrop hidden" id="offline-mode-modal"><div class="dialog-card" style="max-width:380px;text-align:center;align-items:center;gap:14px;"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg><p style="margin:0;font-size:15px;font-weight:600;line-height:1.45;color:var(--md-sys-color-on-surface);" data-i18n>You are in offline mode because there is no WiFi connection.</p><div class="dialog-actions" style="justify-content:center;width:100%;gap:10px;"><button type="button" class="btn-outline-pill" id="btn-offline-ok" style="flex:1;justify-content:center;" data-i18n>OK</button><button type="button" class="btn-pill-primary" id="btn-offline-retry" style="flex:1;justify-content:center;" data-i18n>Retry</button></div></div></div>
 </body>
