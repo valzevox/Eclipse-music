@@ -3045,19 +3045,21 @@ document.addEventListener('DOMContentLoaded', async () => {
       const bctx = barBgCanvas.getContext('2d');
       if (bctx) { bctx.resetTransform(); bctx.scale(dpr, dpr); }
     }
-    const tvkProgRow = document.getElementById('tvk-progress-row') || document.querySelector('.tvk-progress-row');
-    if (tvkProgRow) {
+    const tvkTrack = document.getElementById('tvk-scrubber-track') || document.getElementById('tvk-progress-row') || document.querySelector('.tvk-progress-row');
+    if (tvkTrack) {
       let tvkSquiggly = document.getElementById('tvk-squiggly-canvas');
       if (!tvkSquiggly) {
         tvkSquiggly = document.createElement('canvas');
         tvkSquiggly.id = 'tvk-squiggly-canvas';
         tvkSquiggly.className = 'tvk-squiggly-canvas';
-        tvkProgRow.appendChild(tvkSquiggly);
+        tvkTrack.appendChild(tvkSquiggly);
+      } else if (tvkSquiggly.parentElement !== tvkTrack) {
+        tvkTrack.appendChild(tvkSquiggly);
       }
       tvkSquiggly.style.width = '';
       tvkSquiggly.style.height = '';
-      const rect = tvkProgRow.getBoundingClientRect();
-      const rw = rect.width || tvkProgRow.clientWidth || 0;
+      const rect = tvkTrack.getBoundingClientRect();
+      const rw = rect.width || tvkTrack.clientWidth || 0;
       const rh = 36;
       if (rw > 0) {
         const targetW = Math.round(rw * dpr);
@@ -3071,11 +3073,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         }
       }
-      if (!tvkProgRow._tvkResizeObserver && typeof ResizeObserver === 'function') {
-        tvkProgRow._tvkResizeObserver = new ResizeObserver(() => {
+      if (!tvkTrack._tvkResizeObserver && typeof ResizeObserver === 'function') {
+        tvkTrack._tvkResizeObserver = new ResizeObserver(() => {
           if (state.isTvKaraokeOpen) resizeCanvases();
         });
-        tvkProgRow._tvkResizeObserver.observe(tvkProgRow);
+        tvkTrack._tvkResizeObserver.observe(tvkTrack);
       }
     }
   }
@@ -3748,8 +3750,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           const tvkScrubber = document.getElementById('tvk-squiggly-canvas');
           if (tvkScrubber) {
             const tCtx = tvkScrubber.getContext('2d');
-            const tvkProgRow = document.getElementById('tvk-progress-row');
-            const tw = (tvkProgRow && tvkProgRow.clientWidth) ? tvkProgRow.clientWidth : (tvkScrubber.clientWidth || 320);
+            const tvkTrack = document.getElementById('tvk-scrubber-track') || document.getElementById('tvk-progress-row');
+            const tw = (tvkTrack && tvkTrack.clientWidth) ? tvkTrack.clientWidth : (tvkScrubber.clientWidth || 240);
             const th = 36;
             const dpr = window.devicePixelRatio || 1;
             const expectedW = Math.round(tw * dpr);
@@ -3760,6 +3762,9 @@ document.addEventListener('DOMContentLoaded', async () => {
               tCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
             }
             tCtx.clearRect(0, 0, tw, th);
+
+            if (!cachedPrimaryColor) refreshCachedThemeColors();
+            const primaryColor = cachedPrimaryColor || '#a855f7';
 
             const targetProgress = dur > 0 ? Math.max(0, Math.min(1, cur / dur)) : 0;
             const followSpeed = isDraggingScrubber ? 32 : 45;
@@ -3836,19 +3841,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                 tCtx.lineTo(waveEnd, finalY);
               }
               strokeSeekbarWave(tCtx, {
-                baseColor: '#ffffff',
+                baseColor: primaryColor,
                 rainbowBlend: frameRainbowBlend,
                 nowMs: frameNowMs,
                 isReduced: frameReducedNow,
                 isAutomixing: frameAutomixingNow,
-                reducedAccentColor: primaryColor || '#a855f7'
+                reducedAccentColor: primaryColor
               });
             }
 
             if (!noKnob) {
               tCtx.beginPath();
               tCtx.roundRect(knobLeft, centerY - curKnobH / 2, curKnobW, curKnobH, curKnobR);
-              tCtx.fillStyle = '#ffffff';
+              tCtx.fillStyle = primaryColor;
               tCtx.fill();
             }
           }
@@ -4616,23 +4621,82 @@ document.addEventListener('DOMContentLoaded', async () => {
     fetch(streamUrl, { headers: { 'Range': 'bytes=0-262143' } }).catch(() => {});
   }
 
-  async function preloadNextTrackStream() {
+  let _nextPreloadGeneration = 0;
+  let _nextPreloadAbortController = null;
+
+  function getConfiguredAudioQuality() {
+    return (typeof localStorage !== 'undefined' && localStorage.getItem('eclipse_audio_quality')) || 'medium';
+  }
+
+  function isFastStartQuality(quality) {
+    return quality === 'high' || quality === 'max';
+  }
+
+  function isTrackPreloadValid(track, requestedQuality) {
+    if (!track || !track._preloadedStreamUrl) return false;
+    if (track._preloadedStreamUrlExpires && Date.now() >= track._preloadedStreamUrlExpires) return false;
+    const reqQ = String(requestedQuality || getConfiguredAudioQuality()).trim().toLowerCase();
+    if (track._preloadedStreamQuality !== reqQ) return false;
+    const trackPlat = String(track.platform || 'ytmusic').trim().toLowerCase();
+    if (track._preloadedStreamPlatform && track._preloadedStreamPlatform !== trackPlat) return false;
+    return true;
+  }
+
+  function cancelActiveNextPreload(reason = 'queue_changed') {
+    _nextPreloadGeneration += 1;
+    if (_nextPreloadAbortController) {
+      try { _nextPreloadAbortController.abort(reason); } catch (_) {}
+      _nextPreloadAbortController = null;
+    }
+  }
+
+  function resolveNextPreloadTarget() {
+    if (!state.queue || state.queueIndex < 0) return null;
+    let nextTrack = state.queue[state.queueIndex + 1] || null;
+    if (
+      window.autoMixDjInstance &&
+      window.autoMixDjInstance.enabled &&
+      window.autoMixDjInstance.mode === 'tempo_synced' &&
+      typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function'
+    ) {
+      const curTrack = state.currentTrack || state.queue[state.queueIndex];
+      const curBpm = (window._eclipseTrackAnalyzer && typeof window._eclipseTrackAnalyzer.getEffectiveBpm === 'function')
+        ? window._eclipseTrackAnalyzer.getEffectiveBpm(curTrack)
+        : ((curTrack && curTrack._detectedBpm) || null);
+      const picked = window.autoMixDjInstance.pickTempoSyncedNext(
+        state.queue,
+        state.queueIndex,
+        state.autoMixPlayedIds,
+        curBpm,
+        { analyzer: window._eclipseTrackAnalyzer || null }
+      );
+      if (picked && picked.track) nextTrack = picked.track;
+    }
+    return nextTrack;
+  }
+
+  async function preloadNextTrackStream(overrideTrack = null) {
     if (!state.queue || state.queueIndex < 0) return;
-    const nextTrack = state.queue[state.queueIndex + 1];
+    const nextTrack = overrideTrack || resolveNextPreloadTarget();
     if (!nextTrack || nextTrack.isCached || nextTrack.platform === 'local') return;
-    const curQuality = localStorage.getItem('eclipse_audio_quality') || 'medium';
-    if (nextTrack._preloadedStreamUrl && nextTrack._preloadedStreamQuality === curQuality) {
+    const curQuality = getConfiguredAudioQuality();
+    if (isTrackPreloadValid(nextTrack, curQuality)) {
       warmUpNextAudioBuffer(nextTrack._preloadedStreamUrl);
       return;
     }
+    cancelActiveNextPreload('superseded');
+    const myGen = _nextPreloadGeneration;
+    const controller = new AbortController();
+    _nextPreloadAbortController = controller;
     try {
       const rawId = String(nextTrack.id || '').trim();
       const isRealYtId = /^[a-zA-Z0-9_-]{11}$/.test(rawId) && !/^(cand_|dz_|it_|sp_|ym_|alb_|local_|track_)/i.test(rawId);
       if (!isRealYtId && nextTrack.platform !== 'soundcloud' && (nextTrack.title || nextTrack.artist)) {
         const q = ((nextTrack.artist ? nextTrack.artist + ' - ' : '') + (nextTrack.title || '')).trim();
         if (q) {
-          const sRes = await fetch(`http://127.0.0.1:${state.serverPort}/api/search?q=${encodeURIComponent(q)}&platform=ytmusic&limit=1`);
+          const sRes = await fetch(`http://127.0.0.1:${state.serverPort}/api/search?q=${encodeURIComponent(q)}&platform=ytmusic&limit=1`, { signal: controller.signal });
           const sData = await sRes.json();
+          if (myGen !== _nextPreloadGeneration || controller.signal.aborted) return;
           const hit = sData && Array.isArray(sData.tracks) && sData.tracks[0];
           if (hit && hit.id && /^[a-zA-Z0-9_-]{11}$/.test(hit.id)) {
             nextTrack.id = hit.id;
@@ -4645,15 +4709,23 @@ document.addEventListener('DOMContentLoaded', async () => {
       const qFallback = encodeURIComponent(nextTrack.searchQuery || ((nextTrack.artist ? nextTrack.artist + ' - ' : '') + (nextTrack.title || '')));
       const tokenParam = (window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '';
       const fetchUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?id=${encodeURIComponent(nextTrack.id || '')}&url=${encodeURIComponent(nextTrack.url || '')}&platform=${encodeURIComponent(nextTrack.platform || 'ytmusic')}&title=${encodeURIComponent(nextTrack.title || '')}&artist=${encodeURIComponent(nextTrack.artist || '')}&duration=${encodeURIComponent(nextTrack.duration || 0)}&q=${qFallback}&quality=${qQuality}&token=${encodeURIComponent(tokenParam)}`;
-      const res = await fetch(fetchUrl);
+      const res = await fetch(fetchUrl, { signal: controller.signal });
       const data = await res.json();
+      if (myGen !== _nextPreloadGeneration || controller.signal.aborted) return;
       if (data && data.success && (data.proxyUrl || data.streamUrl)) {
         const chosenUrl = data.proxyUrl || data.streamUrl;
         nextTrack._preloadedStreamUrl = chosenUrl;
         nextTrack._preloadedStreamQuality = curQuality;
+        nextTrack._preloadedStreamPlatform = String(nextTrack.platform || 'ytmusic').trim().toLowerCase();
+        nextTrack._preloadedStreamUrlExpires = Date.now() + 3600 * 1000;
         warmUpNextAudioBuffer(chosenUrl);
       }
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      if (_nextPreloadAbortController === controller) {
+        _nextPreloadAbortController = null;
+      }
+    }
   }
 
   
@@ -4997,15 +5069,19 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     }
 
     try {
-      if (!track._preloadedStreamUrl && globalPreloadManager) {
-        const cachedPreload = globalPreloadManager.getCached(track);
-        if (cachedPreload && (cachedPreload.proxyUrl || cachedPreload.streamUrl)) {
+      cancelActiveNextPreload('track_changed');
+      const configuredQuality = getConfiguredAudioQuality();
+      if (!isTrackPreloadValid(track, configuredQuality) && globalPreloadManager) {
+        const cachedPreload = globalPreloadManager.getCached(track, configuredQuality);
+        if (cachedPreload && (cachedPreload.proxyUrl || cachedPreload.streamUrl) && cachedPreload.quality === configuredQuality) {
           track._preloadedStreamUrl = cachedPreload.proxyUrl || cachedPreload.streamUrl;
+          track._preloadedStreamQuality = configuredQuality;
+          track._preloadedStreamPlatform = String(track.platform || 'ytmusic').trim().toLowerCase();
           if (cachedPreload.resolvedId) track._matchedYtId = cachedPreload.resolvedId;
         }
       }
 
-      if (track._preloadedStreamUrl && (!track._preloadedStreamUrlExpires || Date.now() < track._preloadedStreamUrlExpires)) {
+      if (isTrackPreloadValid(track, configuredQuality)) {
         if (currentToken !== state.loadToken) return;
         if (hlsInstance) {
           try { hlsInstance.destroy(); } catch (_) {}
@@ -5051,22 +5127,40 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         resolvedUrl = 'https://www.youtube.com/watch?v=' + track._matchedYtId;
       }
 
-      const qQuality = encodeURIComponent(localStorage.getItem('eclipse_audio_quality') || 'medium');
+      const initialQuality = isFastStartQuality(configuredQuality) ? 'low' : configuredQuality;
       const qSearch = encodeURIComponent(track.searchQuery || ((track.artist ? track.artist + ' - ' : '') + track.title));
       const streamInfoPlatform = (state.platform === 'soundcloud' && (!track.url || !track.url.includes('youtube.com'))) ? 'soundcloud' : (track.platform || state.platform || 'ytmusic');
-      const streamInfoUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?url=${encodeURIComponent(resolvedUrl || '')}&id=${encodeURIComponent(resolvedId || '')}&platform=${encodeURIComponent(streamInfoPlatform)}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&thumbnail=${encodeURIComponent(track.thumbnail || '')}&quality=${qQuality}&q=${qSearch}&token=${encodeURIComponent((window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '')}`;
-      let res;
-      try {
-        res = await fetch(streamInfoUrl, { signal });
-      } catch (fetchErr) {
-        if (fetchErr instanceof TypeError) {
-          await new Promise(r => setTimeout(r, 600));
-          res = await fetch(streamInfoUrl, { signal });
-        } else {
-          throw fetchErr;
+      const buildStreamInfoUrl = (qVal) => `http://127.0.0.1:${state.serverPort}/api/stream-info?url=${encodeURIComponent(resolvedUrl || '')}&id=${encodeURIComponent(resolvedId || '')}&platform=${encodeURIComponent(streamInfoPlatform)}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&thumbnail=${encodeURIComponent(track.thumbnail || '')}&quality=${encodeURIComponent(qVal)}&q=${qSearch}&token=${encodeURIComponent((window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '')}`;
+
+      const fetchStreamInfoWithRetry = async (qVal) => {
+        const url = buildStreamInfoUrl(qVal);
+        let r;
+        try {
+          r = await fetch(url, { signal });
+        } catch (fetchErr) {
+          if (fetchErr instanceof TypeError) {
+            await new Promise(resolve => setTimeout(resolve, 600));
+            r = await fetch(url, { signal });
+          } else {
+            throw fetchErr;
+          }
         }
+        return r.json();
+      };
+
+      let resolvedQuality = initialQuality;
+      let data = null;
+      try {
+        data = await fetchStreamInfoWithRetry(initialQuality);
+      } catch (err) {
+        if (err && err.name === 'AbortError') throw err;
+        data = null;
       }
-      const data = await res.json();
+
+      if ((!data || !data.success || !data.streamUrl) && initialQuality === 'low' && configuredQuality !== 'low' && currentToken === state.loadToken) {
+        resolvedQuality = configuredQuality;
+        data = await fetchStreamInfoWithRetry(configuredQuality);
+      }
 
       if (currentToken !== state.loadToken) return;
 
@@ -5079,6 +5173,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       }
 
       track._preloadedStreamUrl = data.proxyUrl || data.streamUrl;
+      track._preloadedStreamQuality = resolvedQuality;
+      track._preloadedStreamPlatform = String(streamInfoPlatform || 'ytmusic').trim().toLowerCase();
+      track._preloadedStreamUrlExpires = Date.now() + 3600 * 1000;
       if (data.resolvedId && /^[a-zA-Z0-9_-]{11}$/.test(data.resolvedId)) {
         track._matchedYtId = data.resolvedId;
       }
@@ -5978,7 +6075,10 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           title: state.currentTrack ? state.currentTrack.title : '',
           artist: state.currentTrack ? state.currentTrack.artist : '',
           isLiked: isFav3,
-          isMuted: !!state.isMuted
+          isMuted: !!state.isMuted,
+          primaryColor: cachedPrimaryColor || '#a78bfa',
+          isAutomixing: document.body.classList.contains('is-automixing'),
+          perfMode: document.body.classList.contains('perf')
         });
       }
           const wordSpans = activeEl.querySelectorAll('.lyric-word');
@@ -6762,7 +6862,10 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           title: state.currentTrack ? state.currentTrack.title : '',
           artist: state.currentTrack ? state.currentTrack.artist : '',
           isLiked: isFav,
-          isMuted: !!state.isMuted
+          isMuted: !!state.isMuted,
+          primaryColor: cachedPrimaryColor || '#a78bfa',
+          isAutomixing: document.body.classList.contains('is-automixing'),
+          perfMode: document.body.classList.contains('perf')
         });
         return;
       }
@@ -6782,7 +6885,10 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         title: state.currentTrack.title || '',
         artist: state.currentTrack.artist || '',
         isLiked: isFav,
-        isMuted: !!state.isMuted
+        isMuted: !!state.isMuted,
+        primaryColor: cachedPrimaryColor || '#a78bfa',
+        isAutomixing: document.body.classList.contains('is-automixing'),
+        perfMode: document.body.classList.contains('perf')
       });
     }
   }
@@ -9123,6 +9229,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           if (myToken !== state.loadToken) return;
           if (d && d.success && d.streamUrl) {
             cur._preloadedStreamUrl = d.proxyUrl || d.streamUrl;
+            cur._preloadedStreamQuality = decodeURIComponent(qQuality);
+            cur._preloadedStreamPlatform = String(cur.platform || state.platform || 'ytmusic').trim().toLowerCase();
+            cur._preloadedStreamUrlExpires = Date.now() + 3600 * 1000;
             el.nativeAudio.src = d.proxyUrl || d.streamUrl;
             playSmooth();
             return;
@@ -9150,15 +9259,8 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     });
 
     function prefetchNextQueueTrack() {
-      const nextIdx = state.queueIndex + 1;
-      if (state.queue && nextIdx < state.queue.length) {
-        const nextTrack = state.queue[nextIdx];
-        if (nextTrack && nextTrack.platform !== 'local') {
-          const qUrl = nextTrack.url || '';
-          const qId = nextTrack.id || '';
-          const qInfoUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?url=${encodeURIComponent(qUrl)}&id=${encodeURIComponent(qId)}&platform=${nextTrack.platform || state.platform}&title=${encodeURIComponent(nextTrack.title || '')}&artist=${encodeURIComponent(nextTrack.artist || '')}&duration=${encodeURIComponent(nextTrack.duration || 0)}&thumbnail=${encodeURIComponent(nextTrack.thumbnail || '')}&token=${encodeURIComponent((window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '')}`;
-          fetch(qInfoUrl).catch(() => {});
-        }
+      if (typeof preloadNextTrackStream === 'function') {
+        preloadNextTrackStream();
       }
     }
 
@@ -9531,9 +9633,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
   let isDraggingTvkScrubber = false;
   function updateTvkScrubberPositionFromEvent(e) {
-    const row = document.getElementById('tvk-progress-row');
-    if (!row) return 0;
-    const rect = row.getBoundingClientRect();
+    const track = document.getElementById('tvk-scrubber-track') || document.getElementById('tvk-progress-row');
+    if (!track) return 0;
+    const rect = track.getBoundingClientRect();
     const padLeft = 5.5;
     const trackWidth = rect.width - 2 * padLeft;
     let pos = trackWidth > 0 ? (e.clientX - rect.left - padLeft) / trackWidth : 0;
@@ -9547,7 +9649,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     return targetTime;
   }
 
-  const tvkProgRowEl = document.getElementById('tvk-progress-row');
+  const tvkProgRowEl = document.getElementById('tvk-scrubber-track') || document.getElementById('tvk-progress-row');
   if (tvkProgRowEl) {
     tvkProgRowEl.addEventListener('pointerdown', (e) => {
       isDraggingTvkScrubber = true;
@@ -11753,7 +11855,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     const momentTime = getTopMoment(track);
     const dur = typeof getReliableTrackDuration === 'function' ? getReliableTrackDuration() : (track.duration || 0);
 
-    ['scrubber-track', 'tvk-progress-row'].forEach(containerId => {
+    ['scrubber-track', 'tvk-scrubber-track'].forEach(containerId => {
       const container = document.getElementById(containerId);
       if (!container) return;
       let pin = container.querySelector('.top-moment-pin');
@@ -11780,8 +11882,8 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
       const ratio = Math.max(0, Math.min(1, momentTime / dur));
       let targetLeft = '';
-      if (containerId === 'tvk-progress-row') {
-        const rowW = container.clientWidth || (typeof cachedTvkProgWidth !== 'undefined' ? cachedTvkProgWidth : 320);
+      if (containerId === 'tvk-scrubber-track') {
+        const rowW = container.clientWidth || (typeof cachedTvkProgWidth !== 'undefined' ? cachedTvkProgWidth : 240);
         const pad = 10;
         const px = pad + ratio * Math.max(0, rowW - 2 * pad);
         targetLeft = px + 'px';
@@ -11837,12 +11939,12 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
   function enqueueStreamPrefetch(track) {
     if (!track || track.platform === 'local' || (typeof isStaticTikTokTrack === 'function' && isStaticTikTokTrack(track))) return;
-    if (track._preloadedStreamUrl) return;
-    const key = (typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(track) : '') || (track.id || track.url || (track.artist + '_' + track.title));
+    const quality = getConfiguredAudioQuality();
+    if (isTrackPreloadValid(track, quality)) return;
+    const key = `${String(track.platform || state.platform || 'ytmusic').toLowerCase()}:${(typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(track) : '') || (track.id || track.url || (track.artist + '_' + track.title))}:${quality}`;
     if (!key || prefetchedTrackKeys.has(key)) return;
     prefetchedTrackKeys.add(key);
     streamPrefetchQueue.push({ key, run: () => {
-      const quality = localStorage.getItem('eclipse_audio_quality') || 'medium';
       const qQuality = encodeURIComponent(quality);
       const qSearch = encodeURIComponent(track.searchQuery || ((track.artist ? track.artist + ' - ' : '') + (track.title || '')));
       const u = `http://127.0.0.1:${state.serverPort}/api/stream-info?url=${encodeURIComponent(track.url || '')}&id=${encodeURIComponent(track.id || '')}&platform=${track.platform || state.platform}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&thumbnail=${encodeURIComponent(track.thumbnail || '')}&quality=${qQuality}&q=${qSearch}`;
@@ -11850,8 +11952,10 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         .then((r) => r.json())
         .then((d) => {
           if (d && d.success && d.streamUrl) {
-            track._preloadedStreamUrl = d.streamUrl;
+            track._preloadedStreamUrl = d.proxyUrl || d.streamUrl;
             track._preloadedStreamQuality = quality;
+            track._preloadedStreamPlatform = String(track.platform || state.platform || 'ytmusic').trim().toLowerCase();
+            track._preloadedStreamUrlExpires = Date.now() + 3600 * 1000;
           } else {
             prefetchedTrackKeys.delete(key);
           }
@@ -11864,10 +11968,6 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   function prefetchUpcomingQueueStreams() {
     if (!state.queue || state.queueIndex < 0) return;
     if (typeof preloadNextTrackStream === 'function') preloadNextTrackStream();
-    const secondNext = state.queue[state.queueIndex + 2];
-    if (secondNext && !secondNext._preloadedStreamUrl && secondNext.platform !== 'local' && !(typeof isStaticTikTokTrack === 'function' && isStaticTikTokTrack(secondNext))) {
-      enqueueStreamPrefetch(secondNext);
-    }
   }
 
   // === ECLIPSE MERGE: OFFLINE MODE ===

@@ -293,19 +293,22 @@
 
         async function resolveNextTrackStreamUrl(nextTrack) {
           if (!nextTrack) return '';
+          const curQuality = (typeof localStorage !== 'undefined' && localStorage.getItem('eclipse_audio_quality')) || 'medium';
           if (preloadManager) {
-            const curQuality = (typeof localStorage !== 'undefined' && localStorage.getItem('eclipse_audio_quality')) || 'medium';
             return await preloadManager.resolveStreamUrl(nextTrack, curQuality);
           }
-          if (nextTrack._preloadedStreamUrl) return nextTrack._preloadedStreamUrl;
+          if (nextTrack._preloadedStreamUrl && nextTrack._preloadedStreamQuality === curQuality && (!nextTrack._preloadedStreamUrlExpires || Date.now() < nextTrack._preloadedStreamUrlExpires)) {
+            return nextTrack._preloadedStreamUrl;
+          }
           const qFallback = encodeURIComponent(nextTrack.searchQuery || ((nextTrack.artist ? nextTrack.artist + ' - ' : '') + (nextTrack.title || '')));
           const tkn = getInternalApiToken();
-          const curQuality = (typeof localStorage !== 'undefined' && localStorage.getItem('eclipse_audio_quality')) || 'medium';
           const url = `${getInternalApiBase()}/api/stream-info?id=${encodeURIComponent(nextTrack.id || '')}&url=${encodeURIComponent(nextTrack.url || '')}&platform=${encodeURIComponent(nextTrack.platform || 'ytmusic')}&title=${encodeURIComponent(nextTrack.title || '')}&artist=${encodeURIComponent(nextTrack.artist || '')}&duration=${encodeURIComponent(nextTrack.duration || 0)}&q=${qFallback}&quality=${encodeURIComponent(curQuality)}&token=${encodeURIComponent(tkn)}&t=${encodeURIComponent(tkn)}`;
           const res = await fetch(url, { headers: { 'X-Eclipse-Token': tkn, 'X-Muriel-Token': tkn } });
           const data = await res.json();
           if (data && data.success && (data.proxyUrl || data.streamUrl)) {
             nextTrack._preloadedStreamUrl = data.proxyUrl || data.streamUrl;
+            nextTrack._preloadedStreamQuality = curQuality;
+            nextTrack._preloadedStreamUrlExpires = Date.now() + 3600 * 1000;
             if (typeof fetch === 'function' && typeof nextTrack._preloadedStreamUrl === 'string' && !nextTrack._preloadedStreamUrl.includes('.m3u8')) {
               fetch(nextTrack._preloadedStreamUrl, { headers: { 'Range': 'bytes=0-262143' } }).catch(() => {});
             }
@@ -348,19 +351,25 @@
             // 1. Early Stream Preloading & SponsorBlock Pre-fetching at 20-30s before track ends
             if (dur > 20 && remaining <= 30 && remaining > 8 && !earlyPreloadStartedForTrack) {
               earlyPreloadStartedForTrack = true;
-              if (nextTrack) {
+              let preloadTarget = nextTrack;
+              if (window.autoMixDjInstance && window.autoMixDjInstance.enabled && window.autoMixDjInstance.mode === 'tempo_synced' && typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function') {
+                const curBpm = trackAnalyzer ? trackAnalyzer.getEffectiveBpm(currentTrack) : ((currentTrack && currentTrack._detectedBpm) || null);
+                const earlyPick = window.autoMixDjInstance.pickTempoSyncedNext(st.queue, st.queueIndex, st.autoMixPlayedIds, curBpm, { analyzer: trackAnalyzer });
+                if (earlyPick && earlyPick.track) preloadTarget = earlyPick.track;
+              }
+              if (preloadTarget) {
+                const curQuality = (typeof localStorage !== 'undefined' && localStorage.getItem('eclipse_audio_quality')) || 'medium';
                 if (preloadManager) {
-                  const curQuality = (typeof localStorage !== 'undefined' && localStorage.getItem('eclipse_audio_quality')) || 'medium';
-                  preloadManager.prepareNextTrack(nextTrack, auxAudio, curQuality).catch(() => {});
-                } else if (!nextTrack._preloadedStreamUrl) {
-                  resolveNextTrackStreamUrl(nextTrack).then(url => {
+                  preloadManager.prepareNextTrack(preloadTarget, auxAudio, curQuality).catch(() => {});
+                } else if (!preloadTarget._preloadedStreamUrl || preloadTarget._preloadedStreamQuality !== curQuality) {
+                  resolveNextTrackStreamUrl(preloadTarget).then(url => {
                     if (url && auxAudio && !window.autoMixDjInstance?.isCrossfading && auxAudio.paused) {
                       auxAudio.preload = 'auto';
                       auxAudio.src = url;
                     }
                   }).catch(() => {});
                 }
-                prefetchSponsorSegmentsForTrack(nextTrack).catch(() => {});
+                prefetchSponsorSegmentsForTrack(preloadTarget).catch(() => {});
               }
               if (currentTrack) {
                 prefetchSponsorSegmentsForTrack(currentTrack).catch(() => {});

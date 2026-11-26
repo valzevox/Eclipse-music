@@ -8,8 +8,17 @@ class PreloadManager {
     this.token = options.token || '';
     this.currentPreloadTrackId = null;
     this.abortController = null;
-    this.preloadedStreams = new Map(); // trackId -> { url, expires, readyState, timestamp }
+    this._generation = 0;
+    this.preloadedStreams = new Map(); // `${platform}:${trackId}:${quality}` -> { url, quality, platform, trackId, expires, readyState, timestamp }
     this.preloadStages = new Map(); // trackId -> { stage, updatedAt, error }
+  }
+
+  getCacheKey(track, quality = 'medium') {
+    if (!track) return '';
+    const trackId = String(track.id || track.videoId || track.url || `${track.artist || ''}_${track.title || ''}`).trim().toLowerCase();
+    const platform = String(track.platform || 'ytmusic').trim().toLowerCase();
+    const q = String(quality || 'medium').trim().toLowerCase();
+    return `${platform}:${trackId}:${q}`;
   }
 
   setPreloadStage(trackId, stage, error = null) {
@@ -28,6 +37,7 @@ class PreloadManager {
   }
 
   cancelPreload(reason = 'queue_changed') {
+    this._generation += 1;
     if (this.abortController) {
       try { this.abortController.abort(reason); } catch (_) {}
       this.abortController = null;
@@ -38,34 +48,61 @@ class PreloadManager {
   async resolveStreamUrl(track, quality = 'medium') {
     if (!track) return '';
     const trackId = track.id || track.videoId || '';
-    if (track._preloadedStreamUrl) return track._preloadedStreamUrl;
+    const platform = String(track.platform || 'ytmusic').trim().toLowerCase();
+    const reqQuality = String(quality || 'medium').trim().toLowerCase();
+    const cacheKey = this.getCacheKey(track, reqQuality);
+    const myGen = this._generation;
 
-    if (this.preloadedStreams.has(trackId)) {
-      const cached = this.preloadedStreams.get(trackId);
-      if (cached && cached.url && (!cached.expires || Date.now() < cached.expires)) {
+    if (
+      track._preloadedStreamUrl &&
+      track._preloadedStreamQuality === reqQuality &&
+      (!track._preloadedStreamPlatform || track._preloadedStreamPlatform === platform) &&
+      (!track._preloadedStreamUrlExpires || Date.now() < track._preloadedStreamUrlExpires)
+    ) {
+      return track._preloadedStreamUrl;
+    }
+
+    if (cacheKey && this.preloadedStreams.has(cacheKey)) {
+      const cached = this.preloadedStreams.get(cacheKey);
+      if (cached && cached.url && cached.quality === reqQuality && (!cached.expires || Date.now() < cached.expires)) {
         track._preloadedStreamUrl = cached.url;
+        track._preloadedStreamQuality = reqQuality;
+        track._preloadedStreamPlatform = platform;
+        track._preloadedStreamUrlExpires = cached.expires;
         return cached.url;
       }
+      this.preloadedStreams.delete(cacheKey);
     }
 
     const qFallback = encodeURIComponent(track.searchQuery || ((track.artist ? track.artist + ' - ' : '') + (track.title || '')));
     const tkn = this.token || (typeof window !== 'undefined' && window.electronAPI?.serverToken) || '';
-    const url = `${this.apiBase}/api/stream-info?id=${encodeURIComponent(trackId)}&url=${encodeURIComponent(track.url || '')}&platform=${encodeURIComponent(track.platform || 'ytmusic')}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&q=${qFallback}&quality=${encodeURIComponent(quality)}&token=${encodeURIComponent(tkn)}&t=${encodeURIComponent(tkn)}`;
+    const url = `${this.apiBase}/api/stream-info?id=${encodeURIComponent(trackId)}&url=${encodeURIComponent(track.url || '')}&platform=${encodeURIComponent(platform)}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&q=${qFallback}&quality=${encodeURIComponent(reqQuality)}&token=${encodeURIComponent(tkn)}&t=${encodeURIComponent(tkn)}`;
 
     try {
+      const signal = this.abortController ? this.abortController.signal : undefined;
       const res = await fetch(url, {
         headers: { 'X-Eclipse-Token': tkn, 'X-Muriel-Token': tkn },
-        signal: this.abortController ? this.abortController.signal : undefined
+        signal
       });
       const data = await res.json();
+      if (myGen !== this._generation || (signal && signal.aborted)) return '';
       if (data && data.success && (data.proxyUrl || data.streamUrl)) {
         const streamUrl = data.proxyUrl || data.streamUrl;
+        const expires = Date.now() + 3600 * 1000;
         track._preloadedStreamUrl = streamUrl;
-        this.preloadedStreams.set(trackId, {
-          url: streamUrl,
-          expires: Date.now() + 3600 * 1000,
-          timestamp: Date.now()
-        });
+        track._preloadedStreamQuality = reqQuality;
+        track._preloadedStreamPlatform = platform;
+        track._preloadedStreamUrlExpires = expires;
+        if (cacheKey) {
+          this.preloadedStreams.set(cacheKey, {
+            url: streamUrl,
+            quality: reqQuality,
+            platform,
+            trackId,
+            expires,
+            timestamp: Date.now()
+          });
+        }
         // Warm up buffer with initial range
         this.warmUpBuffer(streamUrl);
         return streamUrl;

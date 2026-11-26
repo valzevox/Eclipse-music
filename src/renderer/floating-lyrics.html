@@ -215,28 +215,23 @@
       color: rgba(255, 255, 255, 0.6);
       min-width: 26px;
     }
-    .mini-seek-slider {
+    .mini-scrubber-track {
+      position: relative;
       flex: 1;
-      height: 4px;
-      border-radius: 999px;
-      -webkit-appearance: none;
-      appearance: none;
-      background: rgba(255, 255, 255, 0.15);
-      outline: none;
+      min-width: 0;
+      height: 24px;
+      display: flex;
+      align-items: center;
       cursor: pointer;
     }
-    .mini-seek-slider::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background: var(--md-sys-color-primary, #a78bfa);
-      cursor: pointer;
-      box-shadow: 0 0 6px rgba(167, 139, 250, 0.8);
-      transition: transform 0.1s ease;
+    .mini-scrubber-track.dragging {
+      cursor: grabbing;
     }
-    .mini-seek-slider:hover::-webkit-slider-thumb {
-      transform: scale(1.3);
+    .mini-squiggly-canvas {
+      width: 100%;
+      height: 24px;
+      display: block;
+      pointer-events: none;
     }
 
     /* =========================================================
@@ -341,7 +336,9 @@
 
     <div class="mini-seek-row">
       <span class="mini-time-label" id="mini-time-cur">0:00</span>
-      <input type="range" class="mini-seek-slider" id="mini-seek-bar" min="0" max="1000" step="1" value="0">
+      <div class="mini-scrubber-track" id="mini-scrubber-track">
+        <canvas class="mini-squiggly-canvas" id="mini-squiggly-canvas"></canvas>
+      </div>
       <span class="mini-time-label" id="mini-time-dur" style="text-align: right;">0:00</span>
     </div>
   </div>
@@ -356,7 +353,9 @@
     const btnPlayPause = document.getElementById('btn-playpause');
     const btnFav = document.getElementById('btn-fav');
     const btnMute = document.getElementById('btn-mute');
-    const seekSlider = document.getElementById('mini-seek-bar');
+    const seekTrack = document.getElementById('mini-scrubber-track');
+    const seekCanvas = document.getElementById('mini-squiggly-canvas');
+    const seekCtx = seekCanvas ? seekCanvas.getContext('2d') : null;
     const timeCurEl = document.getElementById('mini-time-cur');
     const timeDurEl = document.getElementById('mini-time-dur');
 
@@ -367,6 +366,31 @@
     let animFrame = null;
     let isDraggingSeek = false;
     let cachedDuration = 0;
+    let cachedCurrentTime = 0;
+    let dragTargetFrac = 0;
+    let isPlayingState = false;
+    let isAutomixingState = false;
+    let perfModeState = false;
+    let cachedPrimaryColor = '#a78bfa';
+    let scrubProgress = 0;
+    let scrubPhase = 0;
+    let scrubKnobAnim = 0;
+    let scrubPrevKnobX = null;
+    let scrubLastTime = 0;
+    let rainbowBlend = 0;
+    let rainbowLastMs = 0;
+    const reducedMotionQuery = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+    let osReducedMotion = !!(reducedMotionQuery && reducedMotionQuery.matches);
+    if (reducedMotionQuery && reducedMotionQuery.addEventListener) {
+      reducedMotionQuery.addEventListener('change', (e) => {
+        osReducedMotion = !!e.matches;
+        if (osReducedMotion) rainbowBlend = 0;
+        drawMiniSeekbar(performance.now());
+      });
+    }
+    function isReducedActive() {
+      return perfModeState || osReducedMotion;
+    }
 
     // Detect Square vs Landscape layout based on aspect ratio
     function evaluateLayoutMode() {
@@ -387,12 +411,151 @@
       return `${m}:${s < 10 ? '0' : ''}${s}`;
     }
 
-    function animateSmoothProgress() {
+    function syncMiniCanvasSize() {
+      if (!seekTrack || !seekCanvas || !seekCtx) return 0;
+      const dpr = window.devicePixelRatio || 1;
+      const w = seekTrack.clientWidth || 160;
+      const h = 24;
+      const ew = Math.round(w * dpr);
+      const eh = Math.round(h * dpr);
+      if (w > 0 && (seekCanvas.width !== ew || seekCanvas.height !== eh)) {
+        seekCanvas.width = ew;
+        seekCanvas.height = eh;
+        seekCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+      return w;
+    }
+    if (seekTrack && typeof ResizeObserver === 'function') {
+      new ResizeObserver(() => {
+        syncMiniCanvasSize();
+        drawMiniSeekbar(performance.now());
+      }).observe(seekTrack);
+    }
+
+    function drawMiniSeekbar(nowMs) {
+      if (!seekCtx || !seekCanvas) return;
+      const w = syncMiniCanvasSize();
+      if (w <= 0) return;
+      const h = 24;
+      const dt = scrubLastTime === 0 ? 0.016 : Math.min((nowMs - scrubLastTime) / 1000, 0.1);
+      scrubLastTime = nowMs;
+
+      const isReduced = isReducedActive();
+      const targetBlend = (isAutomixingState && !isReduced) ? 1 : 0;
+      if (isReduced) {
+        rainbowBlend = 0;
+        rainbowLastMs = nowMs;
+      } else {
+        const rDt = rainbowLastMs === 0 ? 16 : Math.min(nowMs - rainbowLastMs, 100);
+        rainbowLastMs = nowMs;
+        if (rainbowBlend !== targetBlend) {
+          const step = rDt / 300;
+          rainbowBlend = targetBlend > rainbowBlend
+            ? Math.min(1, rainbowBlend + step)
+            : Math.max(0, rainbowBlend - step);
+        }
+      }
+
+      const targetFrac = isDraggingSeek
+        ? dragTargetFrac
+        : (cachedDuration > 0 ? Math.max(0, Math.min(1, cachedCurrentTime / cachedDuration)) : 0);
+      const followSpeed = isDraggingSeek ? 32 : 45;
+      scrubProgress += (targetFrac - scrubProgress) * Math.min(1, dt * followSpeed);
+      scrubProgress = Math.max(0, Math.min(1, Number.isFinite(scrubProgress) ? scrubProgress : 0));
+
+      const targetAnim = isDraggingSeek ? 1 : 0;
+      scrubKnobAnim += (targetAnim - scrubKnobAnim) * Math.min(1, dt * 16);
+      const curKnobW = 5 + 1.5 * scrubKnobAnim;
+      const curKnobH = 16 + 4 * scrubKnobAnim;
+      const curKnobR = curKnobW / 2;
+
+      const padLeft = 4;
+      const padRight = 4;
+      const trackWidth = Math.max(1, w - padLeft - padRight);
+      const knobCenterX = Math.max(padLeft, Math.min(w - padRight, padLeft + scrubProgress * trackWidth));
+
+      if (scrubPrevKnobX === null) scrubPrevKnobX = knobCenterX;
+      const deltaX = knobCenterX - scrubPrevKnobX;
+      scrubPrevKnobX = knobCenterX;
+
+      const k = (2 * Math.PI) / 28;
+      if (!isReduced) {
+        if (isDraggingSeek) {
+          scrubPhase += deltaX * k;
+        } else if (isPlayingState) {
+          scrubPhase += 3.5 * dt;
+        }
+      }
+
+      const capRadius = 5.5 / 2;
+      const knobLeft = knobCenterX - curKnobW / 2;
+      const waveStart = padLeft;
+      const waveEnd = knobLeft - 3.5 - capRadius;
+      const bgStartX = knobCenterX + (curKnobW / 2) + 3.5;
+      const bgEndX = w - padRight;
+      const centerY = h / 2;
+
+      seekCtx.clearRect(0, 0, w, h);
+
+      if (bgStartX < bgEndX - 1) {
+        seekCtx.save();
+        seekCtx.beginPath();
+        seekCtx.lineWidth = 5.5;
+        seekCtx.lineCap = 'round';
+        seekCtx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+        seekCtx.moveTo(bgStartX, centerY);
+        seekCtx.lineTo(bgEndX, centerY);
+        seekCtx.stroke();
+        seekCtx.restore();
+      }
+
+      if (waveEnd > waveStart) {
+        seekCtx.beginPath();
+        seekCtx.lineWidth = 5.5;
+        seekCtx.lineCap = 'round';
+        seekCtx.lineJoin = 'round';
+        if (isReduced) {
+          seekCtx.moveTo(waveStart, centerY);
+          seekCtx.lineTo(waveEnd, centerY);
+        } else {
+          for (let x = waveStart; x <= waveEnd; x += 2) {
+            const angle = scrubPhase - (waveEnd - x) * k;
+            const y = centerY + Math.sin(angle) * 3;
+            if (x === waveStart) seekCtx.moveTo(x, y);
+            else seekCtx.lineTo(x, y);
+          }
+          seekCtx.lineTo(waveEnd, centerY + Math.sin(scrubPhase) * 3);
+        }
+        if (rainbowBlend > 0.01 && !isReduced) {
+          if (rainbowBlend < 0.99) {
+            seekCtx.strokeStyle = cachedPrimaryColor;
+            seekCtx.stroke();
+          }
+          const hue = ((nowMs % 1000) / 1000) * 360;
+          seekCtx.save();
+          seekCtx.globalAlpha = rainbowBlend;
+          seekCtx.strokeStyle = `hsl(${hue.toFixed(1)}, 100%, 62%)`;
+          seekCtx.stroke();
+          seekCtx.restore();
+        } else {
+          seekCtx.strokeStyle = cachedPrimaryColor;
+          seekCtx.stroke();
+        }
+      }
+
+      seekCtx.beginPath();
+      seekCtx.roundRect(knobLeft, centerY - curKnobH / 2, curKnobW, curKnobH, curKnobR);
+      seekCtx.fillStyle = cachedPrimaryColor;
+      seekCtx.fill();
+    }
+
+    function animateSmoothProgress(nowMs) {
       if (curEl.classList.contains('gradient-fill')) {
         const diff = targetProgress - smoothProgress;
         smoothProgress += diff * 0.18;
         curEl.style.setProperty('--prog', `${smoothProgress.toFixed(1)}%`);
       }
+      drawMiniSeekbar(nowMs || performance.now());
       animFrame = requestAnimationFrame(animateSmoothProgress);
     }
     animFrame = requestAnimationFrame(animateSmoothProgress);
@@ -472,10 +635,14 @@
             metaArtistEl.textContent = data.artist;
           }
 
-          // Playback state
-          if (data.isPlaying !== undefined && btnPlayPause) {
-            btnPlayPause.textContent = data.isPlaying ? '❚❚' : '▶';
+          // Playback & theme state
+          if (data.isPlaying !== undefined) {
+            isPlayingState = !!data.isPlaying;
+            if (btnPlayPause) btnPlayPause.textContent = isPlayingState ? '❚❚' : '▶';
           }
+          if (data.primaryColor) cachedPrimaryColor = data.primaryColor;
+          if (data.isAutomixing !== undefined) isAutomixingState = !!data.isAutomixing;
+          if (data.perfMode !== undefined) perfModeState = !!data.perfMode;
 
           // Favorite state
           if (data.isLiked !== undefined && btnFav) {
@@ -500,10 +667,8 @@
             if (timeDurEl) timeDurEl.textContent = formatTime(data.duration);
           }
           if (typeof data.currentTime === 'number' && !isDraggingSeek) {
+            cachedCurrentTime = data.currentTime;
             if (timeCurEl) timeCurEl.textContent = formatTime(data.currentTime);
-            if (seekSlider && cachedDuration > 0) {
-              seekSlider.value = Math.round((data.currentTime / cachedDuration) * 1000);
-            }
           }
 
           const lineChanged = (currentLineText !== data.current);
@@ -551,19 +716,42 @@
         window.electronAPI.closeFloatingLyrics();
       });
 
-      // Seek Slider input
-      seekSlider.addEventListener('input', () => {
-        isDraggingSeek = true;
-        const frac = Number(seekSlider.value) / 1000;
+      // Pointer-capture wavy scrubber seek
+      function updateMiniSeekFromEvent(e) {
+        if (!seekTrack) return 0;
+        const rect = seekTrack.getBoundingClientRect();
+        const pad = 4;
+        const trackW = Math.max(1, rect.width - 2 * pad);
+        const frac = Math.max(0, Math.min(1, (e.clientX - rect.left - pad) / trackW));
+        dragTargetFrac = frac;
         if (cachedDuration > 0 && timeCurEl) {
           timeCurEl.textContent = formatTime(frac * cachedDuration);
         }
-      });
-      seekSlider.addEventListener('change', () => {
-        isDraggingSeek = false;
-        const frac = Math.max(0, Math.min(1, Number(seekSlider.value) / 1000));
-        window.electronAPI.floatingCommand({ type: 'seek-percent', percent: frac });
-      });
+        return frac;
+      }
+      if (seekTrack) {
+        seekTrack.addEventListener('pointerdown', (e) => {
+          isDraggingSeek = true;
+          seekTrack.classList.add('dragging');
+          updateMiniSeekFromEvent(e);
+          try { seekTrack.setPointerCapture(e.pointerId); } catch (_) {}
+        });
+        seekTrack.addEventListener('pointermove', (e) => {
+          if (!isDraggingSeek) return;
+          updateMiniSeekFromEvent(e);
+        });
+        const finishMiniSeek = (e) => {
+          if (!isDraggingSeek) return;
+          isDraggingSeek = false;
+          seekTrack.classList.remove('dragging');
+          const frac = updateMiniSeekFromEvent(e);
+          if (cachedDuration > 0) cachedCurrentTime = frac * cachedDuration;
+          window.electronAPI.floatingCommand({ type: 'seek-percent', percent: frac });
+          try { seekTrack.releasePointerCapture(e.pointerId); } catch (_) {}
+        };
+        seekTrack.addEventListener('pointerup', finishMiniSeek);
+        seekTrack.addEventListener('pointercancel', finishMiniSeek);
+      }
     }
   </script>
 </body>

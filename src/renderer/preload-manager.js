@@ -35,36 +35,51 @@ class EclipsePreloadManager {
     this.isProcessingQueue = false;
   }
 
+  getConfiguredQuality() {
+    return (typeof localStorage !== 'undefined' && localStorage.getItem('eclipse_audio_quality')) || 'medium';
+  }
+
   getTrackKey(track) {
     if (!track) return '';
     return String(track.id || track.videoId || track.url || `${track.artist}_${track.title}`).trim().toLowerCase();
   }
 
-  hasCached(track) {
-    const key = this.getTrackKey(track);
+  getCacheKey(track, quality = null) {
+    const base = this.getTrackKey(track);
+    if (!base) return '';
+    const platform = String((track && track.platform) || 'ytmusic').trim().toLowerCase();
+    const q = String(quality || this.getConfiguredQuality()).trim().toLowerCase();
+    return `${platform}:${base}:${q}`;
+  }
+
+  hasCached(track, quality = null) {
+    const q = String(quality || this.getConfiguredQuality()).trim().toLowerCase();
+    const key = this.getCacheKey(track, q);
     if (!key || !this.cache.has(key)) return false;
     const item = this.cache.get(key);
-    if (Date.now() - item.timestamp > this.cacheTtlMs) {
+    if (Date.now() - item.timestamp > this.cacheTtlMs || item.quality !== q) {
       this.cache.delete(key);
       return false;
     }
     return true;
   }
 
-  getCached(track) {
-    const key = this.getTrackKey(track);
+  getCached(track, quality = null) {
+    const q = String(quality || this.getConfiguredQuality()).trim().toLowerCase();
+    const key = this.getCacheKey(track, q);
     if (!key) return null;
     const item = this.cache.get(key);
     if (!item) return null;
-    if (Date.now() - item.timestamp > this.cacheTtlMs) {
+    if (Date.now() - item.timestamp > this.cacheTtlMs || item.quality !== q) {
       this.cache.delete(key);
       return null;
     }
     return item;
   }
 
-  setCache(track, data) {
-    const key = this.getTrackKey(track);
+  setCache(track, data, quality = null) {
+    const q = String(quality || (data && data.quality) || this.getConfiguredQuality()).trim().toLowerCase();
+    const key = this.getCacheKey(track, q);
     if (!key) return;
     if (this.cache.size >= this.maxCacheEntries) {
       const oldestKey = this.cache.keys().next().value;
@@ -72,6 +87,8 @@ class EclipsePreloadManager {
     }
     this.cache.set(key, {
       ...data,
+      quality: q,
+      platform: String((track && track.platform) || 'ytmusic').trim().toLowerCase(),
       timestamp: Date.now()
     });
   }
@@ -180,8 +197,9 @@ class EclipsePreloadManager {
   }
 
   async _executePreload(track, type) {
+    const curQuality = this.getConfiguredQuality();
     const key = this.getTrackKey(track);
-    if (!key || this.hasCached(track)) return;
+    if (!key || this.hasCached(track, curQuality)) return;
 
     const controller = new AbortController();
     this.activeTask = {
@@ -192,20 +210,22 @@ class EclipsePreloadManager {
 
     try {
       // 1. Resolve stream URL
-      const streamData = await this._resolveStreamInfo(track, controller.signal);
-      if (!streamData || !streamData.streamUrl) return;
+      const streamData = await this._resolveStreamInfo(track, controller.signal, curQuality);
+      if (!streamData || !streamData.streamUrl || controller.signal.aborted) return;
 
       // 2. Audio range warm-up (first 256 KiB)
       const targetWarmUrl = streamData.proxyUrl || streamData.streamUrl;
       await this._warmUpRange(targetWarmUrl, controller.signal);
+      if (controller.signal.aborted) return;
 
       // 3. Mark in cache
       this.setCache(track, {
         resolvedId: streamData.resolvedId || track.id,
         streamUrl: streamData.streamUrl,
         proxyUrl: streamData.proxyUrl,
+        quality: curQuality,
         isWarm: true
-      });
+      }, curQuality);
     } finally {
       if (this.activeTask && this.activeTask.trackKey === key) {
         this.activeTask = null;
@@ -213,7 +233,7 @@ class EclipsePreloadManager {
     }
   }
 
-  async _resolveStreamInfo(track, signal) {
+  async _resolveStreamInfo(track, signal, qualityOverride = null) {
     const cleanId = String(track.id || track.videoId || '').trim();
     const isRealYtId = /^[a-zA-Z0-9_-]{11}$/.test(cleanId) && !/^(cand_|dz_|it_|sp_|ym_|alb_|local_|track_)/i.test(cleanId);
     let resolvedUrl = track.url || '';
@@ -221,7 +241,7 @@ class EclipsePreloadManager {
       resolvedUrl = `https://www.youtube.com/watch?v=${cleanId}`;
     }
 
-    const curQuality = (typeof localStorage !== 'undefined' && localStorage.getItem('eclipse_audio_quality')) || 'medium';
+    const curQuality = qualityOverride || this.getConfiguredQuality();
     const qFallback = ((track.artist ? track.artist + ' - ' : '') + (track.title || '')).trim();
     const token = this.getServerToken();
 

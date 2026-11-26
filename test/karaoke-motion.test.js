@@ -1021,17 +1021,22 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
     const cssSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/styles.css'), 'utf8');
     const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
 
-    // CSS centering & responsive width
-    assert.match(cssSrc, /\.tvk-progress-row\s*\{[^}]*width:\s*clamp\(220px,\s*28vw,\s*400px\);[^}]*margin:\s*6px auto 0;/s);
-    assert.match(cssSrc, /\.tvk-time-crossfade-row\s*\{[^}]*width:\s*clamp\(220px,\s*28vw,\s*400px\);[^}]*margin:\s*2px auto 0;/s);
+    // CSS centering, inline time labels & responsive width
+    assert.match(cssSrc, /\.tvk-progress-row\s*\{[^}]*width:\s*clamp\(240px,\s*30vw,\s*420px\);[^}]*margin:\s*6px auto 0;/s);
+    assert.match(cssSrc, /\.tvk-time-crossfade-row\s*\{[^}]*justify-content:\s*center;[^}]*width:\s*clamp\(240px,\s*30vw,\s*420px\);[^}]*margin:\s*2px auto 0;/s);
+    assert.match(cssSrc, /\.tvk-scrubber-track\s*\{[^}]*flex:\s*1;/s);
     assert.match(cssSrc, /\.tvk-squiggly-canvas\s*\{[^}]*width:\s*100%;/s);
 
-    // JS: no stale inline width/height, ResizeObserver, and per-frame DPR backing-store sync
+    // JS: no stale inline width/height, ResizeObserver, per-frame DPR backing-store sync, and primaryColor declared in Karaoke branch
     assert.match(appSrc, /tvkSquiggly\.style\.width = '';\s*tvkSquiggly\.style\.height = '';/);
     assert.match(appSrc, /if \(rw > 0\)\s*\{[\s\S]*?tvkSquiggly\.width = targetW;/);
-    assert.match(appSrc, /tvkProgRow\._tvkResizeObserver = new ResizeObserver/);
+    assert.match(appSrc, /tvkTrack\._tvkResizeObserver = new ResizeObserver/);
     assert.match(appSrc, /if \(tw > 0 && \(tvkScrubber\.width !== expectedW \|\| tvkScrubber\.height !== expectedH\)\)/);
     assert.match(appSrc, /tCtx\.setTransform\(dpr, 0, 0, dpr, 0, 0\)/);
+    const karaokeBranch = appSrc.slice(appSrc.indexOf('const tvkScrubber = document.getElementById(\'tvk-squiggly-canvas\')'), appSrc.indexOf('renderLoop(0);'));
+    assert.match(karaokeBranch, /const primaryColor = cachedPrimaryColor \|\| '#a855f7';/);
+    assert.match(karaokeBranch, /baseColor:\s*primaryColor/);
+    assert.match(karaokeBranch, /tCtx\.fillStyle\s*=\s*primaryColor/);
   });
 
   test('Fullscreen Karaoke time display sync (syncTvkTimeDisplay + track change, seek, loadedmetadata, durationchange)', () => {
@@ -1091,5 +1096,26 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
     const syncCalls = appSrc.match(/syncTvkTimeDisplay\(/g) || [];
     assert.ok(syncCalls.length >= 8, `Expected syncTvkTimeDisplay wired across renderLoop, playTrack, openTvKaraoke, loadedmetadata, durationchange, seeked, timeupdate, scrub; got ${syncCalls.length}`);
     assert.match(appSrc, /el\.nativeAudio\.addEventListener\('seeked',[\s\S]*?lastDisplayedSec = -1;\s*lastTimeupdateSec = -1;[\s\S]*?syncTvkTimeDisplay\(seekCurText, seekDurText\)/);
+  });
+
+  test('Floating Lyrics wavy progress bar, primaryColor/AutoMix sync & reduced-motion fallback', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const flHtml = fs.readFileSync(path.join(__dirname, '../src/renderer/floating-lyrics.html'), 'utf8');
+    const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+
+    // Compact wavy canvas & pointer-capture scrubber in floating-lyrics.html
+    assert.match(flHtml, /id="mini-scrubber-track"/);
+    assert.match(flHtml, /id="mini-squiggly-canvas"/);
+    assert.match(flHtml, /\.mini-scrubber-track\s*\{[^}]*height:\s*24px;/s);
+    assert.match(flHtml, /seekCtx\.lineWidth\s*=\s*5\.5;/);
+    assert.match(flHtml, /Math\.sin\(angle\)\s*\*\s*3/);
+    assert.match(flHtml, /setPointerCapture\(e\.pointerId\)/);
+    assert.match(flHtml, /prefers-reduced-motion:\s*reduce/);
+    assert.match(flHtml, /isReducedActive\(\)/);
+
+    // app.js sends primaryColor, isAutomixing, perfMode in all updateFloatingLyrics payloads
+    const payloadMatches = appSrc.match(/primaryColor:\s*cachedPrimaryColor\s*\|\|\s*'#a78bfa',\s*isAutomixing:\s*document\.body\.classList\.contains\('is-automixing'\),\s*perfMode:\s*document\.body\.classList\.contains\('perf'\)/g) || [];
+    assert.strictEqual(payloadMatches.length, 3);
   });
 });

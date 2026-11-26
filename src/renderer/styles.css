@@ -8546,16 +8546,37 @@ body.cover-bg-on[data-theme="light"] .cover-bg-layer.on {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: clamp(220px, 28vw, 400px);
+  gap: 10px;
+  width: clamp(240px, 30vw, 420px);
   height: 36px;
   margin: 6px auto 0;
   z-index: 5;
-  cursor: pointer;
 }
-.tvk-progress-row .time-label,
+.tvk-progress-row .time-label {
+  display: block;
+  width: auto;
+  min-width: 34px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.72);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+.tvk-progress-row .time-label:last-child {
+  text-align: right;
+}
 .tvk-progress-row .sl,
 .tvk-progress-row #tvk-seek-slider {
   display: none !important;
+}
+.tvk-scrubber-track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
 }
 .tvk-squiggly-canvas {
   width: 100%;
@@ -12989,10 +13010,10 @@ body.mini .playbar-crossfade-row {
 .tvk-time-crossfade-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  width: clamp(220px, 28vw, 400px);
+  justify-content: center;
+  width: clamp(240px, 30vw, 420px);
   margin: 2px auto 0;
-  padding: 0 2px;
+  min-height: 16px;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: rgba(255, 255, 255, 0.72);

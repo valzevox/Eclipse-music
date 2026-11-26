@@ -58,7 +58,7 @@ describe('Fullscreen Lyrics & Karaoke Parity Unit Tests', () => {
     const miniHtml = fs.readFileSync(path.join(__dirname, '../src/renderer/floating-lyrics.html'), 'utf8');
 
     assert.ok(miniHtml.includes('id="mini-cover"'), 'mini-cover img must exist in floating-lyrics.html');
-    assert.ok(miniHtml.includes('id="mini-seek-bar"'), 'mini-seek-bar slider must exist in floating-lyrics.html');
+    assert.ok(miniHtml.includes('id="mini-scrubber-track"') && miniHtml.includes('id="mini-squiggly-canvas"'), 'mini-scrubber-track and mini-squiggly-canvas must exist in floating-lyrics.html');
     assert.ok(miniHtml.includes('id="btn-fav"'), 'btn-fav button must exist in floating-lyrics.html');
     assert.ok(miniHtml.includes('id="btn-mute"'), 'btn-mute button must exist in floating-lyrics.html');
     assert.ok(miniHtml.includes('seek-percent'), 'seek-percent command must be wired');
