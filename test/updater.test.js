@@ -656,11 +656,11 @@ test('Platform fallback: truly missing platform asset across all 3 sources emits
   }
 });
 
-// Test 10: Section 7 — Actual v1.5.0 legacy updater-core.js against actual dist/latest.yml (if present)
-test('Legacy v1.5.0 updater-core.js selects correct assets from actual dist/latest.yml', () => {
+// Test 10: Section 7 — Actual v1.5.0 legacy updater-core.js against actual dist/latest.yml (must fail if missing)
+test('Legacy v1.5.0 updater-core.js selects correct assets from actual dist/latest.yml across all platforms', () => {
   const { execFileSync } = require('child_process');
   const vm = require('vm');
-  const legacyCode = execFileSync('git', ['show', 'f074260:src/main/updater-core.js'], {
+  const legacyCode = execFileSync('git', ['show', 'v1.5.0:src/main/updater-core.js'], {
     cwd: path.resolve(__dirname, '..'),
     encoding: 'utf8'
   });
@@ -669,15 +669,36 @@ test('Legacy v1.5.0 updater-core.js selects correct assets from actual dist/late
   const legacyCore = legacyMod.exports;
 
   const ymlPath = path.resolve(__dirname, '../dist/latest.yml');
-  if (!fs.existsSync(ymlPath)) return;
+  assert.ok(fs.existsSync(ymlPath), `dist/latest.yml must exist at ${ymlPath} (never skip legacy test)`);
   const ymlText = fs.readFileSync(ymlPath, 'utf8');
   const parsed = legacyCore.parseLatestYml(ymlText);
   assert.ok(parsed && parsed.version, 'Legacy v1.5.0 parseLatestYml must parse dist/latest.yml');
+  assert.ok(Array.isArray(parsed.files) && parsed.files.length >= 5, 'dist/latest.yml must list cross-platform files[]');
 
-  const win64 = legacyCore.findMatchingAsset(parsed.files, 'win32', 'x64');
-  const win32 = legacyCore.findMatchingAsset(parsed.files, 'win32', 'ia32');
-  assert.ok(win64 && /win-x64\.exe$/i.test(win64.name), `Legacy win64 must pick win-x64.exe, got ${win64 && win64.name}`);
-  assert.ok(win32 && /win-ia32\.exe$/i.test(win32.name), `Legacy win32 must pick win-ia32.exe, got ${win32 && win32.name}`);
+  const checks = [
+    { platform: 'win32', arch: 'x64', pattern: /win-x64\.exe$/i, label: 'Windows x64 EXE' },
+    { platform: 'win32', arch: 'ia32', pattern: /win-ia32\.exe$/i, label: 'Windows ia32 EXE' },
+    { platform: 'linux', arch: 'x64', pattern: /\.(AppImage|deb)$/i, label: 'Linux AppImage/DEB' },
+    { platform: 'darwin', arch: 'arm64', pattern: /arm64\.dmg$/i, label: 'macOS arm64 DMG' },
+    { platform: 'darwin', arch: 'x64', pattern: /x64\.dmg$/i, label: 'macOS x64 DMG' }
+  ];
+
+  for (const { platform, arch, pattern, label } of checks) {
+    const asset = legacyCore.findMatchingAsset(parsed.files, platform, arch);
+    assert.ok(asset, `Legacy v1.5.0 must find ${label} in dist/latest.yml`);
+    assert.match(asset.name, pattern, `Legacy ${label} mismatch: got ${asset.name}`);
+    assert.ok(typeof asset.sha512 === 'string' && asset.sha512.length >= 80, `${label} must have valid sha512`);
+    assert.ok(Number.isFinite(asset.size) && asset.size > 0, `${label} must have positive size`);
+    if (platform !== 'win32') {
+      assert.doesNotMatch(asset.name, /\.exe$/i, `Legacy updater must NEVER pick Windows .exe on ${platform}`);
+    }
+  }
+
+  // Even if only Windows .exe assets exist, Linux/macOS must return null (never download Windows .exe)
+  const winOnlyFiles = parsed.files.filter(f => /\.exe$/i.test(f.name));
+  assert.strictEqual(legacyCore.findMatchingAsset(winOnlyFiles, 'linux', 'x64'), null);
+  assert.strictEqual(legacyCore.findMatchingAsset(winOnlyFiles, 'darwin', 'arm64'), null);
+  assert.strictEqual(legacyCore.findMatchingAsset(winOnlyFiles, 'darwin', 'x64'), null);
 });
 
 console.log('ALL PHASE 0 UNIT TESTS PASSED SUCCESSFULLY (EXIT 0)');
