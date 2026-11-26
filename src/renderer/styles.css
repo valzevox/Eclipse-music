@@ -8548,7 +8548,7 @@ body.cover-bg-on[data-theme="light"] .cover-bg-layer.on {
   justify-content: center;
   width: clamp(220px, 28vw, 400px);
   height: 36px;
-  margin-top: 6px;
+  margin: 6px auto 0;
   z-index: 5;
   cursor: pointer;
 }
@@ -12991,7 +12991,7 @@ body.mini .playbar-crossfade-row {
   align-items: center;
   justify-content: space-between;
   width: clamp(220px, 28vw, 400px);
-  margin-top: 2px;
+  margin: 2px auto 0;
   padding: 0 2px;
   font-size: 12px;
   font-variant-numeric: tabular-nums;

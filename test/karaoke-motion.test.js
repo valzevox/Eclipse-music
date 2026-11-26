@@ -1014,4 +1014,82 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
     assert.strictEqual(ctxReduced._strokes.length, 1);
     assert.strictEqual(ctxReduced._strokes[0].strokeStyle, '#a855f7');
   });
+
+  test('Fullscreen Karaoke progress bar alignment & canvas sizing (styles.css + app.js)', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const cssSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/styles.css'), 'utf8');
+    const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+
+    // CSS centering & responsive width
+    assert.match(cssSrc, /\.tvk-progress-row\s*\{[^}]*width:\s*clamp\(220px,\s*28vw,\s*400px\);[^}]*margin:\s*6px auto 0;/s);
+    assert.match(cssSrc, /\.tvk-time-crossfade-row\s*\{[^}]*width:\s*clamp\(220px,\s*28vw,\s*400px\);[^}]*margin:\s*2px auto 0;/s);
+    assert.match(cssSrc, /\.tvk-squiggly-canvas\s*\{[^}]*width:\s*100%;/s);
+
+    // JS: no stale inline width/height, ResizeObserver, and per-frame DPR backing-store sync
+    assert.match(appSrc, /tvkSquiggly\.style\.width = '';\s*tvkSquiggly\.style\.height = '';/);
+    assert.match(appSrc, /if \(rw > 0\)\s*\{[\s\S]*?tvkSquiggly\.width = targetW;/);
+    assert.match(appSrc, /tvkProgRow\._tvkResizeObserver = new ResizeObserver/);
+    assert.match(appSrc, /if \(tw > 0 && \(tvkScrubber\.width !== expectedW \|\| tvkScrubber\.height !== expectedH\)\)/);
+    assert.match(appSrc, /tCtx\.setTransform\(dpr, 0, 0, dpr, 0, 0\)/);
+  });
+
+  test('Fullscreen Karaoke time display sync (syncTvkTimeDisplay + track change, seek, loadedmetadata, durationchange)', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const vm = require('node:vm');
+    const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+
+    // Extract syncTvkTimeDisplay and execute against mock DOM
+    const startIdx = appSrc.indexOf('function syncTvkTimeDisplay(');
+    const endIdx = appSrc.indexOf('function resizeCanvases()');
+    assert.ok(startIdx > 0 && endIdx > startIdx);
+    const snippet = appSrc.slice(startIdx, endIdx);
+
+    const tvkTimeCurrent = env.document.createElement('span');
+    const tvkTimeDuration = env.document.createElement('span');
+    const tvkTimeCurrentDisplay = env.document.createElement('span');
+    tvkTimeCurrentDisplay.id = 'tvk-time-current-display';
+    const tvkTimeDurationDisplay = env.document.createElement('span');
+    tvkTimeDurationDisplay.id = 'tvk-time-duration-display';
+
+    const origGetById = env.document.getElementById.bind(env.document);
+    env.document.getElementById = (id) => {
+      if (id === 'tvk-time-current-display') return tvkTimeCurrentDisplay;
+      if (id === 'tvk-time-duration-display') return tvkTimeDurationDisplay;
+      return origGetById(id);
+    };
+
+    const sandbox = {
+      window: env.window,
+      document: env.document,
+      el: { tvkTimeCurrent, tvkTimeDuration }
+    };
+    vm.runInNewContext(snippet, sandbox);
+    const syncTvkTimeDisplay = env.window._eclipseSyncTvkTimeDisplay;
+    assert.strictEqual(typeof syncTvkTimeDisplay, 'function');
+
+    // 1. Track change reset
+    syncTvkTimeDisplay('0:00', '0:00');
+    assert.strictEqual(tvkTimeCurrent.textContent, '0:00');
+    assert.strictEqual(tvkTimeCurrentDisplay.textContent, '0:00');
+    assert.strictEqual(tvkTimeDuration.textContent, '0:00');
+    assert.strictEqual(tvkTimeDurationDisplay.textContent, '0:00');
+
+    // 2. Duration-only update (loadedmetadata / durationchange)
+    syncTvkTimeDisplay(undefined, '4:12');
+    assert.strictEqual(tvkTimeCurrentDisplay.textContent, '0:00');
+    assert.strictEqual(tvkTimeDuration.textContent, '4:12');
+    assert.strictEqual(tvkTimeDurationDisplay.textContent, '4:12');
+
+    // 3. Seek update (playing or paused)
+    syncTvkTimeDisplay('1:23', '4:12');
+    assert.strictEqual(tvkTimeCurrent.textContent, '1:23');
+    assert.strictEqual(tvkTimeCurrentDisplay.textContent, '1:23');
+
+    // Verify wiring in all lifecycle handlers
+    const syncCalls = appSrc.match(/syncTvkTimeDisplay\(/g) || [];
+    assert.ok(syncCalls.length >= 8, `Expected syncTvkTimeDisplay wired across renderLoop, playTrack, openTvKaraoke, loadedmetadata, durationchange, seeked, timeupdate, scrub; got ${syncCalls.length}`);
+    assert.match(appSrc, /el\.nativeAudio\.addEventListener\('seeked',[\s\S]*?lastDisplayedSec = -1;\s*lastTimeupdateSec = -1;[\s\S]*?syncTvkTimeDisplay\(seekCurText, seekDurText\)/);
+  });
 });

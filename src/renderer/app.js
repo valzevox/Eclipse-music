@@ -2974,6 +2974,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   window._eclipseSeekbarStroke = strokeSeekbarWave;
   window._eclipseUpdateAutomixRainbowBlend = updateAutomixRainbowBlend;
 
+  function syncTvkTimeDisplay(curText, durText) {
+    if (curText !== undefined) {
+      if (el.tvkTimeCurrent && el.tvkTimeCurrent.textContent !== curText) el.tvkTimeCurrent.textContent = curText;
+      const curDisp = document.getElementById('tvk-time-current-display');
+      if (curDisp && curDisp.textContent !== curText) curDisp.textContent = curText;
+    }
+    if (durText !== undefined) {
+      if (el.tvkTimeDuration && el.tvkTimeDuration.textContent !== durText) el.tvkTimeDuration.textContent = durText;
+      const durDisp = document.getElementById('tvk-time-duration-display');
+      if (durDisp && durDisp.textContent !== durText) durDisp.textContent = durText;
+    }
+  }
+  window._eclipseSyncTvkTimeDisplay = syncTvkTimeDisplay;
+
   function resizeCanvases() {
     const dpr = window.devicePixelRatio || 1;
     if (el.scrubberTrack) {
@@ -3040,17 +3054,28 @@ document.addEventListener('DOMContentLoaded', async () => {
         tvkSquiggly.className = 'tvk-squiggly-canvas';
         tvkProgRow.appendChild(tvkSquiggly);
       }
+      tvkSquiggly.style.width = '';
+      tvkSquiggly.style.height = '';
       const rect = tvkProgRow.getBoundingClientRect();
-      const rw = Math.max(220, rect.width || tvkProgRow.clientWidth || 320);
+      const rw = rect.width || tvkProgRow.clientWidth || 0;
       const rh = 36;
-      tvkSquiggly.width = Math.round(rw * dpr);
-      tvkSquiggly.height = Math.round(rh * dpr);
-      tvkSquiggly.style.width = `${rw}px`;
-      tvkSquiggly.style.height = `${rh}px`;
-      const tctx = tvkSquiggly.getContext('2d');
-      if (tctx) {
-        tctx.resetTransform();
-        tctx.scale(dpr, dpr);
+      if (rw > 0) {
+        const targetW = Math.round(rw * dpr);
+        const targetH = Math.round(rh * dpr);
+        if (tvkSquiggly.width !== targetW || tvkSquiggly.height !== targetH) {
+          tvkSquiggly.width = targetW;
+          tvkSquiggly.height = targetH;
+        }
+        const tctx = tvkSquiggly.getContext('2d');
+        if (tctx) {
+          tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+      }
+      if (!tvkProgRow._tvkResizeObserver && typeof ResizeObserver === 'function') {
+        tvkProgRow._tvkResizeObserver = new ResizeObserver(() => {
+          if (state.isTvKaraokeOpen) resizeCanvases();
+        });
+        tvkProgRow._tvkResizeObserver.observe(tvkProgRow);
       }
     }
   }
@@ -3596,13 +3621,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             lastDisplayedSec = roundedSec;
             const t = formatDuration(cur);
             if (el.timeCurrent && el.timeCurrent.textContent !== t) el.timeCurrent.textContent = t;
-            if (el.tvkTimeCurrent && el.tvkTimeCurrent.textContent !== t) el.tvkTimeCurrent.textContent = t;
+            syncTvkTimeDisplay(t, undefined);
           }
           if (dur > 0) {
             const d = formatDuration(dur);
             if (el.timeDuration && el.timeDuration.textContent !== d) el.timeDuration.textContent = d;
-            if (el.tvkTimeDuration && el.tvkTimeDuration.textContent !== d) el.tvkTimeDuration.textContent = d;
-            { const _d = document.getElementById('tvk-time-duration-display'); if (_d && _d.textContent !== d) _d.textContent = d; }
+            syncTvkTimeDisplay(undefined, d);
           }
           if (el.tvkSeekSlider && !isDraggingTvkSeek && dur > 0) {
             const val = Math.round((cur / dur) * 1000);
@@ -3727,6 +3751,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             const tvkProgRow = document.getElementById('tvk-progress-row');
             const tw = (tvkProgRow && tvkProgRow.clientWidth) ? tvkProgRow.clientWidth : (tvkScrubber.clientWidth || 320);
             const th = 36;
+            const dpr = window.devicePixelRatio || 1;
+            const expectedW = Math.round(tw * dpr);
+            const expectedH = Math.round(th * dpr);
+            if (tw > 0 && (tvkScrubber.width !== expectedW || tvkScrubber.height !== expectedH)) {
+              tvkScrubber.width = expectedW;
+              tvkScrubber.height = expectedH;
+              tCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            }
             tCtx.clearRect(0, 0, tw, th);
 
             const targetProgress = dur > 0 ? Math.max(0, Math.min(1, cur / dur)) : 0;
@@ -4843,10 +4875,12 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     state.forceLyricsScroll = true;
     state.forceSnapLyrics = true;
 
+    lastDisplayedSec = -1;
+    lastTimeupdateSec = -1;
+    const initDurText = formatDuration(track.duration || 0);
     if (el.timeCurrent) el.timeCurrent.textContent = '0:00';
-    if (el.tvkTimeCurrent) el.tvkTimeCurrent.textContent = '0:00';
-    if (el.timeDuration) el.timeDuration.textContent = formatDuration(track.duration || 0);
-    if (el.tvkTimeDuration) el.tvkTimeDuration.textContent = formatDuration(track.duration || 0);
+    if (el.timeDuration) el.timeDuration.textContent = initDurText;
+    syncTvkTimeDisplay('0:00', initDurText);
     if (el.tvkSeekSlider) el.tvkSeekSlider.value = 0;
     scrubPrevKnobX = null;
     scrubProgress = 0;
@@ -7516,8 +7550,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         const cur = el.nativeAudio.currentTime || 0;
         const dur = el.nativeAudio.duration || (state.currentTrack ? state.currentTrack.duration : 0);
         updateSyncedLyricsHighlight(cur);
-        if (el.tvkTimeCurrent) el.tvkTimeCurrent.textContent = formatDuration(cur);
-        if (el.tvkTimeDuration) el.tvkTimeDuration.textContent = formatDuration(dur);
+        syncTvkTimeDisplay(formatDuration(cur), formatDuration(dur));
         if (el.tvkSeekSlider && dur > 0) el.tvkSeekSlider.value = Math.round((cur / dur) * 1000);
       }
     };
@@ -9184,7 +9217,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       }
       const d = formatDuration(getReliableTrackDuration());
       if (el.timeDuration) el.timeDuration.textContent = d;
-      if (el.tvkTimeDuration) el.tvkTimeDuration.textContent = d;
+      syncTvkTimeDisplay(undefined, d);
     });
 
     el.nativeAudio.addEventListener('play', () => {
@@ -9324,13 +9357,26 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           });
         }
       }
-      if (el.timeDuration) el.timeDuration.textContent = formatDuration(getReliableTrackDuration());
-      if (el.tvkTimeDuration) el.tvkTimeDuration.textContent = formatDuration(getReliableTrackDuration());
+      const d = formatDuration(getReliableTrackDuration());
+      if (el.timeDuration) el.timeDuration.textContent = d;
+      syncTvkTimeDisplay(undefined, d);
       updateMediaPositionState();
     });
 
     el.nativeAudio.addEventListener('seeked', () => {
       try { mvController.onSeek(el.nativeAudio.currentTime); } catch (_) {}
+      lastDisplayedSec = -1;
+      lastTimeupdateSec = -1;
+      const seekCur = el.nativeAudio.currentTime || 0;
+      const seekDur = getReliableTrackDuration();
+      const seekCurText = formatDuration(seekCur);
+      const seekDurText = formatDuration(seekDur);
+      if (el.timeCurrent) el.timeCurrent.textContent = seekCurText;
+      if (el.timeDuration) el.timeDuration.textContent = seekDurText;
+      syncTvkTimeDisplay(seekCurText, seekDurText);
+      if (el.tvkSeekSlider && !isDraggingTvkSeek && seekDur > 0) {
+        el.tvkSeekSlider.value = Math.round((seekCur / seekDur) * 1000);
+      }
       updateMediaPositionState();
       state.forceLyricsScroll = true;
       state.forceSnapLyrics = true;
@@ -9428,9 +9474,8 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       const curFormatted = formatDuration(cur);
       const durFormatted = formatDuration(dur);
       if (el.timeCurrent) el.timeCurrent.textContent = curFormatted;
-      if (el.tvkTimeCurrent) el.tvkTimeCurrent.textContent = curFormatted;
       if (el.timeDuration) el.timeDuration.textContent = durFormatted;
-      if (el.tvkTimeDuration) el.tvkTimeDuration.textContent = durFormatted;
+      syncTvkTimeDisplay(curFormatted, durFormatted);
       if (el.tvkSeekSlider && !isDraggingTvkSeek && dur > 0) {
         el.tvkSeekSlider.value = Math.round((cur / dur) * 1000);
       }
@@ -9496,8 +9541,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     const dur = getReliableTrackDuration();
     const targetTime = pos * dur;
     state.scrubberDragTargetTime = targetTime;
-    if (el.tvkTimeCurrent) el.tvkTimeCurrent.textContent = formatDuration(targetTime);
-    if (el.timeCurrent) el.timeCurrent.textContent = formatDuration(targetTime);
+    const targetText = formatDuration(targetTime);
+    syncTvkTimeDisplay(targetText, undefined);
+    if (el.timeCurrent) el.timeCurrent.textContent = targetText;
     return targetTime;
   }
 
