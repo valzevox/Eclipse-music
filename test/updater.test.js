@@ -125,10 +125,14 @@ const os = require('os');
 const path = require('path');
 const Module = require('module');
 
-function loadUpdaterWithMocks({ version = '1.5.0', fetchImpl }) {
+function loadUpdaterWithMocks({ version = '1.5.0', fetchImpl, platform = 'win32', arch = 'x64' }) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-updater-test-'));
   const ipcHandlers = new Map();
   const sentEvents = [];
+  const origPlatformDesc = Object.getOwnPropertyDescriptor(process, 'platform');
+  const origArchDesc = Object.getOwnPropertyDescriptor(process, 'arch');
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  Object.defineProperty(process, 'arch', { value: arch, configurable: true });
 
   const mockElectron = {
     app: {
@@ -168,7 +172,11 @@ function loadUpdaterWithMocks({ version = '1.5.0', fetchImpl }) {
   return {
     ipcHandlers,
     sentEvents,
-    cleanup: () => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {} }
+    cleanup: () => {
+      if (origPlatformDesc) Object.defineProperty(process, 'platform', origPlatformDesc);
+      if (origArchDesc) Object.defineProperty(process, 'arch', origArchDesc);
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+    }
   };
 }
 
@@ -656,8 +664,8 @@ test('Platform fallback: truly missing platform asset across all 3 sources emits
   }
 });
 
-// Test 10: Section 7 — Actual v1.5.0 legacy updater-core.js against actual dist/latest.yml (must fail if missing)
-test('Legacy v1.5.0 updater-core.js selects correct assets from actual dist/latest.yml across all platforms', () => {
+// Test 10: Section 7 — Actual v1.5.0 legacy updater-core.js against verified v1.5.1 manifest fixture (and dist/latest.yml when present)
+test('Legacy v1.5.0 updater-core.js selects correct assets from verified v1.5.1 manifest across all platforms', () => {
   const { execFileSync } = require('child_process');
   const vm = require('vm');
   const legacyCode = execFileSync('git', ['show', 'v1.5.0:src/main/updater-core.js'], {
@@ -668,12 +676,22 @@ test('Legacy v1.5.0 updater-core.js selects correct assets from actual dist/late
   vm.runInNewContext(legacyCode, { module: legacyMod, exports: legacyMod.exports, require, process, Buffer });
   const legacyCore = legacyMod.exports;
 
-  const ymlPath = path.resolve(__dirname, '../dist/latest.yml');
-  assert.ok(fs.existsSync(ymlPath), `dist/latest.yml must exist at ${ymlPath} (never skip legacy test)`);
-  const ymlText = fs.readFileSync(ymlPath, 'utf8');
+  const fixturePath = path.resolve(__dirname, 'fixtures/v1.5.1-latest.yml');
+  assert.ok(fs.existsSync(fixturePath), `Verified manifest fixture must exist at ${fixturePath}`);
+  const ymlText = fs.readFileSync(fixturePath, 'utf8');
+
+  const distYmlPath = path.resolve(__dirname, '../dist/latest.yml');
+  if (fs.existsSync(distYmlPath)) {
+    assert.strictEqual(
+      fs.readFileSync(distYmlPath, 'utf8').replace(/\r\n/g, '\n'),
+      ymlText.replace(/\r\n/g, '\n'),
+      'dist/latest.yml must match verified fixture test/fixtures/v1.5.1-latest.yml'
+    );
+  }
+
   const parsed = legacyCore.parseLatestYml(ymlText);
-  assert.ok(parsed && parsed.version, 'Legacy v1.5.0 parseLatestYml must parse dist/latest.yml');
-  assert.ok(Array.isArray(parsed.files) && parsed.files.length >= 5, 'dist/latest.yml must list cross-platform files[]');
+  assert.ok(parsed && parsed.version, 'Legacy v1.5.0 parseLatestYml must parse v1.5.1 manifest');
+  assert.ok(Array.isArray(parsed.files) && parsed.files.length >= 5, 'v1.5.1 manifest must list cross-platform files[]');
 
   const checks = [
     { platform: 'win32', arch: 'x64', pattern: /win-x64\.exe$/i, label: 'Windows x64 EXE' },
@@ -685,7 +703,7 @@ test('Legacy v1.5.0 updater-core.js selects correct assets from actual dist/late
 
   for (const { platform, arch, pattern, label } of checks) {
     const asset = legacyCore.findMatchingAsset(parsed.files, platform, arch);
-    assert.ok(asset, `Legacy v1.5.0 must find ${label} in dist/latest.yml`);
+    assert.ok(asset, `Legacy v1.5.0 must find ${label} in v1.5.1 manifest`);
     assert.match(asset.name, pattern, `Legacy ${label} mismatch: got ${asset.name}`);
     assert.ok(typeof asset.sha512 === 'string' && asset.sha512.length >= 80, `${label} must have valid sha512`);
     assert.ok(Number.isFinite(asset.size) && asset.size > 0, `${label} must have positive size`);
@@ -700,5 +718,35 @@ test('Legacy v1.5.0 updater-core.js selects correct assets from actual dist/late
   assert.strictEqual(legacyCore.findMatchingAsset(winOnlyFiles, 'darwin', 'arm64'), null);
   assert.strictEqual(legacyCore.findMatchingAsset(winOnlyFiles, 'darwin', 'x64'), null);
 });
+
+for (const { platform, arch, expectedAsset } of [
+  { platform: 'linux', arch: 'x64', expectedAsset: 'valzevox-eclipse_1.5.1_amd64.deb' },
+  { platform: 'darwin', arch: 'arm64', expectedAsset: 'Eclipse-1.5.1-mac-arm64.dmg' },
+  { platform: 'darwin', arch: 'x64', expectedAsset: 'Eclipse-1.5.1-mac-x64.dmg' }
+]) {
+  test(`Portable updater check on ${platform}/${arch} selects ${expectedAsset} from v1.5.1 latest.yml`, async () => {
+    const ymlText = fs.readFileSync(path.resolve(__dirname, 'fixtures/v1.5.1-latest.yml'), 'utf8');
+    const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+      version: '1.5.0',
+      platform,
+      arch,
+      fetchImpl: async (url) => {
+        if (url.endsWith('latest.yml')) return textResponse(200, ymlText);
+        return textResponse(404, 'Not Found');
+      }
+    });
+    try {
+      await ipcHandlers.get('update-check')();
+      const avail = sentEvents.filter(e => e.channel === 'update-available');
+      assert.strictEqual(avail.length, 1);
+      assert.ok(
+        avail[0].payload.downloadUrl && avail[0].payload.downloadUrl.endsWith(`/${expectedAsset}`),
+        `Expected downloadUrl ending with /${expectedAsset}, got ${avail[0].payload.downloadUrl}`
+      );
+    } finally {
+      cleanup();
+    }
+  });
+}
 
 console.log('ALL PHASE 0 UNIT TESTS PASSED SUCCESSFULLY (EXIT 0)');

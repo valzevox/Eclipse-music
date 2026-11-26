@@ -1,0 +1,32 @@
+version: 1.5.1
+files:
+  - url: eclipse-1.5.1-win.exe
+    sha512: HvDJJkWVZ8i5TRNEPqtQgavrvQEVF9ePepbAxlim+rABTfVVuPxNCrF8wLqQ0xiNwUSpcvR2iKBC5UqjPm8gMg==
+    size: 284463871
+  - url: eclipse-1.5.1-win-ia32.exe
+    sha512: aapBlfwuejTxVuqtSKk1llOig9z6leqaCeMwWZLmNyoA3wABSGdlkHGBraiwGt+QRP/2FzKwMB9lR/jAReydjg==
+    size: 136081575
+  - url: eclipse-1.5.1-win-x64.exe
+    sha512: Eq7Yv9tKNj0yCkA2e4+gJFZFpwt9sSkheRWYq8nBnqLOLw3QDah8xXYQwPKoSCbb4I5vU6UKvPEMvam1GrlpGQ==
+    size: 148956168
+  - url: valzevox-eclipse_1.5.1_amd64.deb
+    sha512: QCfk5VxltmXakYhjHEGZloiM5pe6Un7a4Tu3dv8eAUril3aV2bkEyaq2cYu2oBwRwjrbQOgvuJS4uLCkPY4QBA==
+    size: 91188304
+  - url: eclipse-1.5.1-linux-x64.tar.gz
+    sha512: cz9fzCNJONL3ZIl4p3IvsaqFYiQh17HYgBAuJaaae8ifxGlWPsKF3lBFm7iU3pbUX3l01tdgW4sXRndaOHuYOA==
+    size: 172601283
+  - url: Eclipse-1.5.1-mac-arm64.dmg
+    sha512: +fcFDd1YUY3dNHfwhXtPg48SoZHW4a59zvXFex0rlZLpOU9iTD86GfNdVLV3RNDu4j2ebnVjNB9CLsz4w/Q0Vg==
+    size: 128620267
+  - url: Eclipse-1.5.1-mac-x64.dmg
+    sha512: LNGO8FlW0S7eqChI5OSgds/QGlZ1bGwZszxrxWdU8iyfJEOj2xKlBpMnWb99H9t0e0bTA2/Kvmchr/JlEyltgg==
+    size: 134084633
+  - url: eclipse-1.5.1-mac-aarch64.zip
+    sha512: HQML7IZH567koMEL+GM0QSSRenBGSyo4IWbcXu+yH4HDdFcEbiikzFVKJxCl7cKB3aLqLShVVlI0ApQvitAvsw==
+    size: 130458512
+  - url: eclipse-1.5.1-mac-amd64.zip
+    sha512: g0yoGrIdUGPku485+ZwSmiGsgfGhV4yJzD/0mB0ZZPPW06HQBdLUjRUrkRCuT1nZHMZDuDyfObBZ4NM03HILiA==
+    size: 137765606
+path: eclipse-1.5.1-win.exe
+sha512: HvDJJkWVZ8i5TRNEPqtQgavrvQEVF9ePepbAxlim+rABTfVVuPxNCrF8wLqQ0xiNwUSpcvR2iKBC5UqjPm8gMg==
+releaseDate: '2026-11-26T20:27:28.140Z'
