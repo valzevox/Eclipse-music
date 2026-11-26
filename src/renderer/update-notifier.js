@@ -377,16 +377,4 @@
   } else if (!lastSeenVer) {
     store.set('eclipse_last_seen_version', CURRENT_VER);
   }
-
-  // UI Settings button triggers
-  const checkBtn = document.getElementById('btn-check-updates');
-  const statusEl = document.getElementById('update-status');
-  if (checkBtn) {
-    checkBtn.addEventListener('click', () => {
-      if (statusEl) statusEl.textContent = 'Đang kiểm tra cập nhật...';
-      if (window.electronAPI && window.electronAPI.checkForUpdates) {
-        window.electronAPI.checkForUpdates();
-      }
-    });
-  }
 })();

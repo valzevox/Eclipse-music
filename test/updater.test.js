@@ -115,4 +115,183 @@ const minCheck2 = evaluateMinSupported(manifest, '1.4.14');
 assert.strictEqual(minCheck2.supported, true, '1.4.14 satisfies minSupported 1.4.0');
 console.log('✓ Blocked and minSupported checks passed.');
 
+// Test 6: Main-process updater.js (304 ETag cache, targetBlocked manual error, serialized update-check)
+const { test } = require('node:test');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const Module = require('module');
+
+function loadUpdaterWithMocks({ version = '1.5.0', fetchImpl }) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eclipse-updater-test-'));
+  const ipcHandlers = new Map();
+  const sentEvents = [];
+
+  const mockElectron = {
+    app: {
+      getVersion: () => version,
+      getPath: () => tmpDir,
+      on: () => {},
+      exit: () => {}
+    },
+    ipcMain: {
+      handle: (ch, fn) => ipcHandlers.set(ch, fn),
+      on: () => {}
+    },
+    shell: { openPath: async () => '' },
+    net: { fetch: fetchImpl },
+    powerMonitor: { on: () => {} }
+  };
+
+  const origLoad = Module._load;
+  Module._load = function (request, parent, isMain) {
+    if (request === 'electron') return mockElectron;
+    return origLoad.apply(this, arguments);
+  };
+
+  const updaterPath = require.resolve('../src/main/updater');
+  delete require.cache[updaterPath];
+  const updater = require('../src/main/updater');
+  Module._load = origLoad;
+
+  const mockWin = {
+    isDestroyed: () => false,
+    webContents: {
+      send: (channel, payload) => sentEvents.push({ channel, payload })
+    }
+  };
+
+  updater.initUpdater(() => mockWin);
+  return {
+    ipcHandlers,
+    sentEvents,
+    cleanup: () => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {} }
+  };
+}
+
+function jsonResponse(status, body, headers = {}) {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers: { get: (k) => headers[k.toLowerCase()] || null },
+    json: async () => body,
+    text: async () => JSON.stringify(body)
+  };
+}
+
+test('304 ETag reuses cached lastManifest on manual update-check', async () => {
+  let callCount = 0;
+  const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+    version: '1.5.0',
+    fetchImpl: async (url) => {
+      if (url.endsWith('latest.json')) {
+        callCount++;
+        if (callCount === 1) {
+          return jsonResponse(200, {
+            version: '1.6.0',
+            url: 'https://example.com/eclipse-1.6.0.exe',
+            notes: 'Release 1.6.0'
+          }, { etag: '"v1.6.0"' });
+        }
+        return jsonResponse(304, null);
+      }
+      return jsonResponse(404, {});
+    }
+  });
+
+  try {
+    const check = ipcHandlers.get('update-check');
+    await check();
+    await check();
+    const avail = sentEvents.filter((e) => e.channel === 'update-available');
+    assert.strictEqual(avail.length, 2, '304 ETag must reuse cached lastManifest and emit update-available');
+    assert.strictEqual(avail[1].payload.version, '1.6.0');
+  } finally {
+    cleanup();
+  }
+});
+
+test('304 ETag with no cached lastManifest emits update-not-available on manual check and resets manualCheck', async () => {
+  const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+    version: '1.5.0',
+    fetchImpl: async (url) => {
+      if (url.endsWith('latest.json')) return jsonResponse(304, null);
+      return jsonResponse(404, {});
+    }
+  });
+
+  try {
+    const check = ipcHandlers.get('update-check');
+    await check();
+    const notAvail = sentEvents.filter((e) => e.channel === 'update-not-available');
+    assert.strictEqual(notAvail.length, 1, '304 with no cached manifest must emit update-not-available on manual check');
+    assert.strictEqual(notAvail[0].payload.version, '1.5.0');
+  } finally {
+    cleanup();
+  }
+});
+
+test('targetBlocked emits update-error on manual check and resets manualCheck', async () => {
+  const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+    version: '1.5.0',
+    fetchImpl: async (url) => {
+      if (url.endsWith('latest.json')) {
+        return jsonResponse(200, {
+          version: '1.6.0',
+          blocked: ['1.6.0'],
+          url: 'https://example.com/eclipse-1.6.0.exe'
+        });
+      }
+      return jsonResponse(404, {});
+    }
+  });
+
+  try {
+    const check = ipcHandlers.get('update-check');
+    await check();
+    const errs = sentEvents.filter((e) => e.channel === 'update-error');
+    assert.strictEqual(errs.length, 1, 'targetBlocked must emit update-error on manual check');
+    assert.match(errs[0].payload.message, /blocked/i);
+  } finally {
+    cleanup();
+  }
+});
+
+test('ipcMain update-check serializes concurrent checks without manualCheck race', async () => {
+  let releaseFirst;
+  let callCount = 0;
+  const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+    version: '1.5.0',
+    fetchImpl: async (url) => {
+      if (url.endsWith('latest.json')) {
+        callCount++;
+        if (callCount === 1) {
+          await new Promise((r) => { releaseFirst = r; });
+        }
+        return jsonResponse(200, {
+          version: '1.5.0',
+          url: 'https://example.com/eclipse-1.5.0.exe'
+        });
+      }
+      return jsonResponse(404, {});
+    }
+  });
+
+  try {
+    const check = ipcHandlers.get('update-check');
+    const p1 = check();
+    const p2 = check();
+    // Wait a tick so p1 enters fetchImpl
+    await new Promise((r) => setTimeout(r, 20));
+    assert.strictEqual(callCount, 1, 'Second check must wait for first in-flight check');
+    releaseFirst();
+    await Promise.all([p1, p2]);
+    assert.strictEqual(callCount, 2, 'Second check must run after first completes');
+    const notAvail = sentEvents.filter((e) => e.channel === 'update-not-available');
+    assert.strictEqual(notAvail.length, 2, 'Both serialized manual checks must emit update-not-available');
+  } finally {
+    cleanup();
+  }
+});
+
 console.log('ALL PHASE 0 UNIT TESTS PASSED SUCCESSFULLY (EXIT 0)');

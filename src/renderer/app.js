@@ -20970,7 +20970,7 @@ function bindCoverHoldZoom(wrapEl) {
           if (manualUpdateCheck) {
             checkDirectFromRenderer();
           }
-        }, 6000);
+        }, 15000);
 
         try {
           const r = await api.checkForUpdates();
@@ -21125,15 +21125,6 @@ function bindCoverHoldZoom(wrapEl) {
         }, 260);
       });
     }
-
-    // Auto check updates on app launch after UI is ready
-    setTimeout(() => {
-      if (api && api.checkForUpdates) {
-        api.checkForUpdates().catch(() => {});
-      } else {
-        checkDirectFromRenderer().catch(() => {});
-      }
-    }, 3000);
   })();
 
   function isTextInput(target) {

@@ -440,94 +440,124 @@ function initUpdater(getWindow, hooks = {}) {
   let manualCheck = false;
   let isDownloading = false;
   let activeManifest = null;
+  let lastManifest = null;
+  let checkInFlight = null;
+  lastManifestEtag = null;
 
   const send = (channel, payload) => {
     const win = getWindow();
     if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
   };
 
-  const checkForUpdates = async () => {
-    try {
-      logStage('check', 'Checking for updates...');
-      const manifest = await fetchLatestManifest();
-      if (!manifest || manifest.notModified) return;
+  const checkForUpdates = async (isManual = false) => {
+    if (checkInFlight) {
+      try { await checkInFlight; } catch (_) {}
+      if (!isManual) return;
+    }
+    if (isManual) manualCheck = true;
 
-      activeManifest = manifest;
-      const remoteVer = manifest.version;
+    const run = (async () => {
+      try {
+        logStage('check', 'Checking for updates...');
+        let manifest = await fetchLatestManifest();
+        if (manifest && manifest.notModified) {
+          manifest = lastManifest;
+        } else if (manifest) {
+          lastManifest = manifest;
+        }
+        if (!manifest) {
+          if (manualCheck) send('update-not-available', { version: currentVer });
+          manualCheck = false;
+          return;
+        }
 
-      // 1. MinSupported evaluation
-      const minCheck = evaluateMinSupported(manifest, currentVer);
-      if (!minCheck.supported) {
-        logStage('guard', `Current version ${currentVer} is below minSupported ${minCheck.minSupported}`);
-        send('update-mandatory', { current: currentVer, minSupported: minCheck.minSupported });
-      }
+        activeManifest = manifest;
+        const remoteVer = manifest.version;
 
-      // 2. Blocked evaluation
-      const blockCheck = evaluateBlockedVersion(manifest, currentVer, remoteVer);
-      if (blockCheck.status === 'no-safe-target') {
-        logStage('guard-blocked', 'Both current and target versions are blocked. Halting update attempts.');
-        send('update-no-safe-target', { current: currentVer, target: remoteVer, reason: blockCheck.reason });
+        // 1. MinSupported evaluation
+        const minCheck = evaluateMinSupported(manifest, currentVer);
+        if (!minCheck.supported) {
+          logStage('guard', `Current version ${currentVer} is below minSupported ${minCheck.minSupported}`);
+          send('update-mandatory', { current: currentVer, minSupported: minCheck.minSupported });
+        }
+
+        // 2. Blocked evaluation
+        const blockCheck = evaluateBlockedVersion(manifest, currentVer, remoteVer);
+        if (blockCheck.status === 'no-safe-target') {
+          logStage('guard-blocked', 'Both current and target versions are blocked. Halting update attempts.');
+          send('update-no-safe-target', { current: currentVer, target: remoteVer, reason: blockCheck.reason });
+          manualCheck = false;
+          return;
+        }
+        if (blockCheck.currentBlocked) {
+          logStage('guard-blocked', `Current version ${currentVer} is revoked/blocked!`);
+          send('update-current-blocked', { current: currentVer, target: remoteVer });
+        }
+        if (blockCheck.targetBlocked) {
+          logStage('guard-blocked', `Remote target version ${remoteVer} is blocked from installation.`);
+          if (manualCheck) {
+            send('update-error', { stage: 'check', message: `Update v${remoteVer} is blocked from installation.` });
+          }
+          manualCheck = false;
+          return;
+        }
+
+        // 3. Rollback guard (2 crashes check)
+        const state = readUpdateState();
+        if (state.failedVersions && state.failedVersions[remoteVer] >= 2) {
+          logStage('guard-rollback', `Skipping auto-update to ${remoteVer}: crashed 2+ times previously.`);
+          if (manualCheck) {
+            send('update-error', { stage: 'check', message: `Bản v${remoteVer} đã bị tạm ngưng tự động do lỗi crash trước đó. Hãy tải thủ công.` });
+          }
+          manualCheck = false;
+          return;
+        }
+
+        // 4. SemVer comparison
+        if (isNewerSemVer(remoteVer, currentVer)) {
+          logStage('check', `Newer version available: v${remoteVer} (local: v${currentVer})`);
+
+          // If manifest has no notes (e.g. from static latest.yml), attempt to fetch real release notes from API
+          let notes = manifest.notes || manifest.releaseNotes || manifest.body || '';
+          if (!notes) {
+            try {
+              const relRes = await httpFetch(`https://api.github.com/repos/${REPO}/releases/tags/v${remoteVer}`, {
+                headers: { 'User-Agent': 'Eclipse-Player', Accept: 'application/vnd.github+json' },
+                signal: AbortSignal.timeout(6000)
+              });
+              if (relRes.ok) {
+                const relJson = await relRes.json();
+                if (relJson && relJson.body) notes = relJson.body;
+              }
+            } catch (_) {}
+          }
+
+          send('update-available', {
+            version: remoteVer,
+            releaseNotes: notes || 'Cập nhật phiên bản mới, sửa lỗi và nâng cấp hiệu năng.',
+            downloadUrl: manifest.url,
+            canInstall: !!manifest.url,
+            sha512: manifest.sha512
+          });
+        } else {
+          logStage('check', `Application is up to date (v${currentVer})`);
+          if (manualCheck) send('update-not-available', { version: currentVer });
+        }
         manualCheck = false;
-        return;
-      }
-      if (blockCheck.currentBlocked) {
-        logStage('guard-blocked', `Current version ${currentVer} is revoked/blocked!`);
-        send('update-current-blocked', { current: currentVer, target: remoteVer });
-      }
-      if (blockCheck.targetBlocked) {
-        logStage('guard-blocked', `Remote target version ${remoteVer} is blocked from installation.`);
-        manualCheck = false;
-        return;
-      }
-
-      // 3. Rollback guard (2 crashes check)
-      const state = readUpdateState();
-      if (state.failedVersions && state.failedVersions[remoteVer] >= 2) {
-        logStage('guard-rollback', `Skipping auto-update to ${remoteVer}: crashed 2+ times previously.`);
+      } catch (err) {
+        logStage('check-error', err.message);
         if (manualCheck) {
-          send('update-error', { stage: 'check', message: `Bản v${remoteVer} đã bị tạm ngưng tự động do lỗi crash trước đó. Hãy tải thủ công.` });
+          send('update-error', { stage: 'check', message: err.message || 'Không thể kiểm tra cập nhật' });
         }
         manualCheck = false;
-        return;
       }
+    })();
 
-      // 4. SemVer comparison
-      if (isNewerSemVer(remoteVer, currentVer)) {
-        logStage('check', `Newer version available: v${remoteVer} (local: v${currentVer})`);
-
-        // If manifest has no notes (e.g. from static latest.yml), attempt to fetch real release notes from API
-        let notes = manifest.notes || manifest.releaseNotes || manifest.body || '';
-        if (!notes) {
-          try {
-            const relRes = await httpFetch(`https://api.github.com/repos/${REPO}/releases/tags/v${remoteVer}`, {
-              headers: { 'User-Agent': 'Eclipse-Player', Accept: 'application/vnd.github+json' },
-              signal: AbortSignal.timeout(6000)
-            });
-            if (relRes.ok) {
-              const relJson = await relRes.json();
-              if (relJson && relJson.body) notes = relJson.body;
-            }
-          } catch (_) {}
-        }
-
-        send('update-available', {
-          version: remoteVer,
-          releaseNotes: notes || 'Cập nhật phiên bản mới, sửa lỗi và nâng cấp hiệu năng.',
-          downloadUrl: manifest.url,
-          canInstall: !!manifest.url,
-          sha512: manifest.sha512
-        });
-      } else {
-        logStage('check', `Application is up to date (v${currentVer})`);
-        if (manualCheck) send('update-not-available', { version: currentVer });
-      }
-      manualCheck = false;
-    } catch (err) {
-      logStage('check-error', err.message);
-      if (manualCheck) {
-        send('update-error', { stage: 'check', message: err.message || 'Không thể kiểm tra cập nhật' });
-      }
-      manualCheck = false;
+    checkInFlight = run;
+    try {
+      await run;
+    } finally {
+      if (checkInFlight === run) checkInFlight = null;
     }
   };
 
@@ -579,9 +609,8 @@ function initUpdater(getWindow, hooks = {}) {
   };
 
   // IPC Handlers
-  ipcMain.handle('update-check', () => {
-    manualCheck = true;
-    checkForUpdates();
+  ipcMain.handle('update-check', async () => {
+    await checkForUpdates(true);
     return { ok: true };
   });
 
@@ -637,11 +666,11 @@ function initUpdater(getWindow, hooks = {}) {
 
   // Initial check with randomized jitter
   const initialDelay = CHECK_DELAY_MS + Math.floor(Math.random() * 2000);
-  setTimeout(checkForUpdates, initialDelay);
+  setTimeout(() => { checkForUpdates(false); }, initialDelay).unref();
 
   // Periodic check with jitter (±15 mins)
   const jitter = Math.floor((Math.random() - 0.5) * 30 * 60 * 1000);
-  setInterval(checkForUpdates, CHECK_EVERY_MS + jitter).unref();
+  setInterval(() => { checkForUpdates(false); }, CHECK_EVERY_MS + jitter).unref();
 
   // Background decoupled update check for yt-dlp binary (delayed 10s after startup)
   setTimeout(() => { checkAndUpdateYtDlp().catch(() => {}); }, 10000);
