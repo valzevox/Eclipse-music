@@ -246,7 +246,7 @@
         const triggerCollectionScan = (force = false) => {
           if (!analysisCoordinator || !window.autoMixDjInstance || !window.autoMixDjInstance.enabled) return;
           const mode = window.autoMixDjInstance.mode;
-          if (mode !== 'tempo_synced' && mode !== 'dj_mix') return;
+          if (mode !== 'tempo_synced') return;
           const st = getCoreState();
           if (!st || !Array.isArray(st.queue) || st.queue.length === 0) return;
           const resolver = window.EclipseAutoMixSourceResolver;
@@ -258,7 +258,7 @@
             return;
           }
           lastScannedContextId = contextId;
-          const isFullScanMode = (mode === 'dj_mix' || mode === 'tempo_synced');
+          const isFullScanMode = (mode === 'tempo_synced');
           analysisCoordinator.scanCollection(st.queue, contextId, {
             currentIndex: st.queueIndex || 0,
             scanAll: isFullScanMode,
@@ -274,7 +274,7 @@
         setInterval(() => {
           if (!window.autoMixDjInstance || !window.autoMixDjInstance.enabled) return;
           const mode = window.autoMixDjInstance.mode;
-          if (mode !== 'tempo_synced' && mode !== 'dj_mix' && mode !== 'smart') return;
+          if (mode !== 'tempo_synced' && mode !== 'smart') return;
           if (!nativeAudio || nativeAudio.paused || window.autoMixDjInstance.isCrossfading) return;
           const analyser = window.audioEngine && window.audioEngine.analyserNode;
           if (analyser && typeof window.autoMixDjInstance.sampleLiveBpm === 'function') {
@@ -342,8 +342,8 @@
             let nextIdx = st.queueIndex + 1;
             let nextTrack = nextIdx < st.queue.length ? st.queue[nextIdx] : null;
 
-            // 1. Early Stream Preloading & SponsorBlock Pre-fetching at 25-30s before track ends
-            if (dur > 35 && remaining <= 28 && remaining > 16 && !earlyPreloadStartedForTrack) {
+            // 1. Early Stream Preloading & SponsorBlock Pre-fetching at 20-30s before track ends
+            if (dur > 20 && remaining <= 30 && remaining > 8 && !earlyPreloadStartedForTrack) {
               earlyPreloadStartedForTrack = true;
               if (nextTrack) {
                 if (preloadManager) {
@@ -372,7 +372,7 @@
             let currentTrackBpm = trackAnalyzer ? trackAnalyzer.getEffectiveBpm(currentTrack) : ((currentTrack && currentTrack._detectedBpm) || null);
             let pickedCandidate = null;
 
-            if ((window.autoMixDjInstance.mode === 'tempo_synced' || window.autoMixDjInstance.mode === 'dj_mix') && typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function') {
+            if (window.autoMixDjInstance.mode === 'tempo_synced' && typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function') {
               pickedCandidate = window.autoMixDjInstance.pickTempoSyncedNext(
                 st.queue,
                 st.queueIndex,

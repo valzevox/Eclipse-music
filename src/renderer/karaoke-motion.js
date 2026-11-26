@@ -181,7 +181,7 @@
         this._domPill.classList.remove('hidden');
         this._domPill.classList.add('visible');
         const lbl = this._domPill.querySelector('.tvk-automix-label');
-        if (lbl) lbl.textContent = detail.mode === 'tempo_synced' ? 'BEAT MIX' : (detail.mode === 'dj_mix' ? 'DJ MIX' : 'AUTOMIX');
+        if (lbl) lbl.textContent = detail.mode === 'tempo_synced' ? 'BEAT MIX' : 'AUTOMIX';
         const fill = this._domPill.querySelector('.tvk-automix-progress-fill');
         if (fill) fill.style.width = '0%';
       }

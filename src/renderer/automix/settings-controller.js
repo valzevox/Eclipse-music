@@ -100,7 +100,7 @@
         if (win && win._analysisCoordinatorInstance && typeof win._analysisCoordinatorInstance.cancel === 'function') {
           win._analysisCoordinatorInstance.cancel();
         }
-      } else if ((curMode === 'tempo_synced' || curMode === 'dj_mix') && win && typeof win._triggerAutoMixCollectionScan === 'function') {
+      } else if (curMode === 'tempo_synced' && win && typeof win._triggerAutoMixCollectionScan === 'function') {
         win._triggerAutoMixCollectionScan(false);
       }
       return typeof dj.getStatus === 'function' ? dj.getStatus() : cfg;

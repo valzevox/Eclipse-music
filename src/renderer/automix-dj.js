@@ -710,7 +710,7 @@ class AutoMixDJ {
     const useDeckGains = isAudioEngineReady && typeof audioEngine.setDeckGains === 'function';
     const useFadeGainNode = !useDeckGains && !!(audioEngine && audioEngine.fadeGain && audioEngine.ctx);
 
-    const isTempoMode = (this.mode === 'tempo_synced' || this.mode === 'dj_mix');
+    const isTempoMode = (this.mode === 'tempo_synced');
     const startInRate = (isTempoMode && options.tempoSynced !== false)
       ? (typeof options.tempoRatio === 'number' && Number.isFinite(options.tempoRatio)
           ? options.tempoRatio

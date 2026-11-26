@@ -11830,6 +11830,13 @@ body.is-automixing #tvk-seek-slider::-webkit-slider-runnable-track {
 .tv-karaoke.is-automix-dominance #tvk-ambient-bg {
   filter: saturate(1.1) contrast(1.0);
 }
+.tv-karaoke.is-automix-blend .lyrics-container {
+  transition: opacity 0.5s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.tv-karaoke.is-automix-dominance .lyrics-container {
+  opacity: 0.15;
+  transform: translateY(-8px) scale(0.98);
+}
 body.perf .tvk-automix-pill, body.perf .tvk-up-next-chip, body.perf .tv-karaoke.is-automix-blend #tvk-ambient-bg {
   transition: none !important;
   backdrop-filter: none !important;
