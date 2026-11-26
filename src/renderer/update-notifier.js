@@ -257,6 +257,19 @@
       });
     }
 
+    if (window.electronAPI.onUpdateNotAvailable) {
+      window.electronAPI.onUpdateNotAvailable((d) => {
+        if (!d || !d.manual) return;
+        const ver = (d && d.version) ? String(d.version).replace(/^v/i, '') : CURRENT_VER;
+        const msg = `Eclipse is up to date (v${ver}).`;
+        const statusEl = document.getElementById('update-status');
+        if (statusEl) statusEl.textContent = msg;
+        if (typeof window.showToast === 'function') {
+          window.showToast(msg, 'success');
+        }
+      });
+    }
+
     if (window.electronAPI.onUpdateProgress) {
       window.electronAPI.onUpdateProgress((d) => {
         const modal = document.querySelector('#eclipse-upd-progress-wrap');

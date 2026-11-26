@@ -36,36 +36,120 @@ function isNewerSemVer(remote, local) {
 
 function findMatchingAsset(assets = [], platform = process.platform, arch = process.arch) {
   if (!Array.isArray(assets) || assets.length === 0) return null;
+  const getName = (a) => String((a && (a.name || a.url)) || '');
+  const validAssets = assets.filter(a => a && getName(a) && !/\.blockmap$/i.test(getName(a)));
 
   if (platform === 'win32') {
     const is64 = arch === 'x64' || arch === 'arm64' || (arch !== 'ia32' && !!process.env.ProgramFiles);
     if (is64) {
-      const win64 = assets.find(a => /x64\.exe$/i.test(a.name)) || assets.find(a => /win\.exe$/i.test(a.name));
-      if (win64) return win64;
-    } else {
-      const win32 = assets.find(a => /ia32\.exe$/i.test(a.name));
-      if (win32) return win32;
+      return validAssets.find(a => /win-x64\.exe$/i.test(getName(a)) || /x64\.exe$/i.test(getName(a)))
+        || validAssets.find(a => /win\.exe$/i.test(getName(a)))
+        || validAssets.find(a => /\.exe$/i.test(getName(a)) && !/ia32/i.test(getName(a)))
+        || null;
     }
-    return assets.find(a => /\.exe$/i.test(a.name) && !/blockmap/i.test(a.name)) || null;
+    return validAssets.find(a => /win-ia32\.exe$/i.test(getName(a)) || /ia32\.exe$/i.test(getName(a)))
+      || validAssets.find(a => /win\.exe$/i.test(getName(a)))
+      || null;
   }
 
   if (platform === 'linux') {
-    return assets.find(a => /\.AppImage$/i.test(a.name)) || assets.find(a => /\.deb$/i.test(a.name)) || null;
+    return validAssets.find(a => /\.AppImage$/i.test(getName(a)))
+      || validAssets.find(a => /\.deb$/i.test(getName(a)))
+      || validAssets.find(a => /linux.*\.tar\.gz$/i.test(getName(a)))
+      || null;
   }
 
   if (platform === 'darwin') {
     const isArm = arch === 'arm64';
     if (isArm) {
-      return assets.find(a => /arm64\.dmg$/i.test(a.name)) || assets.find(a => /\.dmg$/i.test(a.name)) || null;
+      return validAssets.find(a => /(arm64|aarch64)\.dmg$/i.test(getName(a)))
+        || validAssets.find(a => /(arm64|aarch64)\.zip$/i.test(getName(a)))
+        || validAssets.find(a => /\.dmg$/i.test(getName(a)) && !/(x64|amd64)/i.test(getName(a)))
+        || null;
     }
-    return assets.find(a => /x64\.dmg$/i.test(a.name)) || assets.find(a => /\.dmg$/i.test(a.name)) || null;
+    return validAssets.find(a => /(x64|amd64)\.dmg$/i.test(getName(a)))
+      || validAssets.find(a => /(x64|amd64)\.zip$/i.test(getName(a)))
+      || validAssets.find(a => /\.dmg$/i.test(getName(a)) && !/(arm64|aarch64)/i.test(getName(a)))
+      || null;
   }
 
   if (platform === 'android') {
-    return assets.find(a => /\.apk$/i.test(a.name)) || null;
+    return validAssets.find(a => /\.apk$/i.test(getName(a))) || null;
   }
 
   return null;
+}
+
+function isAssetCompatibleWithPlatform(assetNameOrUrl, platform = process.platform, arch = process.arch) {
+  const s = String(assetNameOrUrl || '');
+  if (!s) return false;
+  if (platform === 'win32') {
+    if (!/\.exe$/i.test(s)) return false;
+    if (arch === 'ia32' && /x64/i.test(s)) return false;
+    if ((arch === 'x64' || arch === 'arm64') && /ia32/i.test(s)) return false;
+    return true;
+  }
+  if (platform === 'linux') return /\.(AppImage|deb|tar\.gz)$/i.test(s) && !/\.exe$/i.test(s);
+  if (platform === 'darwin') {
+    if (!/\.(dmg|zip)$/i.test(s) || /\.exe$/i.test(s)) return false;
+    if (arch === 'arm64' && /(x64|amd64)/i.test(s)) return false;
+    if (arch === 'x64' && /(arm64|aarch64)/i.test(s)) return false;
+    return true;
+  }
+  return true;
+}
+
+function resolveManifestAsset(manifest, repo, platform = process.platform, arch = process.arch) {
+  if (!manifest || !manifest.version) return null;
+  const ver = String(manifest.version).replace(/^v/i, '').trim();
+  if (Array.isArray(manifest.files) && manifest.files.length > 0) {
+    const pick = findMatchingAsset(manifest.files, platform, arch);
+    if (pick) {
+      const name = pick.name || (pick.url ? pick.url.split('/').pop() : null);
+      const url = (pick.url && /^https?:\/\//i.test(pick.url))
+        ? pick.url
+        : (name ? `https://github.com/${repo}/releases/download/v${ver}/${name}` : null);
+      return {
+        url,
+        assetName: name,
+        sha512: pick.sha512 || manifest.sha512 || null,
+        size: pick.size || manifest.size || 0
+      };
+    }
+  }
+  if (manifest.url && isAssetCompatibleWithPlatform(manifest.url, platform, arch)) {
+    return {
+      url: manifest.url,
+      assetName: manifest.assetName || manifest.url.split('/').pop(),
+      sha512: manifest.sha512 || null,
+      size: manifest.size || 0
+    };
+  }
+  return null;
+}
+
+function computeRateLimitDelayMs(headers, nowMs = Date.now(), maxWaitMs = 5000) {
+  if (!headers || typeof headers.get !== 'function') return 0;
+  const retryAfter = headers.get('retry-after');
+  if (retryAfter) {
+    const secs = Number(retryAfter);
+    if (Number.isFinite(secs) && secs >= 0) {
+      return Math.min(Math.max(0, secs * 1000), maxWaitMs);
+    }
+    const dateMs = Date.parse(retryAfter);
+    if (Number.isFinite(dateMs)) {
+      return Math.min(Math.max(0, dateMs - nowMs), maxWaitMs);
+    }
+  }
+  const remaining = headers.get('x-ratelimit-remaining');
+  const reset = headers.get('x-ratelimit-reset');
+  if (remaining === '0' && reset) {
+    const resetSec = Number(reset);
+    if (Number.isFinite(resetSec)) {
+      return Math.min(Math.max(0, resetSec * 1000 - nowMs), maxWaitMs);
+    }
+  }
+  return 0;
 }
 
 function parseLatestYml(ymlContent) {
@@ -161,6 +245,9 @@ module.exports = {
   parseSemVer,
   isNewerSemVer,
   findMatchingAsset,
+  isAssetCompatibleWithPlatform,
+  resolveManifestAsset,
+  computeRateLimitDelayMs,
   parseLatestYml,
   verifyBufferSha512Base64,
   evaluateBlockedVersion,

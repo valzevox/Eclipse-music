@@ -11,6 +11,8 @@ const { once } = require('events');
 const {
   isNewerSemVer,
   findMatchingAsset,
+  resolveManifestAsset,
+  computeRateLimitDelayMs,
   parseLatestYml,
   verifyBufferSha512Base64,
   evaluateBlockedVersion,
@@ -38,6 +40,7 @@ let crashCounterChecked = false;
 let isApplyingUpdate = false;
 let isSystemShuttingDown = false;
 let latestPlaybackSnapshot = null;
+let updaterInitialized = false;
 
 function getUpdateStateFile() {
   return path.join(app.getPath('userData'), 'update-state.json');
@@ -92,96 +95,257 @@ function checkCrashRollback(currentVer) {
   }, 60000).unref();
 }
 
+function sanitizeErrorMessage(msg) {
+  return String(msg || '').replace(/(token|authorization|bearer|key)=[^\s&]+/gi, '$1=[REDACTED]');
+}
+
+function buildResponseDiag(endpoint, requestedUrl, res, bodyLength, durationMs, err = null) {
+  const h = res && res.headers && typeof res.headers.get === 'function' ? res.headers : null;
+  return {
+    endpoint,
+    requestedUrl,
+    finalUrl: (res && res.url) || requestedUrl,
+    status: res ? res.status : null,
+    statusText: (res && res.statusText) || '',
+    contentType: h ? h.get('content-type') : null,
+    etag: h ? h.get('etag') : null,
+    bodyLength: typeof bodyLength === 'number' ? bodyLength : null,
+    rateLimitLimit: h ? h.get('x-ratelimit-limit') : null,
+    rateLimitRemaining: h ? h.get('x-ratelimit-remaining') : null,
+    rateLimitReset: h ? h.get('x-ratelimit-reset') : null,
+    retryAfter: h ? h.get('retry-after') : null,
+    durationMs,
+    transport: (res && res._transport) || null,
+    errorType: err ? (err.name || 'Error') : null,
+    errorMessage: err ? sanitizeErrorMessage(err.message) : null
+  };
+}
+
 async function httpFetch(url, opts = {}) {
   const useNet = net && typeof net.fetch === 'function';
   try {
-    return await (useNet ? net.fetch(url, opts) : fetch(url, opts));
+    const res = await (useNet ? net.fetch(url, opts) : fetch(url, opts));
+    try { Object.defineProperty(res, '_transport', { value: useNet ? 'net.fetch' : 'fetch', configurable: true }); } catch (_) {}
+    return res;
   } catch (err) {
-    if (useNet && !(opts.signal && opts.signal.aborted)) return await fetch(url, opts);
+    const timedOut = (opts.signal && opts.signal.aborted) || err.name === 'TimeoutError' || err.name === 'AbortError';
+    if (useNet && !timedOut) {
+      const res = await fetch(url, opts);
+      try { Object.defineProperty(res, '_transport', { value: 'fetch-fallback', configurable: true }); } catch (_) {}
+      return res;
+    }
     throw err;
   }
 }
 
+async function fetchWithBoundedRetry(endpoint, url, opts, maxRetries = 1) {
+  let attempt = 0;
+  while (true) {
+    const t0 = Date.now();
+    try {
+      const res = await httpFetch(url, opts);
+      const durationMs = Date.now() - t0;
+      const isTransient = res.status >= 500 || res.status === 429;
+      if (isTransient && attempt < maxRetries && !(opts.signal && opts.signal.aborted)) {
+        const rlDelay = computeRateLimitDelayMs(res.headers, Date.now(), 2500);
+        const backoff = rlDelay > 0 ? rlDelay : (300 * Math.pow(2, attempt) + Math.floor(Math.random() * 200));
+        attempt++;
+        await new Promise(r => setTimeout(r, backoff));
+        continue;
+      }
+      return { res, durationMs, err: null };
+    } catch (err) {
+      const durationMs = Date.now() - t0;
+      const timedOut = (opts.signal && opts.signal.aborted) || err.name === 'TimeoutError' || err.name === 'AbortError';
+      if (!timedOut && attempt < maxRetries) {
+        const backoff = 300 * Math.pow(2, attempt) + Math.floor(Math.random() * 200);
+        attempt++;
+        await new Promise(r => setTimeout(r, backoff));
+        continue;
+      }
+      return { res: null, durationMs, err };
+    }
+  }
+}
+
 async function fetchLatestManifest() {
-  // 1. Try static latest.json from GitHub CDN (Bypasses 60 req/h rate limit)
-  try {
+  const stageErrors = [];
+
+  // 1. Static latest.json from GitHub CDN
+  logStage('check-json-start', `Fetching ${CDN_STATIC_MANIFEST}`);
+  {
     const headers = { 'User-Agent': 'Eclipse-Player' };
     if (lastManifestEtag) headers['If-None-Match'] = lastManifestEtag;
-
-    const res = await httpFetch(CDN_STATIC_MANIFEST, {
+    const { res, durationMs, err } = await fetchWithBoundedRetry('latest.json', CDN_STATIC_MANIFEST, {
       headers,
       signal: AbortSignal.timeout(8000),
       redirect: 'follow'
     });
 
-    if (res.status === 304) {
-      logStage('check', 'Manifest not modified (304 ETag match)');
+    if (err) {
+      const diag = buildResponseDiag('latest.json', CDN_STATIC_MANIFEST, null, null, durationMs, err);
+      logStage('check-json-result', 'Network/timeout error fetching latest.json', diag);
+      stageErrors.push(`latest.json (${diag.errorType}: ${diag.errorMessage})`);
+      logStage('check-fallback', 'Falling back from latest.json to latest.yml', { reason: diag.errorType });
+    } else if (res.status === 304) {
+      const diag = buildResponseDiag('latest.json', CDN_STATIC_MANIFEST, res, 0, durationMs);
+      logStage('check-json-result', 'Manifest not modified (304 ETag match)', diag);
       return { notModified: true };
-    }
-
-    if (res.ok) {
-      lastManifestEtag = res.headers.get('etag');
-      const data = await res.json();
-      if (data && Array.isArray(data.files) && !data.url) {
-        const pick = findMatchingAsset(data.files);
-        if (pick) {
-          data.url = pick.url || `https://github.com/${REPO}/releases/download/v${data.version}/${pick.name}`;
-          data.sha512 = pick.sha512 || data.sha512;
-          data.size = pick.size || data.size;
-          data.assetName = pick.name || data.assetName;
+    } else if (res.ok) {
+      let rawText = '';
+      try {
+        rawText = typeof res.text === 'function' ? await res.text() : JSON.stringify(await res.json());
+        const data = JSON.parse(rawText);
+        const diag = buildResponseDiag('latest.json', CDN_STATIC_MANIFEST, res, rawText.length, durationMs);
+        logStage('check-json-result', 'Fetched static latest.json via GitHub CDN', diag);
+        lastManifestEtag = res.headers.get('etag');
+        const resolved = resolveManifestAsset(data, REPO);
+        if (resolved) {
+          data.url = resolved.url;
+          data.sha512 = resolved.sha512;
+          data.size = resolved.size;
+          data.assetName = resolved.assetName;
+        } else {
+          data.url = null;
         }
+        return data;
+      } catch (parseErr) {
+        const diag = buildResponseDiag('latest.json', CDN_STATIC_MANIFEST, res, rawText.length, durationMs, parseErr);
+        logStage('check-json-result', 'Malformed JSON in latest.json', diag);
+        stageErrors.push(`latest.json (HTTP ${res.status} malformed JSON)`);
+        logStage('check-fallback', 'Falling back from latest.json to latest.yml', { reason: 'malformed-json' });
       }
-      logStage('check', 'Fetched static latest.json via GitHub CDN', { version: data.version });
-      return data;
+    } else {
+      let bodyLen = 0;
+      try { bodyLen = (await res.text()).length; } catch (_) {}
+      const diag = buildResponseDiag('latest.json', CDN_STATIC_MANIFEST, res, bodyLen, durationMs);
+      const reason = res.status === 404 ? 'manifest asset missing (404)'
+        : (res.status === 403 || res.status === 429) ? `rate-limited (HTTP ${res.status})`
+        : `HTTP ${res.status}`;
+      logStage('check-json-result', `latest.json failed: ${reason}`, diag);
+      stageErrors.push(`latest.json (${reason})`);
+      logStage('check-fallback', 'Falling back from latest.json to latest.yml', { reason });
     }
-  } catch (err) {
-    logStage('check-warning', 'Static latest.json unavailable, attempting latest.yml / API fallback', err.message);
   }
 
-  // 2. Try static latest.yml from GitHub CDN
-  try {
-    const ymlRes = await httpFetch(CDN_STATIC_YML, {
+  // 2. Static latest.yml from GitHub CDN
+  logStage('check-yml-start', `Fetching ${CDN_STATIC_YML}`);
+  {
+    const { res: ymlRes, durationMs, err } = await fetchWithBoundedRetry('latest.yml', CDN_STATIC_YML, {
       headers: { 'User-Agent': 'Eclipse-Player' },
       signal: AbortSignal.timeout(8000),
       redirect: 'follow'
     });
-    if (ymlRes.ok) {
-      const ymlText = await ymlRes.text();
-      const parsedYml = parseLatestYml(ymlText);
-      if (parsedYml) {
-        logStage('check', 'Fetched static latest.yml via GitHub CDN', parsedYml);
-        // Pick installer matching this binary's arch (x64 / ia32); fall back to universal `path`.
-        const pick = findMatchingAsset(parsedYml.files) || { name: parsedYml.path, sha512: parsedYml.sha512, size: 0 };
-        return {
-          version: parsedYml.version,
-          sha512: pick.sha512,
-          size: pick.size,
-          url: `https://github.com/${REPO}/releases/download/v${parsedYml.version}/${pick.name}`,
-          assetName: pick.name
-        };
+
+    if (err) {
+      const diag = buildResponseDiag('latest.yml', CDN_STATIC_YML, null, null, durationMs, err);
+      logStage('check-yml-result', 'Network/timeout error fetching latest.yml', diag);
+      stageErrors.push(`latest.yml (${diag.errorType}: ${diag.errorMessage})`);
+      logStage('check-fallback', 'Falling back from latest.yml to releases-api', { reason: diag.errorType });
+    } else if (ymlRes.ok) {
+      let ymlText = '';
+      try {
+        ymlText = await ymlRes.text();
+        const parsedYml = parseLatestYml(ymlText);
+        const diag = buildResponseDiag('latest.yml', CDN_STATIC_YML, ymlRes, ymlText.length, durationMs);
+        if (parsedYml) {
+          logStage('check-yml-result', 'Fetched static latest.yml via GitHub CDN', diag);
+          const resolved = resolveManifestAsset({
+            version: parsedYml.version,
+            url: parsedYml.path ? `https://github.com/${REPO}/releases/download/v${parsedYml.version}/${parsedYml.path}` : null,
+            sha512: parsedYml.sha512,
+            files: parsedYml.files
+          }, REPO);
+          return {
+            version: parsedYml.version,
+            sha512: resolved ? resolved.sha512 : null,
+            size: resolved ? resolved.size : 0,
+            url: resolved ? resolved.url : null,
+            assetName: resolved ? resolved.assetName : null
+          };
+        }
+        logStage('check-yml-result', 'Malformed YAML in latest.yml', diag);
+        stageErrors.push(`latest.yml (HTTP ${ymlRes.status} malformed YAML)`);
+        logStage('check-fallback', 'Falling back from latest.yml to releases-api', { reason: 'malformed-yaml' });
+      } catch (parseErr) {
+        const diag = buildResponseDiag('latest.yml', CDN_STATIC_YML, ymlRes, ymlText.length, durationMs, parseErr);
+        logStage('check-yml-result', 'Failed reading/parsing latest.yml', diag);
+        stageErrors.push(`latest.yml (parse error)`);
+        logStage('check-fallback', 'Falling back from latest.yml to releases-api', { reason: 'parse-error' });
       }
+    } else {
+      let bodyLen = 0;
+      try { bodyLen = (await ymlRes.text()).length; } catch (_) {}
+      const diag = buildResponseDiag('latest.yml', CDN_STATIC_YML, ymlRes, bodyLen, durationMs);
+      const reason = ymlRes.status === 404 ? 'manifest asset missing (404)'
+        : (ymlRes.status === 403 || ymlRes.status === 429) ? `rate-limited (HTTP ${ymlRes.status})`
+        : `HTTP ${ymlRes.status}`;
+      logStage('check-yml-result', `latest.yml failed: ${reason}`, diag);
+      stageErrors.push(`latest.yml (${reason})`);
+      logStage('check-fallback', 'Falling back from latest.yml to releases-api', { reason });
     }
-  } catch (err) {
-    logStage('check-warning', 'Static latest.yml unavailable', err.message);
   }
 
-  // 3. Fallback to GitHub Releases API (rate-limited, with backoff)
-  logStage('check', 'Falling back to GitHub Releases API');
-  const apiRes = await httpFetch(RELEASE_API, {
+  // 3. Fallback to GitHub Releases API
+  logStage('check-api-start', `Fetching ${RELEASE_API}`);
+  const { res: apiRes, durationMs, err: apiErr } = await fetchWithBoundedRetry('releases-api', RELEASE_API, {
     headers: { 'User-Agent': 'Eclipse-Player', Accept: 'application/vnd.github+json' },
     signal: AbortSignal.timeout(12000)
   });
-  if (!apiRes.ok) throw new Error(`GitHub API HTTP ${apiRes.status}`);
-  const json = await apiRes.json();
-  const matched = findMatchingAsset(json.assets || []);
-  return {
-    version: String(json.tag_name || '').replace(/^v/i, ''),
-    url: matched ? matched.browser_download_url : null,
-    assetName: matched ? matched.name : null,
-    size: matched ? matched.size : 0,
-    notes: json.body || '',
-    htmlUrl: json.html_url
-  };
+
+  if (apiErr) {
+    const diag = buildResponseDiag('releases-api', RELEASE_API, null, null, durationMs, apiErr);
+    logStage('check-api-result', 'Network/timeout error fetching Releases API', diag);
+    stageErrors.push(`releases-api (${diag.errorType}: ${diag.errorMessage})`);
+    const finalErr = new Error(`Update check failed: ${stageErrors.join('; ')}`);
+    finalErr.stages = stageErrors;
+    throw finalErr;
+  }
+
+  if (!apiRes.ok) {
+    let bodyLen = 0;
+    try { bodyLen = (await apiRes.text()).length; } catch (_) {}
+    const diag = buildResponseDiag('releases-api', RELEASE_API, apiRes, bodyLen, durationMs);
+    const reason = (apiRes.status === 403 || apiRes.status === 429)
+      ? `rate-limited (HTTP ${apiRes.status}${diag.retryAfter ? `, Retry-After=${diag.retryAfter}` : ''}${diag.rateLimitReset ? `, Reset=${diag.rateLimitReset}` : ''})`
+      : `HTTP ${apiRes.status}`;
+    logStage('check-api-result', `Releases API failed: ${reason}`, diag);
+    stageErrors.push(`releases-api (${reason})`);
+    const finalErr = new Error(`Update check failed: ${stageErrors.join('; ')}`);
+    finalErr.stages = stageErrors;
+    throw finalErr;
+  }
+
+  let apiText = '';
+  try {
+    apiText = typeof apiRes.text === 'function' ? await apiRes.text() : JSON.stringify(await apiRes.json());
+    const json = JSON.parse(apiText);
+    const diag = buildResponseDiag('releases-api', RELEASE_API, apiRes, apiText.length, durationMs);
+    logStage('check-api-result', 'Fetched GitHub Releases API', diag);
+    if (json.draft === true) {
+      stageErrors.push('releases-api (draft release ignored)');
+      const draftErr = new Error(`Update check failed: ${stageErrors.join('; ')}`);
+      draftErr.stages = stageErrors;
+      throw draftErr;
+    }
+    const matched = findMatchingAsset(json.assets || []);
+    return {
+      version: String(json.tag_name || '').replace(/^v/i, ''),
+      url: matched ? matched.browser_download_url : null,
+      assetName: matched ? matched.name : null,
+      size: matched ? matched.size : 0,
+      notes: json.body || '',
+      htmlUrl: json.html_url
+    };
+  } catch (parseErr) {
+    if (parseErr.stages) throw parseErr;
+    const diag = buildResponseDiag('releases-api', RELEASE_API, apiRes, apiText.length, durationMs, parseErr);
+    logStage('check-api-result', 'Malformed JSON from Releases API', diag);
+    stageErrors.push('releases-api (malformed JSON)');
+    const finalErr = new Error(`Update check failed: ${stageErrors.join('; ')}`);
+    finalErr.stages = stageErrors;
+    throw finalErr;
+  }
 }
 
 async function sha512FileBase64(filePath) {
@@ -431,6 +595,11 @@ async function checkAndUpdateYtDlp() {
 }
 
 function initUpdater(getWindow, hooks = {}) {
+  if (updaterInitialized) {
+    logStage('init', 'Updater already initialized; skipping duplicate initUpdater call.');
+    return;
+  }
+  updaterInitialized = true;
   const currentVer = app.getVersion();
   initLogger(app.getPath('userData'));
   logStage('init', `Updater initialized for Eclipse v${currentVer}`, { pid: process.pid, platform: process.platform, arch: process.arch });
@@ -466,7 +635,8 @@ function initUpdater(getWindow, hooks = {}) {
           lastManifest = manifest;
         }
         if (!manifest) {
-          if (manualCheck) send('update-not-available', { version: currentVer });
+          logStage('check-no-update', `No cached manifest on 304; reporting up to date (v${currentVer})`);
+          if (manualCheck) send('update-not-available', { version: currentVer, manual: true });
           manualCheck = false;
           return;
         }
@@ -515,7 +685,18 @@ function initUpdater(getWindow, hooks = {}) {
 
         // 4. SemVer comparison
         if (isNewerSemVer(remoteVer, currentVer)) {
-          logStage('check', `Newer version available: v${remoteVer} (local: v${currentVer})`);
+          if (!manifest.url) {
+            const missingMsg = `No compatible installer found for ${process.platform}/${process.arch} in v${remoteVer}.`;
+            logStage('check-error', missingMsg, { version: remoteVer, platform: process.platform, arch: process.arch });
+            if (manualCheck) send('update-error', { stage: 'check', message: missingMsg });
+            manualCheck = false;
+            return;
+          }
+          logStage('check-success', `Newer version available: v${remoteVer} (local: v${currentVer})`, {
+            version: remoteVer,
+            assetName: manifest.assetName,
+            url: manifest.url
+          });
 
           // If manifest has no notes (e.g. from static latest.yml), attempt to fetch real release notes from API
           let notes = manifest.notes || manifest.releaseNotes || manifest.body || '';
@@ -540,8 +721,8 @@ function initUpdater(getWindow, hooks = {}) {
             sha512: manifest.sha512
           });
         } else {
-          logStage('check', `Application is up to date (v${currentVer})`);
-          if (manualCheck) send('update-not-available', { version: currentVer });
+          logStage('check-no-update', `Application is up to date (v${currentVer})`);
+          if (manualCheck) send('update-not-available', { version: currentVer, manual: true });
         }
         manualCheck = false;
       } catch (err) {

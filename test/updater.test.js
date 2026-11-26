@@ -5,6 +5,9 @@ const {
   parseSemVer,
   isNewerSemVer,
   findMatchingAsset,
+  isAssetCompatibleWithPlatform,
+  resolveManifestAsset,
+  computeRateLimitDelayMs,
   parseLatestYml,
   verifyBufferSha512Base64,
   evaluateBlockedVersion,
@@ -292,6 +295,220 @@ test('ipcMain update-check serializes concurrent checks without manualCheck race
   } finally {
     cleanup();
   }
+});
+
+// Test 7: Full P0 Regression Matrix (Legacy 1.4.17/1.4.24/1.5.0, 14 Fallback Cases, Arch Safety, Init Idempotency)
+const SAMPLE_150_YML = `version: 1.5.0
+files:
+  - url: eclipse-1.5.0-win.exe
+    sha512: abc123==
+    size: 284457606
+  - url: eclipse-1.5.0-win-ia32.exe
+    sha512: ia32hash==
+    size: 136078522
+  - url: eclipse-1.5.0-win-x64.exe
+    sha512: x64hash==
+    size: 148953006
+path: eclipse-1.5.0-win.exe
+sha512: abc123==
+`;
+
+function textResponse(status, text, headers = {}) {
+  return {
+    status,
+    statusText: status === 200 ? 'OK' : `HTTP ${status}`,
+    ok: status >= 200 && status < 300,
+    url: headers.url || '',
+    headers: { get: (k) => headers[k.toLowerCase()] || null },
+    text: async () => text,
+    json: async () => JSON.parse(text)
+  };
+}
+
+for (const localVer of ['1.4.17', '1.4.24', '1.5.0']) {
+  test(`Legacy compatibility: v${localVer} against public v1.5.0 (latest.json 404, latest.yml 200)`, async () => {
+    const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+      version: localVer,
+      fetchImpl: async (url) => {
+        if (url.endsWith('latest.json')) return textResponse(404, 'Not Found');
+        if (url.endsWith('latest.yml')) return textResponse(200, SAMPLE_150_YML);
+        return jsonResponse(200, { tag_name: 'v1.5.0', body: 'Release 1.5.0', assets: [] });
+      }
+    });
+    try {
+      await ipcHandlers.get('update-check')();
+      if (localVer === '1.5.0') {
+        const notAvail = sentEvents.filter(e => e.channel === 'update-not-available');
+        assert.strictEqual(notAvail.length, 1);
+        assert.strictEqual(notAvail[0].payload.manual, true);
+      } else {
+        const avail = sentEvents.filter(e => e.channel === 'update-available');
+        assert.strictEqual(avail.length, 1);
+        assert.strictEqual(avail[0].payload.version, '1.5.0');
+      }
+    } finally {
+      cleanup();
+    }
+  });
+}
+
+test('Fallback matrix: latest.json 404 + latest.yml 404 -> API 200', async () => {
+  const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+    version: '1.4.24',
+    fetchImpl: async (url) => {
+      if (url.endsWith('latest.json') || url.endsWith('latest.yml')) return textResponse(404, 'Not Found');
+      return jsonResponse(200, {
+        tag_name: 'v1.5.0',
+        draft: false,
+        body: 'API notes',
+        assets: [{ name: 'eclipse-1.5.0-win-x64.exe', browser_download_url: 'https://example.com/eclipse-1.5.0-win-x64.exe', size: 100 }]
+      });
+    }
+  });
+  try {
+    await ipcHandlers.get('update-check')();
+    const avail = sentEvents.filter(e => e.channel === 'update-available');
+    assert.strictEqual(avail.length, 1);
+    assert.strictEqual(avail[0].payload.version, '1.5.0');
+  } finally {
+    cleanup();
+  }
+});
+
+for (const code of [403, 429]) {
+  test(`Fallback matrix: latest.json ${code} -> latest.yml 200`, async () => {
+    const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+      version: '1.4.24',
+      fetchImpl: async (url) => {
+        if (url.endsWith('latest.json')) return textResponse(code, 'Rate limited', { 'retry-after': '0' });
+        if (url.endsWith('latest.yml')) return textResponse(200, SAMPLE_150_YML);
+        return textResponse(404, 'Not Found');
+      }
+    });
+    try {
+      await ipcHandlers.get('update-check')();
+      assert.strictEqual(sentEvents.filter(e => e.channel === 'update-available').length, 1);
+    } finally {
+      cleanup();
+    }
+  });
+}
+
+test('Fallback matrix: latest.json timeout -> latest.yml 200 (no retry on TimeoutError)', async () => {
+  let jsonCalls = 0;
+  const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+    version: '1.4.24',
+    fetchImpl: async (url) => {
+      if (url.endsWith('latest.json')) {
+        jsonCalls++;
+        const err = new Error('The operation was aborted due to timeout');
+        err.name = 'TimeoutError';
+        throw err;
+      }
+      if (url.endsWith('latest.yml')) return textResponse(200, SAMPLE_150_YML);
+      return textResponse(404, 'Not Found');
+    }
+  });
+  try {
+    await ipcHandlers.get('update-check')();
+    assert.strictEqual(jsonCalls, 1, 'Must not retry timed-out request');
+    assert.strictEqual(sentEvents.filter(e => e.channel === 'update-available').length, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test('Fallback matrix: latest.yml malformed -> API 200', async () => {
+  const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+    version: '1.4.24',
+    fetchImpl: async (url) => {
+      if (url.endsWith('latest.json')) return textResponse(404, 'Not Found');
+      if (url.endsWith('latest.yml')) return textResponse(200, 'not: valid: yaml: without: version');
+      return jsonResponse(200, {
+        tag_name: 'v1.5.0',
+        draft: false,
+        assets: [{ name: 'eclipse-1.5.0-win-x64.exe', browser_download_url: 'https://example.com/eclipse-1.5.0-win-x64.exe', size: 100 }]
+      });
+    }
+  });
+  try {
+    await ipcHandlers.get('update-check')();
+    assert.strictEqual(sentEvents.filter(e => e.channel === 'update-available').length, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test('Fallback matrix: all sources unreachable reports failing stages and HTTP statuses', async () => {
+  const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+    version: '1.4.24',
+    fetchImpl: async (url) => {
+      if (url.endsWith('latest.json')) return textResponse(404, 'Not Found');
+      if (url.endsWith('latest.yml')) return textResponse(404, 'Not Found');
+      return textResponse(403, 'API rate limit exceeded', { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '9999999999' });
+    }
+  });
+  try {
+    await ipcHandlers.get('update-check')();
+    const errs = sentEvents.filter(e => e.channel === 'update-error');
+    assert.strictEqual(errs.length, 1);
+    assert.match(errs[0].payload.message, /latest\.json.*404/);
+    assert.match(errs[0].payload.message, /latest\.yml.*404/);
+    assert.match(errs[0].payload.message, /releases-api.*403/);
+  } finally {
+    cleanup();
+  }
+});
+
+test('Fallback matrix: draft release from API is never selected as public latest', async () => {
+  const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+    version: '1.5.0',
+    fetchImpl: async (url) => {
+      if (url.endsWith('latest.json') || url.endsWith('latest.yml')) return textResponse(404, 'Not Found');
+      return jsonResponse(200, { tag_name: 'v1.5.1', draft: true, assets: [] });
+    }
+  });
+  try {
+    await ipcHandlers.get('update-check')();
+    assert.strictEqual(sentEvents.filter(e => e.channel === 'update-available').length, 0);
+    assert.strictEqual(sentEvents.filter(e => e.channel === 'update-error').length, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test('Rate-limit delay calculation honors Retry-After and X-RateLimit-Reset', () => {
+  const h1 = { get: (k) => (k === 'retry-after' ? '2' : null) };
+  assert.strictEqual(computeRateLimitDelayMs(h1, 1000, 5000), 2000);
+  const h2 = { get: (k) => (k === 'x-ratelimit-remaining' ? '0' : k === 'x-ratelimit-reset' ? '10' : null) };
+  assert.strictEqual(computeRateLimitDelayMs(h2, 7000, 5000), 3000);
+});
+
+test('Backward-compatible manifest & platform/arch safety (x64, ia32, linux, darwin)', () => {
+  const compatManifest = {
+    version: '1.5.1',
+    url: 'https://github.com/valzevox/Eclipse-music/releases/download/v1.5.1/eclipse-1.5.1-win.exe',
+    sha512: 'univ==',
+    size: 284457507,
+    files: [
+      { name: 'eclipse-1.5.1-win-x64.exe', sha512: 'x64==', size: 148952927 },
+      { name: 'eclipse-1.5.1-win-ia32.exe', sha512: 'ia32==', size: 136078411 },
+      { name: 'eclipse-1.5.1-linux-x64.tar.gz', sha512: 'lin==', size: 172600030 },
+      { name: 'eclipse-1.5.1-mac-aarch64.zip', sha512: 'macarm==', size: 130455265 },
+      { name: 'eclipse-1.5.1-mac-amd64.zip', sha512: 'macx64==', size: 137762354 }
+    ]
+  };
+  assert.strictEqual(resolveManifestAsset(compatManifest, 'valzevox/Eclipse-music', 'win32', 'x64').assetName, 'eclipse-1.5.1-win-x64.exe');
+  assert.strictEqual(resolveManifestAsset(compatManifest, 'valzevox/Eclipse-music', 'win32', 'ia32').assetName, 'eclipse-1.5.1-win-ia32.exe');
+  assert.strictEqual(resolveManifestAsset(compatManifest, 'valzevox/Eclipse-music', 'linux', 'x64').assetName, 'eclipse-1.5.1-linux-x64.tar.gz');
+  assert.strictEqual(resolveManifestAsset(compatManifest, 'valzevox/Eclipse-music', 'darwin', 'arm64').assetName, 'eclipse-1.5.1-mac-aarch64.zip');
+  assert.strictEqual(resolveManifestAsset(compatManifest, 'valzevox/Eclipse-music', 'darwin', 'x64').assetName, 'eclipse-1.5.1-mac-amd64.zip');
+
+  // Missing installer for current platform must return null (never fall back to Windows .exe on Linux/macOS)
+  const winOnlyManifest = { version: '1.5.1', url: 'https://example.com/eclipse-1.5.1-win-x64.exe', files: [{ name: 'eclipse-1.5.1-win-x64.exe' }] };
+  assert.strictEqual(resolveManifestAsset(winOnlyManifest, 'valzevox/Eclipse-music', 'linux', 'x64'), null);
+  assert.strictEqual(resolveManifestAsset(winOnlyManifest, 'valzevox/Eclipse-music', 'win32', 'ia32'), null);
+  assert.strictEqual(isAssetCompatibleWithPlatform('eclipse-1.5.1-win-x64.exe', 'win32', 'ia32'), false);
 });
 
 console.log('ALL PHASE 0 UNIT TESTS PASSED SUCCESSFULLY (EXIT 0)');
