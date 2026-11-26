@@ -1,0 +1,45 @@
+name: Build macOS DMG
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git commit SHA or ref to build'
+        required: true
+        default: 'c226a389ebfaac8f83318c525ebbbf5dbc3ed538'
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build extension
+        run: npm run build:extension
+
+      - name: Build macOS DMG (arm64 + x64)
+        run: npx electron-builder --mac dmg --x64 --arm64 --publish never
+
+      - name: List built DMG artifacts
+        run: ls -lh dist/*.dmg dist/*.blockmap 2>/dev/null || ls -lh dist/
+
+      - name: Upload DMG artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-artifacts
+          path: |
+            dist/*.dmg
+            dist/*.dmg.blockmap
+          if-no-files-found: error
