@@ -694,4 +694,103 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
     assert.strictEqual(controller.state.phase, 'idle');
     assert.strictEqual(controller.state.transitionId, null);
   });
+
+  test('Lifecycle: preparing -> ready -> mixing -> dominance -> settled drives Up Next chip and pill', () => {
+    const controller = new KaraokeMotionController();
+    controller.init();
+
+    const nextTrack = { title: 'Midnight City', artist: 'M83', thumbnail: 'https://example.com/cover.jpg' };
+    controller.handleAutomixState({
+      phase: 'preparing',
+      active: true,
+      transitionId: 'tx-life-1',
+      nextTrack,
+      mode: 'equal_power'
+    });
+    assert.strictEqual(controller.state.phase, 'preparing');
+    assert.strictEqual(controller._domUpNext.classList.contains('hidden'), false);
+    assert.strictEqual(controller._domUpNext.classList.contains('is-preparing'), true);
+    assert.strictEqual(controller._domPill.classList.contains('visible'), false);
+
+    controller.handleAutomixState({
+      phase: 'ready',
+      active: true,
+      transitionId: 'tx-life-1',
+      nextTrack,
+      mode: 'equal_power'
+    });
+    assert.strictEqual(controller.state.phase, 'ready');
+    assert.strictEqual(controller._domUpNext.classList.contains('is-ready'), true);
+
+    controller.handleAutomixState({
+      phase: 'mixing',
+      active: true,
+      transitionId: 'tx-life-1',
+      nextTrack,
+      mode: 'tempo_synced',
+      durationSec: 6
+    });
+    assert.strictEqual(controller.state.phase, 'mixing');
+    assert.strictEqual(controller._domPill.classList.contains('visible'), true);
+    assert.strictEqual(controller._domUpNext.classList.contains('is-mixing'), true);
+
+    controller.handleAutomixState({
+      phase: 'dominance',
+      active: true,
+      transitionId: 'tx-life-1',
+      nextTrack,
+      progress: 0.65
+    });
+    assert.strictEqual(controller.state.phase, 'dominance');
+    assert.strictEqual(controller._domUpNext.classList.contains('is-dominance'), true);
+
+    controller.handleAutomixState({
+      phase: 'settled',
+      active: false,
+      transitionId: 'tx-life-1',
+      completed: true
+    });
+    assert.strictEqual(controller.state.phase, 'settled');
+    assert.strictEqual(controller._domUpNext.classList.contains('hidden'), true);
+    controller.dispose();
+  });
+
+  test('Lifecycle: preparing -> failed and ready -> cancelled clear Up Next chip without guessing', () => {
+    const controller = new KaraokeMotionController();
+    controller.init();
+
+    controller.handleAutomixState({
+      phase: 'preparing',
+      active: true,
+      transitionId: 'tx-fail-1',
+      nextTrack: null
+    });
+    assert.strictEqual(controller._domUpNext.classList.contains('hidden'), true, 'Must not show Up Next when nextTrack is null');
+
+    controller.handleAutomixState({
+      phase: 'failed',
+      active: false,
+      transitionId: 'tx-fail-1',
+      failed: true
+    });
+    assert.strictEqual(controller.state.phase, 'error');
+
+    controller.handleAutomixState({
+      phase: 'ready',
+      active: true,
+      transitionId: 'tx-cancel-1',
+      nextTrack: { title: 'Next Song', artist: 'Artist' }
+    });
+    assert.strictEqual(controller._domUpNext.classList.contains('hidden'), false);
+
+    controller.handleAutomixState({
+      phase: 'cancelled',
+      active: false,
+      transitionId: 'tx-cancel-1',
+      aborted: true
+    });
+    assert.strictEqual(controller.state.phase, 'cancelled');
+    assert.strictEqual(controller._domUpNext.classList.contains('hidden'), true);
+    controller.dispose();
+  });
 });

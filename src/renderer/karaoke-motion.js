@@ -89,9 +89,97 @@
         const chip = document.createElement('div');
         chip.id = 'tvk-up-next-chip';
         chip.className = 'tvk-up-next-chip hidden';
-        chip.innerHTML = '<img class="tvk-up-next-thumb" src="" alt=""><div class="tvk-up-next-info"><span class="tvk-up-next-prefix">Up Next</span><span class="tvk-up-next-title"></span></div>';
+        chip.innerHTML = '<img class="tvk-up-next-thumb hidden" src="" alt=""><div class="tvk-up-next-info"><div class="tvk-up-next-header"><span class="tvk-up-next-prefix">UP NEXT</span><span class="tvk-up-next-badge">AUTOMIX</span></div><span class="tvk-up-next-title"></span><span class="tvk-up-next-artist"></span></div>';
         tvkMeta.appendChild(chip);
         this._domUpNext = chip;
+      }
+    }
+
+    _renderUpNextChip(phase, detail) {
+      if (!this._domUpNext) return;
+      const track = (detail && detail.nextTrack) || this.state.toTrack;
+      if (!track || !track.title) {
+        this._domUpNext.classList.add('hidden');
+        this._domUpNext.classList.remove('is-preparing', 'is-ready', 'is-mixing', 'is-dominance');
+        return;
+      }
+
+      this._domUpNext.classList.remove('hidden', 'is-preparing', 'is-ready', 'is-mixing', 'is-dominance');
+      this._domUpNext.classList.add(`is-${phase}`);
+
+      const img = this._domUpNext.querySelector('.tvk-up-next-thumb');
+      const title = this._domUpNext.querySelector('.tvk-up-next-title');
+      const artist = this._domUpNext.querySelector('.tvk-up-next-artist');
+      const prefix = this._domUpNext.querySelector('.tvk-up-next-prefix');
+      const badge = this._domUpNext.querySelector('.tvk-up-next-badge');
+
+      const thumbUrl = track.thumbnail || track.cover || '';
+      if (img) {
+        if (thumbUrl) {
+          img.src = thumbUrl;
+          img.classList.remove('hidden');
+        } else {
+          img.removeAttribute('src');
+          img.classList.add('hidden');
+        }
+      }
+      if (title) title.textContent = track.title || '';
+      if (artist) {
+        artist.textContent = track.artist || '';
+        artist.classList.toggle('hidden', !track.artist);
+      }
+      if (badge) {
+        const mode = (detail && detail.mode) || this.state.mode || 'equal_power';
+        badge.textContent = mode === 'tempo_synced' ? 'BEAT MIX' : 'AUTOMIX';
+      }
+      if (prefix) {
+        if (phase === 'preparing') prefix.textContent = 'UP NEXT';
+        else if (phase === 'ready') prefix.textContent = 'UP NEXT · READY';
+        else if (phase === 'mixing') prefix.textContent = 'CROSSFADING';
+        else if (phase === 'dominance') prefix.textContent = 'NOW MIXING';
+      }
+    }
+
+    syncDomFromState() {
+      this._ensureDomElements();
+      const tvk = typeof document !== 'undefined' ? document.getElementById('tv-karaoke') : null;
+      const phase = this.state.phase;
+      const isActive = phase === 'preparing' || phase === 'ready' || phase === 'mixing' || phase === 'dominance';
+
+      if (!isActive) {
+        if (this._domPill) {
+          this._domPill.classList.remove('visible');
+          this._domPill.classList.add('hidden');
+        }
+        if (this._domUpNext) {
+          this._domUpNext.classList.add('hidden');
+          this._domUpNext.classList.remove('is-preparing', 'is-ready', 'is-mixing', 'is-dominance');
+        }
+        if (tvk) tvk.classList.remove('is-automix-blend', 'is-automix-dominance');
+        return;
+      }
+
+      this._renderUpNextChip(phase, { nextTrack: this.state.toTrack, mode: this.state.mode });
+
+      if (phase === 'mixing' || phase === 'dominance') {
+        if (tvk) {
+          tvk.classList.toggle('is-automix-blend', phase === 'mixing');
+          tvk.classList.toggle('is-automix-dominance', phase === 'dominance');
+        }
+        if (this._domPill) {
+          this._domPill.classList.remove('hidden');
+          this._domPill.classList.add('visible');
+          const lbl = this._domPill.querySelector('.tvk-automix-label');
+          if (lbl) lbl.textContent = this.state.mode === 'tempo_synced' ? 'BEAT MIX' : 'AUTOMIX';
+          const fill = this._domPill.querySelector('.tvk-automix-progress-fill');
+          if (fill) fill.style.width = `${(Math.max(0, Math.min(1, this.state.progress || 0)) * 100).toFixed(1)}%`;
+        }
+      } else {
+        if (tvk) tvk.classList.remove('is-automix-blend', 'is-automix-dominance');
+        if (this._domPill) {
+          this._domPill.classList.remove('visible');
+          this._domPill.classList.add('hidden');
+        }
       }
     }
 
@@ -100,7 +188,10 @@
       this._ensureDomElements();
 
       const tvk = typeof document !== 'undefined' ? document.getElementById('tv-karaoke') : null;
-      const active = !!detail.active;
+      const phase = detail.phase || (detail.active ? 'mixing' : (detail.failed ? 'failed' : (detail.aborted ? 'cancelled' : 'settled')));
+      const active = typeof detail.active === 'boolean'
+        ? detail.active
+        : (phase === 'preparing' || phase === 'ready' || phase === 'mixing' || phase === 'dominance');
 
       if (!active) {
         const activeId = this.state.transitionId || null;
@@ -121,9 +212,9 @@
           return;
         }
 
-        if (detail.failed) {
+        if (detail.failed || phase === 'failed') {
           this.state.phase = 'error';
-        } else if (detail.aborted) {
+        } else if (detail.aborted || phase === 'cancelled') {
           this.state.phase = 'cancelled';
         } else {
           this.state.phase = 'settled';
@@ -146,13 +237,19 @@
               if (this._domPill) this._domPill.classList.add('hidden');
               this.state.phase = 'idle';
               this.state.transitionId = null;
+              this.state.toTrack = null;
               this._terminalCleanupTimer = null;
             }
           }, 350);
+        } else {
+          this.state.phase = 'idle';
+          this.state.transitionId = null;
+          this.state.toTrack = null;
         }
 
         if (this._domUpNext) {
           this._domUpNext.classList.add('hidden');
+          this._domUpNext.classList.remove('is-preparing', 'is-ready', 'is-mixing', 'is-dominance');
         }
         if (tvk) {
           tvk.classList.remove('is-automix-blend', 'is-automix-dominance');
@@ -161,41 +258,83 @@
         return;
       }
 
-      // Mix Active - Clear any pending terminal timer from older transitions
+      // Active phase: clear any pending terminal timer from older transitions
       if (this._terminalCleanupTimer) {
         clearTimeout(this._terminalCleanupTimer);
         this._terminalCleanupTimer = null;
       }
 
       const incomingTxId = detail.transitionId || detail.token || ('tx-' + Date.now());
-      this.state.transitionId = incomingTxId;
-      this.state.phase = 'mixing';
-      this.state.toTrack = detail.nextTrack || null;
-      this.state.durationSec = detail.durationSec || 6.0;
-      this.state.progress = 0.0;
-      this.state.outBpm = detail.bpm || 120;
+      const isSameTx = this.state.transitionId === incomingTxId;
 
-      if (tvk) tvk.classList.add('is-automix-blend');
+      // Ignore stale ready/preparing if already mixing/dominance for the same transition
+      if (isSameTx && (this.state.phase === 'mixing' || this.state.phase === 'dominance') && (phase === 'preparing' || phase === 'ready')) {
+        return;
+      }
+
+      this.state.transitionId = incomingTxId;
+      this.state.mode = detail.mode || this.state.mode || 'equal_power';
+      if (detail.nextTrack) this.state.toTrack = detail.nextTrack;
+      else if (!isSameTx) this.state.toTrack = null;
+      this.state.durationSec = detail.durationSec || this.state.durationSec || 6.0;
+      this.state.outBpm = detail.bpm || this.state.outBpm || 120;
+
+      if (phase === 'preparing' || phase === 'ready') {
+        this.state.phase = phase;
+        this.state.progress = 0.0;
+        if (tvk) tvk.classList.remove('is-automix-blend', 'is-automix-dominance');
+        if (this._domPill) {
+          this._domPill.classList.remove('visible');
+          this._domPill.classList.add('hidden');
+        }
+        this._renderUpNextChip(phase, detail);
+        this._notify();
+        return;
+      }
+
+      if (phase === 'dominance') {
+        const prevPhase = this.state.phase;
+        this.state.phase = 'dominance';
+        if (typeof detail.progress === 'number') {
+          this.state.progress = Math.max(0, Math.min(1, detail.progress));
+        }
+        if (tvk) {
+          tvk.classList.remove('is-automix-blend');
+          tvk.classList.add('is-automix-dominance');
+        }
+        this._renderUpNextChip('dominance', detail);
+        if (prevPhase !== 'dominance' && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('eclipse:karaoke-dominant-switch', {
+            detail: {
+              transitionId: this.state.transitionId,
+              toTrack: this.state.toTrack,
+              progress: this.state.progress
+            }
+          }));
+        }
+        this._notify();
+        return;
+      }
+
+      // Default active phase: 'mixing'
+      this.state.phase = 'mixing';
+      this.state.progress = typeof detail.progress === 'number' ? Math.max(0, Math.min(1, detail.progress)) : 0.0;
+
+      if (tvk) {
+        tvk.classList.remove('is-automix-dominance');
+        tvk.classList.add('is-automix-blend');
+      }
 
       if (this._domPill) {
         this._domPill.classList.remove('hidden');
         this._domPill.classList.add('visible');
         const lbl = this._domPill.querySelector('.tvk-automix-label');
-        if (lbl) lbl.textContent = detail.mode === 'tempo_synced' ? 'BEAT MIX' : 'AUTOMIX';
+        if (lbl) lbl.textContent = this.state.mode === 'tempo_synced' ? 'BEAT MIX' : 'AUTOMIX';
         const fill = this._domPill.querySelector('.tvk-automix-progress-fill');
-        if (fill) fill.style.width = '0%';
+        if (fill) fill.style.width = `${(this.state.progress * 100).toFixed(1)}%`;
       }
 
-      if (this._domUpNext && detail.nextTrack) {
-        this._domUpNext.classList.remove('hidden');
-        const img = this._domUpNext.querySelector('.tvk-up-next-thumb');
-        const title = this._domUpNext.querySelector('.tvk-up-next-title');
-        const prefix = this._domUpNext.querySelector('.tvk-up-next-prefix');
-        if (img) img.src = detail.nextTrack.thumbnail || detail.nextTrack.cover || '';
-        if (title) title.textContent = detail.nextTrack.title || '';
-        if (prefix) prefix.textContent = 'Mixing into';
-      }
-
+      this._renderUpNextChip('mixing', detail);
       this._notify();
     }
 

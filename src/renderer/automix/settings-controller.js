@@ -7,11 +7,15 @@
 
   const VALID_AUTOMIX_MODES = new Set([
     'equal_power',
-    'tempo_synced',
-    'dj_mix',
-    'quick_crossfade',
-    'gapless_album'
+    'tempo_synced'
   ]);
+
+  function normalizeAutoMixMode(mode) {
+    if (mode === 'tempo_synced' || mode === 'dj_mix' || mode === 'smart') {
+      return 'tempo_synced';
+    }
+    return 'equal_power';
+  }
 
   /**
    * Synchronize AutoMix DJ settings into localStorage, dispatch mode change events,
@@ -74,12 +78,13 @@
       cfg.keepAlbumContinuous = storage.getItem('eclipse_automix_skip_album') !== '0';
     }
 
-    if (opts.mode && VALID_AUTOMIX_MODES.has(opts.mode)) {
+    if (opts.mode) {
+      const normalizedMode = normalizeAutoMixMode(opts.mode);
       const prevMode = dj ? dj.mode : null;
-      if (prevMode && prevMode !== opts.mode) {
+      if (prevMode && prevMode !== normalizedMode) {
         if (win && typeof win.dispatchEvent === 'function') {
           try {
-            const detail = { previousMode: prevMode, newMode: opts.mode };
+            const detail = { previousMode: prevMode, newMode: normalizedMode };
             const evt = (typeof CustomEvent !== 'undefined')
               ? new CustomEvent('eclipse:automix-mode-changed', { detail })
               : { type: 'eclipse:automix-mode-changed', detail };
@@ -87,9 +92,9 @@
           } catch (_) {}
         }
       }
-      cfg.mode = opts.mode;
+      cfg.mode = normalizedMode;
       if (storage) {
-        try { storage.setItem('eclipse_automix_mode', opts.mode); } catch (_) {}
+        try { storage.setItem('eclipse_automix_mode', normalizedMode); } catch (_) {}
       }
     }
 
@@ -109,7 +114,7 @@
   }
 
   function resolveInitialAutoMixMode(storedMode) {
-    return VALID_AUTOMIX_MODES.has(storedMode) ? storedMode : 'equal_power';
+    return normalizeAutoMixMode(storedMode);
   }
 
   /**
@@ -166,6 +171,7 @@
 
   const exportObj = {
     VALID_AUTOMIX_MODES,
+    normalizeAutoMixMode,
     syncAutoMixSettings,
     resolveInitialAutoMixMode,
     registerAutoMixEventListeners

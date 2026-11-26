@@ -1,19 +1,22 @@
 // JavaScript / automix-dj.js / Smart Crossfade & Beat-Aligned Mixing Engine
 // Part of Eclipse Music Player — MIT License
 
-const { getVolumeSyncSuppression } = (typeof module !== 'undefined' && module.exports)
-  ? (function() {
-      try { return require('./automix/suppression-controller'); }
-      catch (_) { return { getVolumeSyncSuppression: () => null }; }
-    })()
-  : { getVolumeSyncSuppression: () => (typeof window !== 'undefined' && window.volumeSyncSuppression ? window.volumeSyncSuppression : null) };
+(function (root) {
+  'use strict';
 
-function _getDJSuppressionManager() {
-  if (typeof window !== 'undefined' && window.volumeSyncSuppression) {
-    return window.volumeSyncSuppression;
+  const _suppressionMod = (typeof module !== 'undefined' && module.exports)
+    ? (function() {
+        try { return require('./automix/suppression-controller'); }
+        catch (_) { return { getVolumeSyncSuppression: () => null }; }
+      })()
+    : { getVolumeSyncSuppression: () => (typeof window !== 'undefined' && window.volumeSyncSuppression ? window.volumeSyncSuppression : null) };
+
+  function _getDJSuppressionManager() {
+    if (typeof window !== 'undefined' && window.volumeSyncSuppression) {
+      return window.volumeSyncSuppression;
+    }
+    return _suppressionMod.getVolumeSyncSuppression();
   }
-  return getVolumeSyncSuppression();
-}
 
 class AutoMixDJ {
   constructor(options = {}) {
@@ -32,9 +35,112 @@ class AutoMixDJ {
     this.targetLufs = options.targetLufs || -14.0;
     this.isCrossfading = false;
     this._currentFade = null;
+    this._pendingTransition = null;
+    this.transitionPhase = 'idle';
+    this.activeTransitionId = null;
     this._energyHistory = [];
     this._silenceDetectedSec = null;
     this._lastEnergyCheckMs = 0;
+  }
+
+  emitTransitionState(detail = {}) {
+    const phase = detail.phase || this.transitionPhase || 'idle';
+    this.transitionPhase = phase;
+    if (detail.transitionId !== undefined) {
+      this.activeTransitionId = detail.transitionId;
+    }
+    const isActive = phase === 'preparing' || phase === 'ready' || phase === 'mixing' || phase === 'dominance';
+    const payload = {
+      phase,
+      active: typeof detail.active === 'boolean' ? detail.active : isActive,
+      transitionId: detail.transitionId !== undefined ? detail.transitionId : this.activeTransitionId,
+      nextTrack: detail.nextTrack !== undefined ? detail.nextTrack : null,
+      targetIndex: typeof detail.targetIndex === 'number' ? detail.targetIndex : -1,
+      durationSec: typeof detail.durationSec === 'number' ? detail.durationSec : 0,
+      mode: detail.mode || this.mode || 'equal_power',
+      progress: typeof detail.progress === 'number' ? detail.progress : 0,
+      bpm: detail.bpm || this.bpm || 120,
+      completed: phase === 'settled' || !!detail.completed,
+      aborted: phase === 'cancelled' || !!detail.aborted,
+      failed: phase === 'failed' || !!detail.failed,
+      reason: detail.reason || null
+    };
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+      try {
+        window.dispatchEvent(new CustomEvent('eclipse:automix-state', { detail: payload }));
+      } catch (_) {}
+    }
+    if (!isActive) {
+      this.activeTransitionId = null;
+      this.transitionPhase = 'idle';
+    }
+    return payload;
+  }
+
+  beginPreparingTransition({ transitionId, nextTrack, targetIndex = -1, durationSec = this.durationSec, mode = this.mode, bpm = this.bpm } = {}) {
+    const txId = transitionId || ('tx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
+    this._pendingTransition = {
+      transitionId: txId,
+      nextTrack: nextTrack || null,
+      targetIndex,
+      durationSec,
+      mode: mode || this.mode,
+      bpm: bpm || this.bpm || 120,
+      cancelled: false,
+      reason: null
+    };
+    this.emitTransitionState({
+      phase: 'preparing',
+      active: true,
+      transitionId: txId,
+      nextTrack: nextTrack || null,
+      targetIndex,
+      durationSec,
+      mode: mode || this.mode,
+      progress: 0,
+      bpm: bpm || this.bpm || 120
+    });
+    return this._pendingTransition;
+  }
+
+  markTransitionReady(transitionId) {
+    if (!this._pendingTransition || this._pendingTransition.transitionId !== transitionId || this._pendingTransition.cancelled) {
+      return false;
+    }
+    const p = this._pendingTransition;
+    this.emitTransitionState({
+      phase: 'ready',
+      active: true,
+      transitionId: p.transitionId,
+      nextTrack: p.nextTrack,
+      targetIndex: p.targetIndex,
+      durationSec: p.durationSec,
+      mode: p.mode,
+      progress: 0,
+      bpm: p.bpm
+    });
+    return true;
+  }
+
+  failPreparingTransition(transitionId, reason = 'failed') {
+    if (!this._pendingTransition || (transitionId && this._pendingTransition.transitionId !== transitionId)) {
+      return false;
+    }
+    const p = this._pendingTransition;
+    this._pendingTransition = null;
+    this.emitTransitionState({
+      phase: 'failed',
+      active: false,
+      transitionId: p.transitionId,
+      nextTrack: null,
+      targetIndex: p.targetIndex,
+      durationSec: 0,
+      mode: p.mode,
+      progress: 0,
+      failed: true,
+      reason
+    });
+    return true;
   }
 
   configure(config = {}) {
@@ -598,12 +704,37 @@ class AutoMixDJ {
    * @param {string} reason 'pause' | 'seek' | 'skip' | 'manual'
    */
   abortCrossfade(reason = 'manual') {
-    if (!this.isCrossfading && !this._currentFade) return false;
+    if (!this.isCrossfading && !this._currentFade) {
+      if (this._pendingTransition && !this._pendingTransition.cancelled) {
+        const pending = this._pendingTransition;
+        pending.cancelled = true;
+        pending.reason = reason;
+        this._pendingTransition = null;
+        const cancellationReasons = ['pause', 'seek', 'skip', 'next', 'prev', 'manual', 'user_cancelled', 'user_skipped', 'queue_replaced', 'mode_change'];
+        const isCancelled = cancellationReasons.includes(reason);
+        this.emitTransitionState({
+          phase: isCancelled ? 'cancelled' : 'failed',
+          active: false,
+          transitionId: pending.transitionId,
+          nextTrack: null,
+          targetIndex: pending.targetIndex,
+          durationSec: 0,
+          mode: pending.mode,
+          progress: 0,
+          aborted: isCancelled,
+          failed: !isCancelled,
+          reason
+        });
+        return true;
+      }
+      return false;
+    }
 
     const fade = this._currentFade;
     const suppressToken = (fade && fade.suppressToken) || this._crossfadeSuppressToken;
     this.isCrossfading = false;
     this._currentFade = null;
+    this._pendingTransition = null;
     this._crossfadeSuppressToken = null;
 
     if (fade && fade.interval) {
@@ -660,7 +791,7 @@ class AutoMixDJ {
     } catch (_) {}
 
     const suppressionMgr = _getDJSuppressionManager();
-    const cancellationReasons = ['pause', 'seek', 'skip', 'manual', 'user_cancelled', 'user_skipped', 'queue_replaced', 'mode_change'];
+    const cancellationReasons = ['pause', 'seek', 'skip', 'next', 'prev', 'manual', 'user_cancelled', 'user_skipped', 'queue_replaced', 'mode_change'];
     const isCancelled = cancellationReasons.includes(reason);
     const isError = reason === 'error' || !isCancelled;
 
@@ -670,21 +801,26 @@ class AutoMixDJ {
           suppressionMgr.release(suppressToken);
         }
       }, 80);
-      const activeTxId = (fade && fade.transitionId) || null;
-      window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
-        detail: {
-          active: false,
-          aborted: isCancelled,
-          failed: isError,
-          reason,
-          transitionId: activeTxId
-        }
-      }));
     } else if (suppressionMgr && suppressToken !== null) {
       setTimeout(() => {
         suppressionMgr.release(suppressToken);
       }, 80);
     }
+
+    const activeTxId = (fade && fade.transitionId) || this.activeTransitionId || null;
+    this.emitTransitionState({
+      phase: isCancelled ? 'cancelled' : 'failed',
+      active: false,
+      transitionId: activeTxId,
+      nextTrack: null,
+      targetIndex: (fade && typeof fade.targetIndex === 'number') ? fade.targetIndex : -1,
+      durationSec: 0,
+      mode: this.mode,
+      progress: (fade && typeof fade.lastProgress === 'number') ? fade.lastProgress : 0,
+      aborted: isCancelled,
+      failed: isError,
+      reason
+    });
 
     if (fade && typeof fade.reject === 'function') {
       fade.reject(new Error(`Crossfade aborted: ${reason}`));
@@ -706,7 +842,13 @@ class AutoMixDJ {
     const initialUserVol = Number.isFinite(outgoingAudio.volume) ? Math.max(0, Math.min(1, outgoingAudio.volume)) : 1.0;
 
     const audioEngine = (typeof window !== 'undefined' && window.audioEngine) ? window.audioEngine : null;
-    const isAudioEngineReady = !!(audioEngine && audioEngine.ctx && audioEngine.deckAGain && audioEngine.deckBGain);
+    if (audioEngine && audioEngine.ctx && audioEngine.ctx.state === 'suspended' && typeof audioEngine.ctx.resume === 'function') {
+      audioEngine.ctx.resume().catch(() => {});
+    }
+    if (audioEngine && !audioEngine.auxMediaSource && typeof audioEngine.attachAuxAudio === 'function') {
+      try { audioEngine.attachAuxAudio(incomingAudio); } catch (_) {}
+    }
+    const isAudioEngineReady = !!(audioEngine && audioEngine.ctx && audioEngine.deckAGain && audioEngine.deckBGain && audioEngine.auxMediaSource);
     const useDeckGains = isAudioEngineReady && typeof audioEngine.setDeckGains === 'function';
     const useFadeGainNode = !useDeckGains && !!(audioEngine && audioEngine.fadeGain && audioEngine.ctx);
 
@@ -793,7 +935,8 @@ class AutoMixDJ {
       rejectPromise = rej;
     });
 
-    const transitionId = (options && options.transitionId) || ('tx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
+    const transitionId = (options && options.transitionId) || this.activeTransitionId || ('tx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
+    this._pendingTransition = null;
     const fadeState = {
       outgoingAudio,
       incomingAudio,
@@ -805,13 +948,18 @@ class AutoMixDJ {
       audioEngine,
       suppressToken,
       transitionId,
+      nextTrack: (options && options.nextTrack) || null,
+      targetIndex: (options && typeof options.targetIndex === 'number') ? options.targetIndex : -1,
+      durationSec: duration,
+      lastProgress: 0,
+      dominanceEmitted: false,
       interval: null,
       resolve: resolvePromise,
       reject: rejectPromise
     };
     this._currentFade = fadeState;
 
-    // Start incoming audio at 0 volume and matched tempo
+    // Start incoming audio at 0 gain/volume and matched tempo, then confirm it is playing & audible before overlapping
     try {
       if (!useDeckGains) {
         incomingAudio.volume = 0;
@@ -820,6 +968,38 @@ class AutoMixDJ {
       }
       incomingAudio.playbackRate = startInRate;
       await incomingAudio.play();
+
+      // Confirm Deck B is actually playing and readyState >= 2 before ramping Deck A down
+      if (incomingAudio.paused || (typeof incomingAudio.readyState === 'number' && incomingAudio.readyState < 2)) {
+        await new Promise((res, rej) => {
+          let done = false;
+          const finish = (ok) => {
+            if (done) return;
+            done = true;
+            clearTimeout(t);
+            if (typeof incomingAudio.removeEventListener === 'function') {
+              incomingAudio.removeEventListener('playing', onPlay);
+              incomingAudio.removeEventListener('canplay', onPlay);
+              incomingAudio.removeEventListener('error', onErr);
+            }
+            ok ? res() : rej(new Error('Incoming audio stalled before audible'));
+          };
+          const onPlay = () => {
+            if (!incomingAudio.paused && (typeof incomingAudio.readyState !== 'number' || incomingAudio.readyState >= 2)) {
+              finish(true);
+            }
+          };
+          const onErr = () => finish(false);
+          const t = setTimeout(() => finish(!incomingAudio.paused && (typeof incomingAudio.readyState !== 'number' || incomingAudio.readyState >= 2)), 1000);
+          if (typeof incomingAudio.addEventListener === 'function') {
+            incomingAudio.addEventListener('playing', onPlay);
+            incomingAudio.addEventListener('canplay', onPlay);
+            incomingAudio.addEventListener('error', onErr);
+          } else {
+            finish(!incomingAudio.paused);
+          }
+        });
+      }
     } catch (playErr) {
       console.warn('[AutoMixDJ] incomingAudio.play() rejected; aborting crossfade and restoring outgoing volume:', playErr?.message || playErr);
       if (typeof window !== 'undefined') {
@@ -851,6 +1031,18 @@ class AutoMixDJ {
       this.isCrossfading = false;
       this._currentFade = null;
       this._activeCrossfade = null;
+      this.emitTransitionState({
+        phase: 'failed',
+        active: false,
+        transitionId,
+        nextTrack: null,
+        targetIndex: fadeState.targetIndex,
+        durationSec: 0,
+        mode: this.mode,
+        progress: 0,
+        failed: true,
+        reason: playErr?.message || 'incoming_play_failed'
+      });
       throw new Error(`Incoming audio play failed: ${playErr?.message || 'Playback blocked'}`);
     }
 
@@ -859,12 +1051,40 @@ class AutoMixDJ {
       return crossfadePromise;
     }
 
+    this.emitTransitionState({
+      phase: 'mixing',
+      active: true,
+      transitionId,
+      nextTrack: fadeState.nextTrack,
+      targetIndex: fadeState.targetIndex,
+      durationSec: duration,
+      mode: this.mode,
+      progress: 0,
+      bpm: options.outgoingBpm || this.bpm || 120
+    });
+
     // Capture precise startTime AFTER play() resolves successfully
     const startTime = Date.now();
 
     fadeState.interval = setInterval(() => {
         const elapsed = Date.now() - startTime;
         const progress = Math.min(1.0, elapsed / durationMs);
+        fadeState.lastProgress = progress;
+
+        if (progress >= 0.5 && progress < 1.0 && !fadeState.dominanceEmitted) {
+          fadeState.dominanceEmitted = true;
+          this.emitTransitionState({
+            phase: 'dominance',
+            active: true,
+            transitionId,
+            nextTrack: fadeState.nextTrack,
+            targetIndex: fadeState.targetIndex,
+            durationSec: duration,
+            mode: this.mode,
+            progress,
+            bpm: options.incomingBpm || options.outgoingBpm || this.bpm || 120
+          });
+        }
 
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('eclipse:automix-progress', {
@@ -911,6 +1131,20 @@ class AutoMixDJ {
               }
             }
           } catch (_) {}
+          if (!options.deferSettledEvent) {
+            this.emitTransitionState({
+              phase: 'settled',
+              active: false,
+              transitionId,
+              nextTrack: fadeState.nextTrack,
+              targetIndex: fadeState.targetIndex,
+              durationSec: duration,
+              mode: this.mode,
+              progress: 1.0,
+              completed: true,
+              reason: 'completed'
+            });
+          }
           resolvePromise(true);
           return;
         }
@@ -951,8 +1185,10 @@ class AutoMixDJ {
   }
 }
 
-if (typeof module !== 'undefined') {
-  module.exports = AutoMixDJ;
-} else {
-  window.AutoMixDJ = AutoMixDJ;
-}
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = AutoMixDJ;
+  }
+  if (typeof window !== 'undefined') {
+    window.AutoMixDJ = AutoMixDJ;
+  }
+})(typeof window !== 'undefined' ? window : globalThis);

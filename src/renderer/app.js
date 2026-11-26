@@ -7405,6 +7405,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     syncTvkAmbientPlayback();
     applyTvk();
     syncTvkUI();
+    if (window.KaraokeMotionController && typeof window.KaraokeMotionController.syncDomFromState === 'function') {
+      window.KaraokeMotionController.syncDomFromState();
+    }
     resetTvIdleTimer();
     resizeCanvases();
     if (state.isPlaying) {
@@ -15472,7 +15475,7 @@ function updateNavIndicator(animate) {
     });
   }
 
-  // Fullscreen Karaoke & Player Bar AutoMix motion indicator (RGB rainbow seek + shimmer badge)
+  // Fullscreen Karaoke, Mini Player & Player Bar AutoMix motion indicator
   let autoMixBadgeEl = document.getElementById('automix-mixing-badge');
   if (!autoMixBadgeEl) {
     autoMixBadgeEl = document.createElement('div');
@@ -15481,14 +15484,73 @@ function updateNavIndicator(animate) {
     autoMixBadgeEl.innerHTML = '<span class="automix-mixing-dot"></span><span class="automix-mixing-text">Mixing...</span>';
     document.body.appendChild(autoMixBadgeEl);
   }
+  let miniAutoMixStatusEl = document.getElementById('mini-automix-status');
+  if (!miniAutoMixStatusEl) {
+    const trackMetaEl = document.querySelector('.playbar-left .track-meta');
+    if (trackMetaEl) {
+      miniAutoMixStatusEl = document.createElement('div');
+      miniAutoMixStatusEl.id = 'mini-automix-status';
+      miniAutoMixStatusEl.className = 'mini-automix-status hidden';
+      trackMetaEl.appendChild(miniAutoMixStatusEl);
+    }
+  }
+  let activeUiTxId = null;
+  let activeUiPhase = 'idle';
   window.addEventListener('eclipse:automix-state', (ev) => {
-    const active = !!(ev && ev.detail && ev.detail.active);
-    const nextTitle = ev && ev.detail && ev.detail.nextTrack && ev.detail.nextTrack.title ? ev.detail.nextTrack.title : '';
-    document.body.classList.toggle('is-automixing', active);
+    const detail = ev && ev.detail;
+    if (!detail) return;
+    const phase = detail.phase || (detail.active ? 'mixing' : (detail.failed ? 'failed' : (detail.aborted ? 'cancelled' : 'settled')));
+    const active = typeof detail.active === 'boolean'
+      ? detail.active
+      : (phase === 'preparing' || phase === 'ready' || phase === 'mixing' || phase === 'dominance');
+    const incomingTxId = (detail.transitionId && String(detail.transitionId).trim()) || null;
+
+    if (!active) {
+      if (!activeUiTxId || !incomingTxId || incomingTxId !== activeUiTxId) return;
+      activeUiTxId = null;
+      activeUiPhase = 'idle';
+      document.body.classList.remove('is-automixing');
+      if (autoMixBadgeEl) autoMixBadgeEl.classList.remove('visible');
+      if (miniAutoMixStatusEl) {
+        miniAutoMixStatusEl.classList.add('hidden');
+        miniAutoMixStatusEl.classList.remove('is-preparing', 'is-ready', 'is-mixing', 'is-dominance');
+        miniAutoMixStatusEl.textContent = '';
+      }
+      return;
+    }
+
+    if (incomingTxId && activeUiTxId === incomingTxId && (activeUiPhase === 'mixing' || activeUiPhase === 'dominance') && (phase === 'preparing' || phase === 'ready')) {
+      return;
+    }
+    activeUiTxId = incomingTxId || activeUiTxId || ('tx-' + Date.now());
+    activeUiPhase = phase;
+
+    const nextTrack = detail.nextTrack && detail.nextTrack.title ? detail.nextTrack : null;
+    const nextTitle = nextTrack ? nextTrack.title : '';
+    const modeLabel = detail.mode === 'tempo_synced' ? 'BEAT MIX' : 'AUTOMIX';
+    const isMixingPhase = phase === 'mixing' || phase === 'dominance';
+
+    document.body.classList.toggle('is-automixing', isMixingPhase);
     if (autoMixBadgeEl) {
       const txt = autoMixBadgeEl.querySelector('.automix-mixing-text');
-      if (txt) txt.textContent = nextTitle ? `Mixing → ${nextTitle}` : 'Mixing...';
-      autoMixBadgeEl.classList.toggle('visible', active);
+      if (txt) {
+        if (phase === 'dominance') txt.textContent = nextTitle ? `Now → ${nextTitle}` : `${modeLabel}...`;
+        else txt.textContent = nextTitle ? `${modeLabel} → ${nextTitle}` : `${modeLabel}...`;
+      }
+      autoMixBadgeEl.classList.toggle('visible', isMixingPhase);
+    }
+    if (miniAutoMixStatusEl) {
+      miniAutoMixStatusEl.classList.remove('is-preparing', 'is-ready', 'is-mixing', 'is-dominance');
+      if (!nextTitle && (phase === 'preparing' || phase === 'ready')) {
+        miniAutoMixStatusEl.classList.add('hidden');
+      } else {
+        miniAutoMixStatusEl.classList.remove('hidden');
+        miniAutoMixStatusEl.classList.add(`is-${phase}`);
+        if (phase === 'preparing') miniAutoMixStatusEl.textContent = `UP NEXT · ${nextTitle}`;
+        else if (phase === 'ready') miniAutoMixStatusEl.textContent = `UP NEXT · READY · ${nextTitle}`;
+        else if (phase === 'mixing') miniAutoMixStatusEl.textContent = nextTitle ? `CROSSFADING → ${nextTitle}` : modeLabel;
+        else if (phase === 'dominance') miniAutoMixStatusEl.textContent = nextTitle ? `NOW → ${nextTitle}` : modeLabel;
+      }
     }
   });
 

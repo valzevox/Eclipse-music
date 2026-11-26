@@ -11806,13 +11806,43 @@ body.is-automixing #tvk-seek-slider::-webkit-slider-runnable-track {
   flex-direction: column;
   overflow: hidden;
   text-align: left;
+  gap: 1px;
+}
+.tvk-up-next-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .tvk-up-next-prefix {
   font-size: 10px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: rgba(255, 255, 255, 0.5);
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.6);
   line-height: 1.1;
+}
+.tvk-up-next-badge {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(168, 85, 247, 0.22);
+  border: 1px solid rgba(168, 85, 247, 0.4);
+  color: #e9d5ff;
+  line-height: 1.2;
+}
+.tvk-up-next-chip.is-ready .tvk-up-next-prefix {
+  color: #6ee7b7;
+}
+.tvk-up-next-chip.is-mixing,
+.tvk-up-next-chip.is-dominance {
+  border-color: rgba(168, 85, 247, 0.45);
+  box-shadow: 0 4px 20px rgba(168, 85, 247, 0.22);
+}
+.tvk-up-next-chip.is-dominance {
+  background: rgba(168, 85, 247, 0.18);
 }
 .tvk-up-next-title {
   font-size: 12px;
@@ -11822,6 +11852,49 @@ body.is-automixing #tvk-seek-slider::-webkit-slider-runnable-track {
   overflow: hidden;
   text-overflow: ellipsis;
   line-height: 1.3;
+}
+.tvk-up-next-artist {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.65);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+.mini-automix-status {
+  display: none;
+}
+body.mini .mini-automix-status:not(.hidden) {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.88);
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body.mini .mini-automix-status.is-ready {
+  border-color: rgba(52, 211, 153, 0.4);
+  color: #a7f3d0;
+}
+body.mini .mini-automix-status.is-mixing,
+body.mini .mini-automix-status.is-dominance {
+  border-color: rgba(168, 85, 247, 0.5);
+  background: rgba(168, 85, 247, 0.18);
+  color: #f3e8ff;
+}
+body.mini .automix-mixing-badge {
+  display: none !important;
 }
 .tv-karaoke.is-automix-blend #tvk-ambient-bg {
   filter: saturate(1.3) contrast(1.1);

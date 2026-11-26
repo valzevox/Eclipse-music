@@ -9,6 +9,17 @@ class PreloadManager {
     this.currentPreloadTrackId = null;
     this.abortController = null;
     this.preloadedStreams = new Map(); // trackId -> { url, expires, readyState, timestamp }
+    this.preloadStages = new Map(); // trackId -> { stage, updatedAt, error }
+  }
+
+  setPreloadStage(trackId, stage, error = null) {
+    if (!trackId) return;
+    this.preloadStages.set(trackId, { stage, updatedAt: Date.now(), error });
+  }
+
+  getPreloadStage(trackId) {
+    if (!trackId) return { stage: 'idle', updatedAt: 0, error: null };
+    return this.preloadStages.get(trackId) || { stage: 'idle', updatedAt: 0, error: null };
   }
 
   setCredentials(apiBase, token) {
@@ -97,11 +108,12 @@ class PreloadManager {
   }
 
   async prepareNextTrack(nextTrack, auxAudioElement, quality = 'medium') {
-    if (!nextTrack) return { ready: false, streamUrl: '' };
+    if (!nextTrack) return { ready: false, stage: 'failed', streamUrl: '' };
     this.cancelPreload('new_track');
     this.abortController = new AbortController();
     const trackId = nextTrack.id || nextTrack.videoId;
     this.currentPreloadTrackId = trackId;
+    this.setPreloadStage(trackId, 'requested');
 
     const [streamUrl] = await Promise.all([
       this.resolveStreamUrl(nextTrack, quality),
@@ -109,19 +121,36 @@ class PreloadManager {
     ]);
 
     if (!streamUrl || this.currentPreloadTrackId !== trackId) {
-      return { ready: false, streamUrl: '' };
+      this.setPreloadStage(trackId, 'failed', 'stream_resolve_failed');
+      return { ready: false, stage: 'failed', streamUrl: '' };
     }
+    this.setPreloadStage(trackId, 'url_resolved');
 
     if (auxAudioElement) {
       if (auxAudioElement.src !== streamUrl) {
         auxAudioElement.preload = 'auto';
         auxAudioElement.src = streamUrl;
       }
+      this.setPreloadStage(trackId, 'source_attached');
+
+      const hasMetadata = await this.waitForElementReadiness(auxAudioElement, 1, 1500);
+      if (!hasMetadata || this.currentPreloadTrackId !== trackId) {
+        this.setPreloadStage(trackId, 'failed', 'metadata_timeout');
+        return { ready: false, stage: 'failed', streamUrl };
+      }
+      this.setPreloadStage(trackId, 'metadata_loaded');
+
       const isReady = await this.waitForElementReadiness(auxAudioElement, 2, 2000);
-      return { ready: isReady, streamUrl };
+      if (!isReady || this.currentPreloadTrackId !== trackId) {
+        this.setPreloadStage(trackId, 'failed', 'buffer_timeout');
+        return { ready: false, stage: 'failed', streamUrl };
+      }
+      this.setPreloadStage(trackId, 'buffered');
+      return { ready: true, stage: 'buffered', streamUrl };
     }
 
-    return { ready: true, streamUrl };
+    this.setPreloadStage(trackId, 'buffered');
+    return { ready: true, stage: 'buffered', streamUrl };
   }
 
   waitForElementReadiness(audioEl, minReadyState = 2, timeoutMs = 1500) {
@@ -132,6 +161,7 @@ class PreloadManager {
       let settled = false;
       const onReady = () => {
         if (settled) return;
+        if (audioEl.readyState < minReadyState) return;
         settled = true;
         cleanup();
         resolve(true);
@@ -153,11 +183,15 @@ class PreloadManager {
         clearTimeout(timer);
         audioEl.removeEventListener('canplay', onReady);
         audioEl.removeEventListener('loadeddata', onReady);
+        audioEl.removeEventListener('loadedmetadata', onReady);
         audioEl.removeEventListener('error', onError);
       };
 
       audioEl.addEventListener('canplay', onReady);
       audioEl.addEventListener('loadeddata', onReady);
+      if (minReadyState <= 1) {
+        audioEl.addEventListener('loadedmetadata', onReady);
+      }
       audioEl.addEventListener('error', onError);
     });
   }

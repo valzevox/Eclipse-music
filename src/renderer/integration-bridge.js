@@ -143,9 +143,12 @@
         if (!auxAudio && typeof document !== 'undefined' && document.body) {
           auxAudio = document.createElement('audio');
           auxAudio.id = 'eclipse-aux-audio';
+          auxAudio.crossOrigin = 'anonymous';
           auxAudio.preload = 'auto';
           auxAudio.style.display = 'none';
           document.body.appendChild(auxAudio);
+        } else if (auxAudio && !auxAudio.crossOrigin) {
+          auxAudio.crossOrigin = 'anonymous';
         }
         const coreSt = getCoreState();
         if (coreSt && auxAudio) coreSt.secondaryAudio = auxAudio;
@@ -462,12 +465,32 @@
               automixTriggeredForTrack = true;
               window._autoMixHandlingEnd = true;
 
+              const currentTransitionId = 'tx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+              const pendingTx = typeof window.autoMixDjInstance.beginPreparingTransition === 'function'
+                ? window.autoMixDjInstance.beginPreparingTransition({
+                    transitionId: currentTransitionId,
+                    nextTrack,
+                    targetIndex: nextIdx,
+                    durationSec: plannedFadeDuration,
+                    mode: window.autoMixDjInstance.mode,
+                    bpm: window.autoMixDjInstance.bpm || 120
+                  })
+                : { transitionId: currentTransitionId, cancelled: false };
+
               let nextStreamUrl = '';
               try {
                 nextStreamUrl = await resolveNextTrackStreamUrl(nextTrack);
               } catch (_) {}
 
+              if (pendingTx.cancelled) {
+                window._autoMixHandlingEnd = false;
+                return;
+              }
+
               if (!nextStreamUrl) {
+                if (typeof window.autoMixDjInstance.failPreparingTransition === 'function') {
+                  window.autoMixDjInstance.failPreparingTransition(currentTransitionId, 'stream_resolve_failed');
+                }
                 // Allow bounded retry (up to 3 times) for transient stream resolver errors
                 automixRetryCount++;
                 if (automixRetryCount <= 3) {
@@ -481,17 +504,39 @@
               }
 
               if (auxAudio.src !== nextStreamUrl) {
+                auxAudio.preload = 'auto';
                 auxAudio.src = nextStreamUrl;
               }
-              const smartIntroSkip = Math.max(0, Math.min(15, Number(fadeInSkip) || 0));
-              auxAudio.currentTime = smartIntroSkip;
+
+              // Wait for metadata (readyState >= 1) before seeking to smartIntroSkip
+              const hasMetadata = preloadManager
+                ? await preloadManager.waitForElementReadiness(auxAudio, 1, 1500)
+                : (auxAudio.readyState >= 1);
+
+              if (pendingTx.cancelled) {
+                window._autoMixHandlingEnd = false;
+                return;
+              }
+
+              if (hasMetadata) {
+                const smartIntroSkip = Math.max(0, Math.min(15, Number(fadeInSkip) || 0));
+                try { auxAudio.currentTime = smartIntroSkip; } catch (_) {}
+              }
 
               // Graceful fallback: verify auxAudio readiness (readyState >= 2) before attempting crossfade
               const isAuxReady = preloadManager
                 ? await preloadManager.waitForElementReadiness(auxAudio, 2, 2000)
                 : (auxAudio.readyState >= 2);
 
+              if (pendingTx.cancelled) {
+                window._autoMixHandlingEnd = false;
+                return;
+              }
+
               if (!isAuxReady || auxAudio.readyState < 2) {
+                if (typeof window.autoMixDjInstance.failPreparingTransition === 'function') {
+                  window.autoMixDjInstance.failPreparingTransition(currentTransitionId, 'aux_not_ready');
+                }
                 automixRetryCount++;
                 if (automixRetryCount <= 3) {
                   console.warn(`[EclipseBridge] Aux stream not ready (readyState < 2, attempt ${automixRetryCount}/3); resetting flag to retry on next timeupdate.`);
@@ -511,12 +556,18 @@
               const freshNext = (Number.isInteger(nextIdx) && nextIdx >= 0 && nextIdx < freshQueue.length) ? freshQueue[nextIdx] : null;
               if (!freshTrack || !currentTrack || (freshTrack.id !== currentTrack.id && freshTrack.videoId !== currentTrack.videoId)) {
                 console.warn('[EclipseBridge] Active track changed during preflight readiness; aborting transition.', { stage: 'PREFLIGHT_ABORT_TRACK_CHANGED', queueIndex: freshIdx, targetNextIdx: nextIdx });
+                if (typeof window.autoMixDjInstance.abortCrossfade === 'function') {
+                  window.autoMixDjInstance.abortCrossfade('track_changed');
+                }
                 automixTriggeredForTrack = false;
                 window._autoMixHandlingEnd = false;
                 return;
               }
               if (freshIdx < 0 || freshIdx >= freshQueue.length || !freshNext || (nextTrack && freshNext.id !== nextTrack.id && freshNext.videoId !== nextTrack.videoId)) {
                 console.warn('[EclipseBridge] Target queue changed during preflight readiness; resetting trigger to allow transition to new target track.', { stage: 'PREFLIGHT_ABORT_QUEUE_CHANGED', queueIndex: freshIdx, targetNextIdx: nextIdx });
+                if (typeof window.autoMixDjInstance.abortCrossfade === 'function') {
+                  window.autoMixDjInstance.abortCrossfade('queue_replaced');
+                }
                 automixTriggeredForTrack = false;
                 window._autoMixHandlingEnd = false;
                 return;
@@ -528,45 +579,33 @@
               const freshRemaining = Math.max(0, freshDur - freshCur);
               if (freshRemaining <= 0.5) {
                 console.warn('[EclipseBridge] Insufficient time remaining after readiness check; falling back to gapless handover.');
+                if (typeof window.autoMixDjInstance.failPreparingTransition === 'function') {
+                  window.autoMixDjInstance.failPreparingTransition(currentTransitionId, 'insufficient_remaining_time');
+                }
                 window._autoMixHandlingEnd = false;
                 return;
               }
 
-              const currentTransitionId = 'tx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
-              window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
-                detail: { active: true, transitionId: currentTransitionId, nextTrack, durationSec: plannedFadeDuration, mode: window.autoMixDjInstance.mode, bpm: window.autoMixDjInstance.bpm }
-              }));
+              if (typeof window.autoMixDjInstance.markTransitionReady === 'function') {
+                window.autoMixDjInstance.markTransitionReady(currentTransitionId);
+              }
 
               console.log(`[EclipseBridge] AutoMix (${window.autoMixDjInstance.mode}) crossfade (${freshRemaining.toFixed(1)}s remaining, fade: ${plannedFadeDuration.toFixed(1)}s, BPM ${window.autoMixDjInstance.bpm} -> ${targetBpm}, ratio: ${plannedTempoRatio.toFixed(3)}, synced: ${plannedTempoSynced})...`);
               let crossfadeSucceeded = false;
-              let fadeFailureReason = null;
               try {
                 crossfadeSucceeded = (await window.autoMixDjInstance.executeCrossfade(nativeAudio, auxAudio, Math.min(plannedFadeDuration, freshRemaining - 0.25), {
                   outgoingBpm: currentTrackBpm || window.autoMixDjInstance.bpm || 120,
                   incomingBpm: targetBpm,
                   tempoRatio: plannedTempoRatio,
                   tempoSynced: plannedTempoSynced,
-                  transitionId: currentTransitionId
+                  transitionId: currentTransitionId,
+                  nextTrack,
+                  targetIndex: nextIdx,
+                  deferSettledEvent: true
                 })) === true;
               } catch (fadeErr) {
                 console.warn('[EclipseBridge] Crossfade interrupted or failed; aborting handover to keep outgoing track playing:', fadeErr?.message || fadeErr);
                 crossfadeSucceeded = false;
-                fadeFailureReason = fadeErr?.message || 'error';
-              } finally {
-                const isError = !crossfadeSucceeded && (fadeFailureReason === 'error' || (fadeFailureReason && fadeFailureReason.includes('failed')));
-                const isAborted = !crossfadeSucceeded && !isError;
-                window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
-                  detail: {
-                    active: false,
-                    transitionId: currentTransitionId,
-                    nextTrack: null,
-                    durationSec: 0,
-                    completed: crossfadeSucceeded,
-                    aborted: isAborted,
-                    failed: isError,
-                    reason: crossfadeSucceeded ? 'completed' : (fadeFailureReason || 'aborted')
-                  }
-                }));
               }
 
               // P0 Critical: If crossfade did not succeed, DO NOT handover and DO NOT call _eclipsePlayNext()!
@@ -585,20 +624,41 @@
                   if (tid) curCoreState.autoMixPlayedIds.add(tid);
                 }
                 if (playbackHandover) {
-                  curCoreState._autoMixHandover = playbackHandover.createHandoverToken(nextTrack, auxAudio, nextIdx);
+                  curCoreState._autoMixHandover = playbackHandover.createHandoverToken(nextTrack, auxAudio, nextIdx, {
+                    transitionId: currentTransitionId,
+                    mode: window.autoMixDjInstance.mode,
+                    durationSec: plannedFadeDuration
+                  });
                 } else {
                   curCoreState._autoMixHandover = {
                     src: handoverSrc,
                     auxAudio,
                     currentTime: (auxAudio && !isNaN(auxAudio.currentTime)) ? auxAudio.currentTime : 0,
                     trackId: nextTrack.id || nextTrack.videoId,
-                    targetIndex: nextIdx
+                    track: nextTrack,
+                    targetIndex: nextIdx,
+                    transitionId: currentTransitionId,
+                    mode: window.autoMixDjInstance.mode,
+                    durationSec: plannedFadeDuration
                   };
                 }
               }
 
               if (typeof window._eclipsePlayNext === 'function') {
                 window._eclipsePlayNext();
+              } else if (typeof window.autoMixDjInstance.emitTransitionState === 'function') {
+                window.autoMixDjInstance.emitTransitionState({
+                  phase: 'settled',
+                  active: false,
+                  transitionId: currentTransitionId,
+                  nextTrack,
+                  targetIndex: nextIdx,
+                  durationSec: plannedFadeDuration,
+                  mode: window.autoMixDjInstance.mode,
+                  progress: 1.0,
+                  completed: true,
+                  reason: 'completed'
+                });
               }
               setTimeout(() => { window._autoMixHandlingEnd = false; }, 1500);
             }

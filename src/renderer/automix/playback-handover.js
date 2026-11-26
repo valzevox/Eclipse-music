@@ -2,33 +2,40 @@
 // JavaScript / playback-handover.js / Web / Eclipse PC & Mobile
 // Seamless dual-deck handover: preserves currentTime, synchronizes live decks, prevents premature cut
 
-const { getVolumeSyncSuppression } = (typeof module !== 'undefined' && module.exports)
-  ? (function() {
-      try { return require('./suppression-controller'); }
-      catch (_) { return { getVolumeSyncSuppression: () => null }; }
-    })()
-  : { getVolumeSyncSuppression: () => (typeof window !== 'undefined' && window.volumeSyncSuppression ? window.volumeSyncSuppression : null) };
+(function (root) {
+  'use strict';
 
-function _getHandoverSuppressionManager() {
-  if (typeof window !== 'undefined' && window.volumeSyncSuppression) {
-    return window.volumeSyncSuppression;
+  const _suppressionMod = (typeof module !== 'undefined' && module.exports)
+    ? (function() {
+        try { return require('./suppression-controller'); }
+        catch (_) { return { getVolumeSyncSuppression: () => null }; }
+      })()
+    : { getVolumeSyncSuppression: () => (typeof window !== 'undefined' && window.volumeSyncSuppression ? window.volumeSyncSuppression : null) };
+
+  function _getHandoverSuppressionManager() {
+    if (typeof window !== 'undefined' && window.volumeSyncSuppression) {
+      return window.volumeSyncSuppression;
+    }
+    return _suppressionMod.getVolumeSyncSuppression();
   }
-  return getVolumeSyncSuppression();
-}
 
 class PlaybackHandover {
   constructor(options = {}) {
     this.telemetry = options.telemetry || null;
   }
 
-  createHandoverToken(track, auxAudio, targetIndex) {
+  createHandoverToken(track, auxAudio, targetIndex, meta = {}) {
     if (!track || !auxAudio) return null;
     return {
       trackId: track.id || track.videoId,
+      track,
       src: auxAudio.src || track._preloadedStreamUrl || '',
       auxAudio,
       currentTime: (auxAudio && !isNaN(auxAudio.currentTime)) ? auxAudio.currentTime : 0,
       targetIndex: typeof targetIndex === 'number' ? targetIndex : -1,
+      transitionId: meta.transitionId || null,
+      mode: meta.mode || null,
+      durationSec: meta.durationSec || 0,
       timestamp: Date.now()
     };
   }
@@ -113,6 +120,26 @@ class PlaybackHandover {
         window.audioEngine.setDeckGains({ deckA: 1.0, deckB: 0.0, rampMs: 25 });
       }
       stopAux();
+      if (handover.transitionId && typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+        try {
+          window.dispatchEvent(new CustomEvent('eclipse:automix-state', {
+            detail: {
+              phase: 'settled',
+              active: false,
+              transitionId: handover.transitionId,
+              nextTrack: handover.track || null,
+              targetIndex: handover.targetIndex,
+              durationSec: handover.durationSec || 0,
+              mode: handover.mode || 'equal_power',
+              progress: 1.0,
+              completed: true,
+              aborted: false,
+              failed: false,
+              reason: 'completed'
+            }
+          }));
+        } catch (_) {}
+      }
       setTimeout(() => {
         releaseSuppression();
       }, 80);
@@ -275,9 +302,10 @@ class PlaybackHandover {
   }
 }
 
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { PlaybackHandover };
-}
-if (typeof window !== 'undefined') {
-  window.PlaybackHandover = PlaybackHandover;
-}
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { PlaybackHandover };
+  }
+  if (typeof window !== 'undefined') {
+    window.PlaybackHandover = PlaybackHandover;
+  }
+})(typeof window !== 'undefined' ? window : globalThis);

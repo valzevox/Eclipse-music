@@ -847,19 +847,19 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
       djInstance: mockDjInstance
     };
 
-    // 1. Changing mode from tempo_synced -> dj_mix dispatches event once and aborts once
+    // 1. Changing mode from tempo_synced -> equal_power dispatches event once and aborts once
     assert.equal(mockDjInstance.mode, 'tempo_synced');
-    syncAutoMixSettings({ mode: 'dj_mix' }, context);
-    assert.equal(mockDjInstance.mode, 'dj_mix');
+    syncAutoMixSettings({ mode: 'equal_power' }, context);
+    assert.equal(mockDjInstance.mode, 'equal_power');
     assert.equal(dispatchedEvents.length, 1);
     assert.equal(dispatchedEvents[0].type, 'eclipse:automix-mode-changed');
-    assert.deepEqual(dispatchedEvents[0].detail, { previousMode: 'tempo_synced', newMode: 'dj_mix' });
+    assert.deepEqual(dispatchedEvents[0].detail, { previousMode: 'tempo_synced', newMode: 'equal_power' });
     assert.equal(abortCalls.length, 1);
     assert.equal(abortCalls[0], 'mode_change');
-    assert.equal(mockLocalStorage.getItem('eclipse_automix_mode'), 'dj_mix');
+    assert.equal(mockLocalStorage.getItem('eclipse_automix_mode'), 'equal_power');
 
-    // 2. Selecting the SAME mode (dj_mix) does not dispatch and does not abort
-    syncAutoMixSettings({ mode: 'dj_mix' }, context);
+    // 2. Selecting the SAME mode (equal_power) does not dispatch and does not abort
+    syncAutoMixSettings({ mode: 'equal_power' }, context);
     assert.equal(dispatchedEvents.length, 1, 'Same mode must not dispatch duplicate event');
     assert.equal(abortCalls.length, 1, 'Same mode must not abort');
 
@@ -871,20 +871,26 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
     assert.equal(mockLocalStorage.getItem('eclipse_automix_dj_filter'), '0');
     assert.equal(mockLocalStorage.getItem('eclipse_crossfade'), '8');
 
-    // 4. Verify all 5 modes persist in localStorage and configure instance
-    const allModes = ['quick_crossfade', 'gapless_album', 'equal_power', 'tempo_synced', 'dj_mix'];
-    for (const m of allModes) {
+    // 4. Verify user-facing modes persist in localStorage and legacy modes normalize cleanly
+    const userModes = ['equal_power', 'tempo_synced'];
+    for (const m of userModes) {
       syncAutoMixSettings({ mode: m }, context);
       assert.equal(mockDjInstance.mode, m);
       assert.equal(mockLocalStorage.getItem('eclipse_automix_mode'), m);
     }
+    syncAutoMixSettings({ mode: 'dj_mix' }, context);
+    assert.equal(mockDjInstance.mode, 'tempo_synced');
+    syncAutoMixSettings({ mode: 'quick_crossfade' }, context);
+    assert.equal(mockDjInstance.mode, 'equal_power');
 
     // 5. Simulate restart: read back saved mode using production resolveInitialAutoMixMode helper
-    for (const m of allModes) {
+    for (const m of userModes) {
       mockLocalStorage.setItem('eclipse_automix_mode', m);
       const stored = mockLocalStorage.getItem('eclipse_automix_mode');
       const resolved = resolveInitialAutoMixMode(stored);
       assert.equal(resolved, m, `Mode ${m} must survive restart resolution`);
     }
+    assert.equal(resolveInitialAutoMixMode('dj_mix'), 'tempo_synced');
+    assert.equal(resolveInitialAutoMixMode('gapless_album'), 'equal_power');
   });
 });
