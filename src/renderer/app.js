@@ -2912,6 +2912,46 @@ document.addEventListener('DOMContentLoaded', async () => {
     return { smooth, sens };
   }
 
+  const reducedMotionMql = (typeof window.matchMedia === 'function')
+    ? window.matchMedia('(prefers-reduced-motion: reduce)')
+    : null;
+  let prefersReducedMotion = !!(reducedMotionMql && reducedMotionMql.matches);
+  const isReducedMotionActive = () => document.body.classList.contains('perf') || prefersReducedMotion;
+  if (reducedMotionMql) {
+    const onReducedChange = (ev) => {
+      prefersReducedMotion = !!(ev && ev.matches);
+      if (isReducedMotionActive()) {
+        window._automixRainbowBlend = 0;
+        window._automixRainbowLastMs = 0;
+      }
+    };
+    if (typeof reducedMotionMql.addEventListener === 'function') {
+      reducedMotionMql.addEventListener('change', onReducedChange);
+    } else if (typeof reducedMotionMql.addListener === 'function') {
+      reducedMotionMql.addListener(onReducedChange);
+    }
+  }
+  function updateAutomixRainbowBlend(nowMs) {
+    const isAutomixingNow = document.body.classList.contains('is-automixing');
+    const isReducedNow = isReducedMotionActive();
+    if (typeof window._automixRainbowBlend !== 'number') window._automixRainbowBlend = 0;
+    if (isReducedNow) {
+      window._automixRainbowBlend = 0;
+      window._automixRainbowLastMs = 0;
+      return 0;
+    }
+    const targetBlend = isAutomixingNow ? 1 : 0;
+    const dtMs = window._automixRainbowLastMs ? Math.min(100, nowMs - window._automixRainbowLastMs) : 16;
+    window._automixRainbowLastMs = nowMs;
+    if (window._automixRainbowBlend !== targetBlend) {
+      const stepBlend = dtMs / 300;
+      window._automixRainbowBlend = targetBlend > window._automixRainbowBlend
+        ? Math.min(1, window._automixRainbowBlend + stepBlend)
+        : Math.max(0, window._automixRainbowBlend - stepBlend);
+    }
+    return window._automixRainbowBlend;
+  }
+
   function resizeCanvases() {
     const dpr = window.devicePixelRatio || 1;
     if (el.scrubberTrack) {
@@ -3523,6 +3563,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           const t = formatDuration(cur);
           if (el.timeCurrent && el.timeCurrent.textContent !== t) el.timeCurrent.textContent = t;
           if (el.tvkTimeCurrent && el.tvkTimeCurrent.textContent !== t) el.tvkTimeCurrent.textContent = t;
+            { const _d = document.getElementById('tvk-time-current-display'); if (_d && _d.textContent !== t) _d.textContent = t; }
+          { const _d = document.getElementById('tvk-time-current-display'); if (_d && _d.textContent !== t) _d.textContent = t; }
           if (el.tvkSeekSlider && !isDraggingTvkSeek && dur > 0) {
             const val = Math.round((cur / dur) * 1000);
             if (el.tvkSeekSlider.value != val) el.tvkSeekSlider.value = val;
@@ -3539,6 +3581,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const d = formatDuration(dur);
             if (el.timeDuration && el.timeDuration.textContent !== d) el.timeDuration.textContent = d;
             if (el.tvkTimeDuration && el.tvkTimeDuration.textContent !== d) el.tvkTimeDuration.textContent = d;
+            { const _d = document.getElementById('tvk-time-duration-display'); if (_d && _d.textContent !== d) _d.textContent = d; }
           }
           if (el.tvkSeekSlider && !isDraggingTvkSeek && dur > 0) {
             const val = Math.round((cur / dur) * 1000);
@@ -3616,14 +3659,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             sCtx.lineWidth = 9.5;
             sCtx.lineCap = 'round';
             sCtx.lineJoin = 'round';
-            if (document.body.classList.contains('is-automixing')) {
-              const grad = sCtx.createLinearGradient(waveStart, centerY, waveEnd, centerY);
-              grad.addColorStop(0, '#ff4fa3');
-              grad.addColorStop(0.25, '#8b5cf6');
-              grad.addColorStop(0.5, '#38bdf8');
-              grad.addColorStop(0.75, '#34d399');
-              grad.addColorStop(1, '#fbbf24');
-              sCtx.strokeStyle = grad;
+            const isAutomixingNow = document.body.classList.contains('is-automixing');
+            const isReducedNow = isReducedMotionActive();
+            const nowMs = performance.now();
+            const rainbowBlend = updateAutomixRainbowBlend(nowMs);
+            if (rainbowBlend > 0.01 && !isReducedNow) {
+              const hue = ((nowMs % 1000) / 1000) * 360;
+              sCtx.strokeStyle = `hsla(${hue.toFixed(1)}, 100%, 62%, ${rainbowBlend.toFixed(3)})`;
+              if (rainbowBlend < 0.99) {
+                sCtx.save();
+                sCtx.globalAlpha = 1 - rainbowBlend;
+                sCtx.strokeStyle = primaryColor;
+                sCtx.restore();
+              }
             } else {
               sCtx.strokeStyle = primaryColor;
             }
@@ -3720,14 +3768,20 @@ document.addEventListener('DOMContentLoaded', async () => {
               tCtx.lineWidth = 9.5;
               tCtx.lineCap = 'round';
               tCtx.lineJoin = 'round';
-              if (document.body.classList.contains('is-automixing')) {
-                const grad = tCtx.createLinearGradient(waveStart, centerY, waveEnd, centerY);
-                grad.addColorStop(0, '#ff4fa3');
-                grad.addColorStop(0.25, '#8b5cf6');
-                grad.addColorStop(0.5, '#38bdf8');
-                grad.addColorStop(0.75, '#34d399');
-                grad.addColorStop(1, '#fbbf24');
-                tCtx.strokeStyle = grad;
+              const isTvkReduced = isReducedMotionActive();
+              const tvkNowMs = performance.now();
+              const tvkRainbowBlend = updateAutomixRainbowBlend(tvkNowMs);
+              if (tvkRainbowBlend > 0.01 && !isTvkReduced) {
+                const hue = ((tvkNowMs % 1000) / 1000) * 360;
+                tCtx.strokeStyle = `hsla(${hue.toFixed(1)}, 100%, 62%, ${tvkRainbowBlend.toFixed(3)})`;
+                if (tvkRainbowBlend < 0.99) {
+                  tCtx.save();
+                  tCtx.globalAlpha = 1 - tvkRainbowBlend;
+                  tCtx.strokeStyle = '#ffffff';
+                  tCtx.restore();
+                }
+              } else if (document.body.classList.contains('is-automixing') && isTvkReduced) {
+                tCtx.strokeStyle = primaryColor || '#a855f7';
               } else {
                 tCtx.strokeStyle = '#ffffff';
               }
@@ -3935,7 +3989,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  let _lastUiQueueIndex = -1;
+  let _lastUiTrackId = null;
   function updateNowPlayingUI(track) {
+    const curIdx = typeof state.queueIndex === 'number' ? state.queueIndex : -1;
+    const curId = track && (track.videoId || track.id || track.title) || null;
+    const isTrackChanged = curId && curId !== _lastUiTrackId;
+    const idxDelta = (_lastUiQueueIndex >= 0 && curIdx >= 0) ? (curIdx - _lastUiQueueIndex) : 0;
+    const isAdjacent = Math.abs(idxDelta) === 1;
+    _lastUiQueueIndex = curIdx;
+    _lastUiTrackId = curId;
+    if (isTrackChanged && el.coverContainer && isAdjacent && !document.body.classList.contains('perf')) {
+      el.coverContainer.classList.remove('np-slide-next', 'np-slide-prev');
+      void el.coverContainer.offsetWidth;
+      el.coverContainer.classList.add(idxDelta > 0 ? 'np-slide-next' : 'np-slide-prev');
+    }
+    if (isTrackChanged && document.body.classList.contains('mini') && !document.body.classList.contains('perf')) {
+      const metaEl = document.querySelector('.playbar-left .track-meta');
+      if (metaEl) {
+        metaEl.classList.remove('mini-track-enter');
+        void metaEl.offsetWidth;
+        metaEl.classList.add('mini-track-enter');
+      }
+    }
     if (el.playbarTitle) {
       el.playbarTitle.textContent = track.title || 'Untitled';
       el.playbarTitle.dataset.origTitle = track.title || '';
@@ -3963,9 +4039,20 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
           }
         };
-        el.playbarArtwork.src = thumb;
-        if (typeof m3cSetImage === 'function') m3cSetImage(thumb);
-        el.playbarArtwork.style.display = 'block';
+        const isArtReduced = document.body.classList.contains('perf') || (typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+        if (el.playbarArtwork.src !== thumb && !isArtReduced) {
+          el.playbarArtwork.classList.add('artwork-fading');
+          requestAnimationFrame(() => {
+            el.playbarArtwork.src = thumb;
+            if (typeof m3cSetImage === 'function') m3cSetImage(thumb);
+            el.playbarArtwork.style.display = 'block';
+            requestAnimationFrame(() => el.playbarArtwork.classList.remove('artwork-fading'));
+          });
+        } else {
+          el.playbarArtwork.src = thumb;
+          if (typeof m3cSetImage === 'function') m3cSetImage(thumb);
+          el.playbarArtwork.style.display = 'block';
+        }
         el.playbarArtwork.onerror = () => {
           if (state.currentTrack && getTrackArt(state.currentTrack).cover) {
             setTrackArt(state.currentTrack, { cover: undefined });
@@ -7267,13 +7354,11 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           preImg.onload = () => {
             if (coverEl.dataset.currentThumb === thumb) {
               coverEl.style.opacity = '0';
-              coverEl.style.transform = 'scale(0.96)';
               setTimeout(() => {
                 coverEl.src = thumb;
                 coverEl.style.display = 'block';
                 coverEl.style.opacity = '1';
-                coverEl.style.transform = 'scale(1)';
-              }, 120);
+              }, 150);
             }
           };
           preImg.onerror = () => {
@@ -7603,6 +7688,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       const frac = Math.max(0, Math.min(1, Number(tvkSeekSlider.value) / 1000));
       const targetTime = frac * dur;
       if (tvkTimeCur) tvkTimeCur.textContent = formatDuration(targetTime);
+      const tvkCurDisp = document.getElementById('tvk-time-current-display'); if (tvkCurDisp) tvkCurDisp.textContent = formatDuration(targetTime);
       if (el.timeCurrent) el.timeCurrent.textContent = formatDuration(targetTime);
       if (el.nativeAudio && Number.isFinite(targetTime) && dur > 0) {
         el.nativeAudio.currentTime = targetTime;
@@ -15510,7 +15596,13 @@ function updateNavIndicator(animate) {
       activeUiTxId = null;
       activeUiPhase = 'idle';
       document.body.classList.remove('is-automixing');
+      window._automixRainbowBlend = 0;
+      window._automixRainbowLastMs = 0;
       if (autoMixBadgeEl) autoMixBadgeEl.classList.remove('visible');
+      const pbCrossfadeLbl = document.getElementById('playbar-crossfading-label');
+      if (pbCrossfadeLbl) pbCrossfadeLbl.classList.remove('visible');
+      const miniCrossfadeLbl = document.getElementById('mini-crossfading-label');
+      if (miniCrossfadeLbl) miniCrossfadeLbl.classList.remove('visible');
       if (miniAutoMixStatusEl) {
         miniAutoMixStatusEl.classList.add('hidden');
         miniAutoMixStatusEl.classList.remove('is-preparing', 'is-ready', 'is-mixing', 'is-dominance');
@@ -15531,14 +15623,11 @@ function updateNavIndicator(animate) {
     const isMixingPhase = phase === 'mixing' || phase === 'dominance';
 
     document.body.classList.toggle('is-automixing', isMixingPhase);
-    if (autoMixBadgeEl) {
-      const txt = autoMixBadgeEl.querySelector('.automix-mixing-text');
-      if (txt) {
-        if (phase === 'dominance') txt.textContent = nextTitle ? `Now → ${nextTitle}` : `${modeLabel}...`;
-        else txt.textContent = nextTitle ? `${modeLabel} → ${nextTitle}` : `${modeLabel}...`;
-      }
-      autoMixBadgeEl.classList.toggle('visible', isMixingPhase);
-    }
+    if (autoMixBadgeEl) autoMixBadgeEl.classList.remove('visible');
+    const pbCrossfadeLbl = document.getElementById('playbar-crossfading-label');
+    if (pbCrossfadeLbl) pbCrossfadeLbl.classList.toggle('visible', isMixingPhase);
+    const miniCrossfadeLbl = document.getElementById('mini-crossfading-label');
+    if (miniCrossfadeLbl) miniCrossfadeLbl.classList.toggle('visible', isMixingPhase);
     if (miniAutoMixStatusEl) {
       miniAutoMixStatusEl.classList.remove('is-preparing', 'is-ready', 'is-mixing', 'is-dominance');
       if (!nextTitle && (phase === 'preparing' || phase === 'ready')) {
@@ -29490,13 +29579,11 @@ function bindCoverHoldZoom(wrapEl) {
         const thumb = getTrackThumbUrl(toTrack);
         if (thumb) {
           coverEl.style.opacity = '0';
-          coverEl.style.transform = 'scale(0.96)';
           setTimeout(() => {
             if (dominantGeneration !== currentGen) return;
             coverEl.src = thumb;
             coverEl.style.opacity = '1';
-            coverEl.style.transform = 'scale(1)';
-          }, 140);
+          }, 150);
         }
       }
     }

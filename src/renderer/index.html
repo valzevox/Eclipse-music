@@ -2484,7 +2484,10 @@
         <div class="track-title-marquee">
           <span class="track-title" id="playbar-title">No track playing</span>
         </div>
-        <span class="track-artist" id="playbar-artist">Select a track to listen</span>
+        <div class="track-artist-row">
+          <span class="track-artist" id="playbar-artist">Select a track to listen</span>
+          <span class="mini-crossfading-label" id="mini-crossfading-label"> · Crossfading</span>
+        </div>
         <div class="audio-loading-pill hidden" id="audio-loading-pill">
           <span class="loading-spinner-dot"></span>
           <span class="loading-text" id="audio-loading-text">Đang kết nối luồng nhạc...</span>
@@ -2542,6 +2545,9 @@
         <div class="scrubber-track-container" id="scrubber-track">
         </div>
         <span class="time-label" id="time-duration">0:00</span>
+      </div>
+      <div class="playbar-crossfade-row" id="playbar-crossfade-row">
+        <span class="crossfading-shimmer-label" id="playbar-crossfading-label">Crossfading</span>
       </div>
     </div>
 
@@ -3942,6 +3948,11 @@
           <span class="time-label" id="tvk-time-current">0:00</span>
           <input type="range" class="pill-range" id="tvk-seek-slider" min="0" max="1000" step="1" value="0">
           <span class="time-label" id="tvk-time-duration">0:00</span>
+        </div>
+        <div class="tvk-time-crossfade-row" id="tvk-time-crossfade-row">
+          <span class="tvk-time-text" id="tvk-time-current-display">0:00</span>
+          <span class="tvk-crossfading-label" id="tvk-crossfading-label">Crossfading</span>
+          <span class="tvk-time-text" id="tvk-time-duration-display">0:00</span>
         </div>
       </div>
       <div class="tv-karaoke-content" id="tv-karaoke-content"></div>

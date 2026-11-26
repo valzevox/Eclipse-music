@@ -94,7 +94,17 @@ function setupMockEnvironment() {
   coverEl.id = 'tv-cover';
   elements.set('tv-cover', coverEl);
 
+  const tvkCrossfadeLbl = createElement('span');
+  tvkCrossfadeLbl.id = 'tvk-crossfading-label';
+  elements.set('tvk-crossfading-label', tvkCrossfadeLbl);
+
   let prefersReducedMotion = false;
+  const mqlListeners = new Set();
+  const reducedMotionMql = {
+    get matches() { return prefersReducedMotion; },
+    addEventListener(type, fn) { if (type === 'change' && typeof fn === 'function') mqlListeners.add(fn); },
+    removeEventListener(type, fn) { if (type === 'change') mqlListeners.delete(fn); }
+  };
 
   const window = {
     addEventListener(event, fn) {
@@ -111,12 +121,15 @@ function setupMockEnvironment() {
       fns.forEach(fn => fn(event));
     },
     matchMedia(query) {
-      return {
-        matches: query.includes('prefers-reduced-motion') ? prefersReducedMotion : false
-      };
+      if (query.includes('prefers-reduced-motion')) return reducedMotionMql;
+      return { matches: false, addEventListener() {}, removeEventListener() {} };
     },
     setPrefersReducedMotion(val) {
-      prefersReducedMotion = val;
+      prefersReducedMotion = !!val;
+      mqlListeners.forEach(fn => fn({ matches: prefersReducedMotion, media: '(prefers-reduced-motion: reduce)' }));
+    },
+    _mqlListenerCount() {
+      return mqlListeners.size;
     }
   };
 
@@ -731,8 +744,9 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
       durationSec: 6
     });
     assert.strictEqual(controller.state.phase, 'mixing');
-    assert.strictEqual(controller._domPill.classList.contains('visible'), true);
-    assert.strictEqual(controller._domUpNext.classList.contains('is-mixing'), true);
+    assert.strictEqual(controller._domPill.classList.contains('visible'), false);
+    assert.strictEqual(controller._domUpNext.classList.contains('hidden'), true);
+    assert.strictEqual(env.elements.get('tvk-crossfading-label').classList.contains('visible'), true);
 
     controller.handleAutomixState({
       phase: 'dominance',
@@ -742,7 +756,8 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
       progress: 0.65
     });
     assert.strictEqual(controller.state.phase, 'dominance');
-    assert.strictEqual(controller._domUpNext.classList.contains('is-dominance'), true);
+    assert.strictEqual(controller._domUpNext.classList.contains('hidden'), true);
+    assert.strictEqual(env.elements.get('tvk-crossfading-label').classList.contains('visible'), true);
 
     controller.handleAutomixState({
       phase: 'settled',
@@ -752,6 +767,7 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
     });
     assert.strictEqual(controller.state.phase, 'settled');
     assert.strictEqual(controller._domUpNext.classList.contains('hidden'), true);
+    assert.strictEqual(env.elements.get('tvk-crossfading-label').classList.contains('visible'), false);
     controller.dispose();
   });
 
@@ -792,5 +808,118 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
     assert.strictEqual(controller.state.phase, 'cancelled');
     assert.strictEqual(controller._domUpNext.classList.contains('hidden'), true);
     controller.dispose();
+  });
+
+  test('Reduced Motion & body.perf: independent operation, runtime MediaQueryList change, and zero lingering timers', () => {
+    const controller = new KaraokeMotionController();
+    controller.init();
+    assert.strictEqual(env.window._mqlListenerCount(), 1, 'MediaQueryList change listener must be registered on init');
+    assert.strictEqual(controller.isReducedMotion(), false);
+
+    // 1. body.perf alone activates reduced motion
+    env.document.body.classList.add('perf');
+    assert.strictEqual(controller.isReducedMotion(), true);
+    env.document.body.classList.remove('perf');
+    assert.strictEqual(controller.isReducedMotion(), false);
+
+    // 2. Start a bass pulse timer during active mixing, then toggle OS prefers-reduced-motion at runtime
+    controller.handleAutomixState({ phase: 'mixing', active: true, transitionId: 'tx-rm-1', nextTrack: { title: 'T' } });
+    controller._bassPulseTimer = setTimeout(() => {}, 5000);
+    env.window._automixRainbowBlend = 0.8;
+    env.window.setPrefersReducedMotion(true);
+
+    assert.strictEqual(controller.isReducedMotion(), true);
+    assert.strictEqual(controller._bassPulseTimer, null, 'Runtime reduced-motion toggle must clear _bassPulseTimer');
+    assert.strictEqual(env.window._automixRainbowBlend, 0, 'Runtime reduced-motion toggle must reset _automixRainbowBlend');
+    assert.strictEqual(env.elements.get('tvk-ambient-bg').style.transform, 'scale(4) translateZ(0)');
+
+    // 3. dispose() removes MediaQueryList listener and leaves zero timers
+    controller.dispose();
+    assert.strictEqual(env.window._mqlListenerCount(), 0, 'dispose() must remove MediaQueryList change listener');
+    assert.strictEqual(controller._bassPulseTimer, null);
+    assert.strictEqual(controller._terminalCleanupTimer, null);
+  });
+
+  test('Lifecycle branches: preparing->cancelled, mixing->cancelled, mixing->error, mixing->settled & stale transitionId rejection', () => {
+    const controller = new KaraokeMotionController();
+    controller.init();
+
+    // preparing -> cancelled
+    controller.handleAutomixState({ phase: 'preparing', active: true, transitionId: 'tx-b1', nextTrack: { title: 'B1' } });
+    assert.strictEqual(controller.state.phase, 'preparing');
+    controller.handleAutomixState({ phase: 'cancelled', active: false, transitionId: 'tx-b1', aborted: true });
+    assert.strictEqual(controller.state.phase, 'cancelled');
+    assert.strictEqual(controller._domUpNext.classList.contains('hidden'), true);
+
+    // mixing -> cancelled
+    controller.handleAutomixState({ phase: 'mixing', active: true, transitionId: 'tx-b2', nextTrack: { title: 'B2' } });
+    assert.strictEqual(controller.state.phase, 'mixing');
+    controller.handleAutomixState({ phase: 'cancelled', active: false, transitionId: 'tx-b2', aborted: true });
+    assert.strictEqual(controller.state.phase, 'cancelled');
+    assert.strictEqual(env.elements.get('tvk-crossfading-label').classList.contains('visible'), false);
+
+    // mixing -> error
+    controller.handleAutomixState({ phase: 'mixing', active: true, transitionId: 'tx-b3', nextTrack: { title: 'B3' } });
+    controller.handleAutomixState({ phase: 'error', active: false, transitionId: 'tx-b3', failed: true });
+    assert.strictEqual(controller.state.phase, 'error');
+    assert.strictEqual(env.elements.get('tvk-crossfading-label').classList.contains('visible'), false);
+
+    // mixing -> settled + stale transitionId rejection
+    controller.handleAutomixState({ phase: 'mixing', active: true, transitionId: 'tx-b4', nextTrack: { title: 'B4' } });
+    controller.handleAutomixState({ phase: 'settled', active: false, transitionId: 'tx-stale', completed: true });
+    assert.strictEqual(controller.state.phase, 'mixing', 'Stale transitionId must be rejected');
+    controller.handleAutomixState({ phase: 'settled', active: false, transitionId: 'tx-b4', completed: true });
+    assert.strictEqual(controller.state.phase, 'settled');
+    assert.strictEqual(controller._bassPulseTimer, null);
+
+    controller.dispose();
+  });
+
+  test('Seekbar sCtx/tCtx shared updateAutomixRainbowBlend & clean reset in app.js', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const vm = require('node:vm');
+    const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+
+    // Verify both sCtx and tCtx use shared updateAutomixRainbowBlend and isReducedMotionActive
+    assert.match(appSrc, /function updateAutomixRainbowBlend\(nowMs\)/);
+    const blendCalls = appSrc.match(/updateAutomixRainbowBlend\(nowMs\)/g) || [];
+    assert.ok(blendCalls.length >= 2, 'Both sCtx and tCtx must call updateAutomixRainbowBlend(nowMs)');
+    assert.match(appSrc, /const isArtReduced = document\.body\.classList\.contains\('perf'\) \|\| \(typeof window\.matchMedia === 'function' && window\.matchMedia\('\(prefers-reduced-motion: reduce\)'\)\.matches\);/, 'Artwork crossfade RAF must guard against both body.perf and prefers-reduced-motion');
+    assert.match(appSrc, /if \(el\.playbarArtwork\.src !== thumb && !isArtReduced\)/);
+    assert.match(appSrc, /window\._automixRainbowBlend = 0;\s*window\._automixRainbowLastMs = 0;/, 'Terminal automix state must reset rainbow blend');
+
+    // Execute extracted updateAutomixRainbowBlend + MediaQueryList listener in VM
+    const startIdx = appSrc.indexOf('const reducedMotionMql =');
+    const endIdx = appSrc.indexOf('function resizeCanvases()');
+    assert.ok(startIdx > 0 && endIdx > startIdx);
+    const snippet = appSrc.slice(startIdx, endIdx);
+
+    const sandbox = {
+      window: env.window,
+      document: env.document,
+      Math
+    };
+    vm.runInNewContext(snippet + '\nthis.__exports = { isReducedMotionActive, updateAutomixRainbowBlend };', sandbox);
+    const { isReducedMotionActive, updateAutomixRainbowBlend } = sandbox.__exports;
+
+    // Ramps 0 -> 1 over 300ms (dtMs clamped to 100ms per frame) when is-automixing is active
+    env.document.body.classList.add('is-automixing');
+    const b1 = updateAutomixRainbowBlend(1000);
+    const b2 = updateAutomixRainbowBlend(1100);
+    const b3 = updateAutomixRainbowBlend(1200);
+    const b4 = updateAutomixRainbowBlend(1300);
+    assert.ok(b1 > 0 && b2 > b1 && b3 > b2 && b4 === 1, `Expected smooth 300ms ramp, got ${b1}, ${b2}, ${b3}, ${b4}`);
+
+    // Runtime MediaQueryList change snaps blend to 0
+    env.window.setPrefersReducedMotion(true);
+    assert.strictEqual(isReducedMotionActive(), true);
+    assert.strictEqual(env.window._automixRainbowBlend, 0);
+    assert.strictEqual(updateAutomixRainbowBlend(1400), 0);
+
+    // Restoring reduced motion allows ramp down to 0 when not automixing
+    env.window.setPrefersReducedMotion(false);
+    env.document.body.classList.remove('is-automixing');
+    assert.strictEqual(updateAutomixRainbowBlend(1500), 0);
   });
 });

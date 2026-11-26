@@ -25,6 +25,38 @@
       this._isSubscribed = false;
       this._onAutomixState = null;
       this._onAutomixProgress = null;
+      this._reducedMotionMql = null;
+      this._onReducedMotionChange = null;
+    }
+
+    isReducedMotion() {
+      if (typeof document !== 'undefined' && document.body && document.body.classList.contains('perf')) {
+        return true;
+      }
+      if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+        const mql = window.matchMedia('(prefers-reduced-motion: reduce)');
+        if (mql && mql.matches) return true;
+      }
+      if (this._reducedMotionMql && this._reducedMotionMql.matches) {
+        return true;
+      }
+      return false;
+    }
+
+    _stopMotionEffects() {
+      if (this._bassPulseTimer) {
+        clearTimeout(this._bassPulseTimer);
+        this._bassPulseTimer = null;
+        this._bassPulseGeneration += 1;
+      }
+      if (typeof document !== 'undefined') {
+        const tvkBg = document.getElementById('tvk-ambient-bg');
+        if (tvkBg) tvkBg.style.transform = 'scale(4) translateZ(0)';
+      }
+      if (typeof window !== 'undefined') {
+        window._automixRainbowBlend = 0;
+        window._automixRainbowLastMs = 0;
+      }
     }
 
     init() {
@@ -41,6 +73,21 @@
 
         window.addEventListener('eclipse:automix-state', this._onAutomixState);
         window.addEventListener('eclipse:automix-progress', this._onAutomixProgress);
+
+        if (typeof window.matchMedia === 'function') {
+          this._reducedMotionMql = window.matchMedia('(prefers-reduced-motion: reduce)');
+          this._onReducedMotionChange = (ev) => {
+            if (ev && ev.matches) {
+              this._stopMotionEffects();
+            }
+            this._notify();
+          };
+          if (typeof this._reducedMotionMql.addEventListener === 'function') {
+            this._reducedMotionMql.addEventListener('change', this._onReducedMotionChange);
+          } else if (typeof this._reducedMotionMql.addListener === 'function') {
+            this._reducedMotionMql.addListener(this._onReducedMotionChange);
+          }
+        }
       }
 
       this._ensureDomElements();
@@ -51,10 +98,7 @@
         clearTimeout(this._terminalCleanupTimer);
         this._terminalCleanupTimer = null;
       }
-      if (this._bassPulseTimer) {
-        clearTimeout(this._bassPulseTimer);
-        this._bassPulseTimer = null;
-      }
+      this._stopMotionEffects();
 
       if (this._isSubscribed && typeof window !== 'undefined') {
         if (this._onAutomixState) {
@@ -64,6 +108,15 @@
         if (this._onAutomixProgress) {
           window.removeEventListener('eclipse:automix-progress', this._onAutomixProgress);
           this._onAutomixProgress = null;
+        }
+        if (this._reducedMotionMql && this._onReducedMotionChange) {
+          if (typeof this._reducedMotionMql.removeEventListener === 'function') {
+            this._reducedMotionMql.removeEventListener('change', this._onReducedMotionChange);
+          } else if (typeof this._reducedMotionMql.removeListener === 'function') {
+            this._reducedMotionMql.removeListener(this._onReducedMotionChange);
+          }
+          this._reducedMotionMql = null;
+          this._onReducedMotionChange = null;
         }
       }
 
@@ -98,7 +151,8 @@
     _renderUpNextChip(phase, detail) {
       if (!this._domUpNext) return;
       const track = (detail && detail.nextTrack) || this.state.toTrack;
-      if (!track || !track.title) {
+      const showUpNext = (phase === 'preparing' || phase === 'ready') && track && track.title;
+      if (!showUpNext) {
         this._domUpNext.classList.add('hidden');
         this._domUpNext.classList.remove('is-preparing', 'is-ready', 'is-mixing', 'is-dominance');
         return;
@@ -140,6 +194,12 @@
       }
     }
 
+    _syncCrossfadingLabel(isMixing) {
+      if (typeof document === 'undefined') return;
+      const lbl = document.getElementById('tvk-crossfading-label');
+      if (lbl) lbl.classList.toggle('visible', !!isMixing);
+    }
+
     syncDomFromState() {
       this._ensureDomElements();
       const tvk = typeof document !== 'undefined' ? document.getElementById('tv-karaoke') : null;
@@ -155,6 +215,7 @@
           this._domUpNext.classList.add('hidden');
           this._domUpNext.classList.remove('is-preparing', 'is-ready', 'is-mixing', 'is-dominance');
         }
+        this._syncCrossfadingLabel(false);
         if (tvk) tvk.classList.remove('is-automix-blend', 'is-automix-dominance');
         return;
       }
@@ -167,19 +228,17 @@
           tvk.classList.toggle('is-automix-dominance', phase === 'dominance');
         }
         if (this._domPill) {
-          this._domPill.classList.remove('hidden');
-          this._domPill.classList.add('visible');
-          const lbl = this._domPill.querySelector('.tvk-automix-label');
-          if (lbl) lbl.textContent = this.state.mode === 'tempo_synced' ? 'BEAT MIX' : 'AUTOMIX';
-          const fill = this._domPill.querySelector('.tvk-automix-progress-fill');
-          if (fill) fill.style.width = `${(Math.max(0, Math.min(1, this.state.progress || 0)) * 100).toFixed(1)}%`;
+          this._domPill.classList.remove('visible');
+          this._domPill.classList.add('hidden');
         }
+        this._syncCrossfadingLabel(true);
       } else {
         if (tvk) tvk.classList.remove('is-automix-blend', 'is-automix-dominance');
         if (this._domPill) {
           this._domPill.classList.remove('visible');
           this._domPill.classList.add('hidden');
         }
+        this._syncCrossfadingLabel(false);
       }
     }
 
@@ -251,6 +310,7 @@
           this._domUpNext.classList.add('hidden');
           this._domUpNext.classList.remove('is-preparing', 'is-ready', 'is-mixing', 'is-dominance');
         }
+        this._syncCrossfadingLabel(false);
         if (tvk) {
           tvk.classList.remove('is-automix-blend', 'is-automix-dominance');
         }
@@ -287,6 +347,7 @@
           this._domPill.classList.remove('visible');
           this._domPill.classList.add('hidden');
         }
+        this._syncCrossfadingLabel(false);
         this._renderUpNextChip(phase, detail);
         this._notify();
         return;
@@ -302,6 +363,11 @@
           tvk.classList.remove('is-automix-blend');
           tvk.classList.add('is-automix-dominance');
         }
+        if (this._domPill) {
+          this._domPill.classList.remove('visible');
+          this._domPill.classList.add('hidden');
+        }
+        this._syncCrossfadingLabel(true);
         this._renderUpNextChip('dominance', detail);
         if (prevPhase !== 'dominance' && typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('eclipse:karaoke-dominant-switch', {
@@ -326,13 +392,10 @@
       }
 
       if (this._domPill) {
-        this._domPill.classList.remove('hidden');
-        this._domPill.classList.add('visible');
-        const lbl = this._domPill.querySelector('.tvk-automix-label');
-        if (lbl) lbl.textContent = this.state.mode === 'tempo_synced' ? 'BEAT MIX' : 'AUTOMIX';
-        const fill = this._domPill.querySelector('.tvk-automix-progress-fill');
-        if (fill) fill.style.width = `${(this.state.progress * 100).toFixed(1)}%`;
+        this._domPill.classList.remove('visible');
+        this._domPill.classList.add('hidden');
       }
+      this._syncCrossfadingLabel(true);
 
       this._renderUpNextChip('mixing', detail);
       this._notify();
@@ -381,9 +444,9 @@
 
     // Process real audio bass energy from analyser for Bass Pulse with generation token
     triggerBassPulse(energy) {
-      if (typeof document !== 'undefined') {
-        if (document.body && document.body.classList.contains('perf')) return;
-        if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      if (this.isReducedMotion()) {
+        this._stopMotionEffects();
+        return;
       }
 
       const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
