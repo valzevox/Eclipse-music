@@ -9,14 +9,28 @@ const { EclipsePreloadManager } = require('../src/renderer/preload-manager.js');
 
 function createMockAudioElement() {
   const listeners = new Map();
+  let _src = '';
   return {
-    src: '',
+    get src() { return _src; },
+    set src(val) {
+      _src = val;
+      if (val) {
+        setTimeout(() => {
+          this.readyState = 4;
+          this.emit('canplay');
+        }, 5);
+      }
+    },
     preload: 'none',
     readyState: 0,
     paused: true,
     addEventListener(ev, fn) {
       if (!listeners.has(ev)) listeners.set(ev, []);
       listeners.get(ev).push(fn);
+    },
+    removeEventListener(ev, fn) {
+      if (!listeners.has(ev)) return;
+      listeners.set(ev, listeners.get(ev).filter(f => f !== fn));
     },
     emit(ev) {
       for (const fn of listeners.get(ev) || []) fn();
