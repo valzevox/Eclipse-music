@@ -4650,34 +4650,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  function resolveNextPreloadTarget() {
+  const nextTrackCoordinator = (typeof window !== 'undefined' && typeof window.NextTrackCoordinator === 'function')
+    ? new window.NextTrackCoordinator({
+        getState: () => state,
+        getAutoMix: () => window.autoMixDjInstance || null,
+        getTrackAnalyzer: () => window._eclipseTrackAnalyzer || null,
+        getShuffleProvider: () => shuffleProvider,
+        isTrackBlocked: (t) => typeof isTrackBlocked === 'function' ? isTrackBlocked(t) : false,
+        isArtistBlocked: (a) => typeof isArtistBlocked === 'function' ? isArtistBlocked(a) : false,
+        isSameTrack: (a, b) => typeof isSameTrack === 'function' ? isSameTrack(a, b) : !!(a && b && a.id === b.id),
+        onCancel: (reason) => cancelActiveNextPreload(reason)
+      })
+    : null;
+  if (typeof window !== 'undefined' && nextTrackCoordinator) {
+    window._eclipseNextTrackCoordinator = nextTrackCoordinator;
+  }
+
+  async function resolveNextPreloadTarget() {
     if (!state.queue || state.queueIndex < 0) return null;
-    let nextTrack = state.queue[state.queueIndex + 1] || null;
-    if (
-      window.autoMixDjInstance &&
-      window.autoMixDjInstance.enabled &&
-      window.autoMixDjInstance.mode === 'tempo_synced' &&
-      typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function'
-    ) {
-      const curTrack = state.currentTrack || state.queue[state.queueIndex];
-      const curBpm = (window._eclipseTrackAnalyzer && typeof window._eclipseTrackAnalyzer.getEffectiveBpm === 'function')
-        ? window._eclipseTrackAnalyzer.getEffectiveBpm(curTrack)
-        : ((curTrack && curTrack._detectedBpm) || null);
-      const picked = window.autoMixDjInstance.pickTempoSyncedNext(
-        state.queue,
-        state.queueIndex,
-        state.autoMixPlayedIds,
-        curBpm,
-        { analyzer: window._eclipseTrackAnalyzer || null }
-      );
-      if (picked && picked.track) nextTrack = picked.track;
+    if (nextTrackCoordinator) {
+      const plan = await nextTrackCoordinator.reserve();
+      return plan ? plan.track : null;
     }
-    return nextTrack;
+    return state.queue[state.queueIndex + 1] || null;
   }
 
   async function preloadNextTrackStream(overrideTrack = null) {
     if (!state.queue || state.queueIndex < 0) return;
-    const nextTrack = overrideTrack || resolveNextPreloadTarget();
+    const nextTrack = overrideTrack || await resolveNextPreloadTarget();
     if (!nextTrack || nextTrack.isCached || nextTrack.platform === 'local') return;
     const curQuality = getConfiguredAudioQuality();
     if (isTrackPreloadValid(nextTrack, curQuality)) {
@@ -4686,6 +4686,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     cancelActiveNextPreload('superseded');
     const myGen = _nextPreloadGeneration;
+    const coordGen = nextTrackCoordinator ? nextTrackCoordinator.generation : 0;
     const controller = new AbortController();
     _nextPreloadAbortController = controller;
     try {
@@ -4696,7 +4697,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (q) {
           const sRes = await fetch(`http://127.0.0.1:${state.serverPort}/api/search?q=${encodeURIComponent(q)}&platform=ytmusic&limit=1`, { signal: controller.signal });
           const sData = await sRes.json();
-          if (myGen !== _nextPreloadGeneration || controller.signal.aborted) return;
+          if (myGen !== _nextPreloadGeneration || (nextTrackCoordinator && nextTrackCoordinator.generation !== coordGen) || controller.signal.aborted) return;
           const hit = sData && Array.isArray(sData.tracks) && sData.tracks[0];
           if (hit && hit.id && /^[a-zA-Z0-9_-]{11}$/.test(hit.id)) {
             nextTrack.id = hit.id;
@@ -4711,7 +4712,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const fetchUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?id=${encodeURIComponent(nextTrack.id || '')}&url=${encodeURIComponent(nextTrack.url || '')}&platform=${encodeURIComponent(nextTrack.platform || 'ytmusic')}&title=${encodeURIComponent(nextTrack.title || '')}&artist=${encodeURIComponent(nextTrack.artist || '')}&duration=${encodeURIComponent(nextTrack.duration || 0)}&q=${qFallback}&quality=${qQuality}&token=${encodeURIComponent(tokenParam)}`;
       const res = await fetch(fetchUrl, { signal: controller.signal });
       const data = await res.json();
-      if (myGen !== _nextPreloadGeneration || controller.signal.aborted) return;
+      if (myGen !== _nextPreloadGeneration || (nextTrackCoordinator && nextTrackCoordinator.generation !== coordGen) || controller.signal.aborted) return;
       if (data && data.success && (data.proxyUrl || data.streamUrl)) {
         const chosenUrl = data.proxyUrl || data.streamUrl;
         nextTrack._preloadedStreamUrl = chosenUrl;
@@ -5069,7 +5070,8 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     }
 
     try {
-      cancelActiveNextPreload('track_changed');
+      if (nextTrackCoordinator) nextTrackCoordinator.cancel('track_changed');
+      else cancelActiveNextPreload('track_changed');
       const configuredQuality = getConfiguredAudioQuality();
       if (!isTrackPreloadValid(track, configuredQuality) && globalPreloadManager) {
         const cachedPreload = globalPreloadManager.getCached(track, configuredQuality);
@@ -9040,12 +9042,39 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     // AutoMix DJ exact handover: jump straight to the track crossfaded by integration-bridge (Equal Power = i+1, Tempo Synced = closest BPM)
     if (state._autoMixHandover && typeof state._autoMixHandover.targetIndex === 'number') {
       const targetIdx = state._autoMixHandover.targetIndex;
+      if (nextTrackCoordinator) {
+        nextTrackCoordinator.commit(state._autoMixHandover.reservationToken || null);
+      }
       if (targetIdx >= 0 && targetIdx < state.queue.length) {
         state.queueIndex = targetIdx;
         recordPlayedIndex(targetIdx);
         playTrack(state.queue[targetIdx]);
         return;
       }
+    }
+
+    if (nextTrackCoordinator) {
+      const plan = await nextTrackCoordinator.reserve();
+      const committed = plan ? nextTrackCoordinator.commit(plan.token) : null;
+      if (committed && committed.targetIndex >= 0 && committed.targetIndex < state.queue.length) {
+        state.queueIndex = committed.targetIndex;
+        recordPlayedIndex(committed.targetIndex);
+        playTrack(state.queue[committed.targetIndex]);
+        if (state.myWaveActive && state.queueIndex >= state.queue.length - 3 && typeof extendMyWaveQueue === 'function') {
+          extendMyWaveQueue();
+        }
+        return;
+      }
+      if (state.myWaveActive && typeof extendMyWaveQueue === 'function') {
+        extendMyWaveQueue().then(added => {
+          if (added && state.queueIndex + 1 < state.queue.length) {
+            playNext();
+          }
+        });
+        return;
+      }
+      pauseSmooth();
+      return;
     }
 
     if (state.isShuffle && !state.isAutoRemix) {
@@ -9116,6 +9145,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
   function playPrev() {
     if (syncState && syncState.active) return;
+    if (nextTrackCoordinator) nextTrackCoordinator.cancel('prev_track');
     abortAutoMixIfActive('skip');
     if (el.nativeAudio && el.nativeAudio.currentTime > 3) {
       el.nativeAudio.currentTime = 0;
@@ -13854,6 +13884,7 @@ function renderClickableArtists(container, rawArtist) {
   }
 
   function updateQueueBadge() {
+    if (nextTrackCoordinator) nextTrackCoordinator.cancel('queue_updated');
     setNavCount(el.queueCount, state.queue.length);
     try { window.dispatchEvent(new CustomEvent('queueupdated', { detail: { length: state.queue.length } })); } catch (_) {}
   }
@@ -15632,6 +15663,7 @@ function updateNavIndicator(animate) {
         window.autoMixDjInstance.configure({ enabled: resolvedEnabled, mode: resolvedMode });
       }
     }
+    if (nextTrackCoordinator) nextTrackCoordinator.cancel('automix_mode_changed');
     if (resolvedEnabled && el.nativeAudio && el.nativeAudio.playbackRate !== 1.0) {
       el.nativeAudio.playbackRate = 1.0;
     }
@@ -16242,6 +16274,7 @@ function bindCoverHoldZoom(wrapEl) {
       }
       localStorage.setItem('eclipse_shuffle', state.isShuffle ? '1' : '0');
       el.btnShuffle.classList.toggle('active', state.isShuffle);
+      if (nextTrackCoordinator) nextTrackCoordinator.cancel('shuffle_toggled');
     });
   }
 

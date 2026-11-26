@@ -352,7 +352,12 @@
             if (dur > 20 && remaining <= 30 && remaining > 8 && !earlyPreloadStartedForTrack) {
               earlyPreloadStartedForTrack = true;
               let preloadTarget = nextTrack;
-              if (window.autoMixDjInstance && window.autoMixDjInstance.enabled && window.autoMixDjInstance.mode === 'tempo_synced' && typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function') {
+              const coord = window._eclipseNextTrackCoordinator;
+              const coordGen = coord ? coord.generation : 0;
+              if (coord && typeof coord.reserve === 'function') {
+                const plan = await coord.reserve();
+                if (plan && plan.track) preloadTarget = plan.track;
+              } else if (window.autoMixDjInstance && window.autoMixDjInstance.enabled && window.autoMixDjInstance.mode === 'tempo_synced' && typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function') {
                 const curBpm = trackAnalyzer ? trackAnalyzer.getEffectiveBpm(currentTrack) : ((currentTrack && currentTrack._detectedBpm) || null);
                 const earlyPick = window.autoMixDjInstance.pickTempoSyncedNext(st.queue, st.queueIndex, st.autoMixPlayedIds, curBpm, { analyzer: trackAnalyzer });
                 if (earlyPick && earlyPick.track) preloadTarget = earlyPick.track;
@@ -363,6 +368,7 @@
                   preloadManager.prepareNextTrack(preloadTarget, auxAudio, curQuality).catch(() => {});
                 } else if (!preloadTarget._preloadedStreamUrl || preloadTarget._preloadedStreamQuality !== curQuality) {
                   resolveNextTrackStreamUrl(preloadTarget).then(url => {
+                    if (coord && coord.generation !== coordGen) return;
                     if (url && auxAudio && !window.autoMixDjInstance?.isCrossfading && auxAudio.paused) {
                       auxAudio.preload = 'auto';
                       auxAudio.src = url;
@@ -378,13 +384,23 @@
 
             if (!window.autoMixDjInstance || !window.autoMixDjInstance.enabled || window.autoMixDjInstance.isCrossfading || automixTriggeredForTrack) return;
 
-            // 2. Determine target next track first (order of planning)
+            // 2. Determine target next track first (order of planning) via shared NextTrackCoordinator
             let targetNextTrack = nextTrack;
             let targetNextIdx = nextIdx;
             let currentTrackBpm = trackAnalyzer ? trackAnalyzer.getEffectiveBpm(currentTrack) : ((currentTrack && currentTrack._detectedBpm) || null);
             let pickedCandidate = null;
+            let reservedPlanToken = null;
 
-            if (window.autoMixDjInstance.mode === 'tempo_synced' && typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function') {
+            const coord = window._eclipseNextTrackCoordinator;
+            if (coord && typeof coord.reserve === 'function') {
+              const plan = await coord.reserve();
+              if (plan && plan.track) {
+                targetNextTrack = plan.track;
+                targetNextIdx = plan.targetIndex;
+                reservedPlanToken = plan.token;
+                pickedCandidate = { track: plan.track, index: plan.targetIndex, compatible: plan.compatible !== false };
+              }
+            } else if (window.autoMixDjInstance.mode === 'tempo_synced' && typeof window.autoMixDjInstance.pickTempoSyncedNext === 'function') {
               pickedCandidate = window.autoMixDjInstance.pickTempoSyncedNext(
                 st.queue,
                 st.queueIndex,
@@ -635,6 +651,7 @@
                 if (playbackHandover) {
                   curCoreState._autoMixHandover = playbackHandover.createHandoverToken(nextTrack, auxAudio, nextIdx, {
                     transitionId: currentTransitionId,
+                    reservationToken: reservedPlanToken,
                     mode: window.autoMixDjInstance.mode,
                     durationSec: plannedFadeDuration
                   });
@@ -647,6 +664,7 @@
                     track: nextTrack,
                     targetIndex: nextIdx,
                     transitionId: currentTransitionId,
+                    reservationToken: reservedPlanToken,
                     mode: window.autoMixDjInstance.mode,
                     durationSec: plannedFadeDuration
                   };

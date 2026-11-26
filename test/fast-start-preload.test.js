@@ -210,9 +210,9 @@ describe('Fast-Start Quality Policy & Rolling One-Track-Ahead Preload', () => {
     const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
     const bridgeSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/integration-bridge.js'), 'utf8');
 
-    // Tempo Synced candidate used in both app.js rolling preload and integration-bridge early preload
-    assert.match(appSrc, /function resolveNextPreloadTarget\(\)[\s\S]*?pickTempoSyncedNext/);
-    assert.match(bridgeSrc, /let preloadTarget = nextTrack;[\s\S]*?pickTempoSyncedNext[\s\S]*?preloadManager\.prepareNextTrack\(preloadTarget,\s*auxAudio,\s*curQuality\)/);
+    // Tempo Synced candidate used via NextTrackCoordinator in both app.js rolling preload and integration-bridge early preload
+    assert.match(appSrc, /async function resolveNextPreloadTarget\(\)[\s\S]*?nextTrackCoordinator\.reserve\(\)/);
+    assert.match(bridgeSrc, /const coord = window\._eclipseNextTrackCoordinator;[\s\S]*?coord\.reserve\(\)[\s\S]*?preloadManager\.prepareNextTrack\(preloadTarget,\s*auxAudio,\s*curQuality\)/);
 
     // No secondNext batch prefetching in prefetchUpcomingQueueStreams
     const upcomingFn = appSrc.slice(appSrc.indexOf('function prefetchUpcomingQueueStreams()'), appSrc.indexOf('// === ECLIPSE MERGE: OFFLINE MODE ==='));
