@@ -122,6 +122,15 @@ async function fetchLatestManifest() {
     if (res.ok) {
       lastManifestEtag = res.headers.get('etag');
       const data = await res.json();
+      if (data && Array.isArray(data.files) && !data.url) {
+        const pick = findMatchingAsset(data.files);
+        if (pick) {
+          data.url = pick.url || `https://github.com/${REPO}/releases/download/v${data.version}/${pick.name}`;
+          data.sha512 = pick.sha512 || data.sha512;
+          data.size = pick.size || data.size;
+          data.assetName = pick.name || data.assetName;
+        }
+      }
       logStage('check', 'Fetched static latest.json via GitHub CDN', { version: data.version });
       return data;
     }
@@ -487,7 +496,7 @@ function initUpdater(getWindow, hooks = {}) {
         logStage('check', `Newer version available: v${remoteVer} (local: v${currentVer})`);
 
         // If manifest has no notes (e.g. from static latest.yml), attempt to fetch real release notes from API
-        let notes = manifest.notes || '';
+        let notes = manifest.notes || manifest.releaseNotes || manifest.body || '';
         if (!notes) {
           try {
             const relRes = await httpFetch(`https://api.github.com/repos/${REPO}/releases/tags/v${remoteVer}`, {

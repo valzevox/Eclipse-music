@@ -344,18 +344,29 @@
         releaseNotes: cachedNotes
       }, 'changelog');
     } else {
-      // Fetch changelog from GitHub CDN / API if not cached locally
+      // Fetch changelog from static GitHub CDN latest.json first, then API fallback
       (async () => {
         let fetchedNotes = '';
         try {
-          const res = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/v${CURRENT_VER}`, {
+          const cdnRes = await fetch(`https://github.com/${REPO}/releases/download/v${CURRENT_VER}/latest.json`, {
             headers: { 'User-Agent': 'Eclipse-Player' }
           });
-          if (res.ok) {
-            const data = await res.json();
-            if (data && data.body) fetchedNotes = data.body;
+          if (cdnRes.ok) {
+            const cdnData = await cdnRes.json();
+            if (cdnData) fetchedNotes = cdnData.notes || cdnData.releaseNotes || cdnData.body || '';
           }
         } catch (_) {}
+        if (!fetchedNotes) {
+          try {
+            const res = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/v${CURRENT_VER}`, {
+              headers: { 'User-Agent': 'Eclipse-Player' }
+            });
+            if (res.ok) {
+              const data = await res.json();
+              if (data && data.body) fetchedNotes = data.body;
+            }
+          } catch (_) {}
+        }
 
         showUpdateModal({
           version: CURRENT_VER,
