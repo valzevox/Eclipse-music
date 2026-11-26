@@ -145,10 +145,30 @@ async function fetchWithBoundedRetry(endpoint, url, opts, maxRetries = 1) {
     try {
       const res = await httpFetch(url, opts);
       const durationMs = Date.now() - t0;
-      const isTransient = res.status >= 500 || res.status === 429;
-      if (isTransient && attempt < maxRetries && !(opts.signal && opts.signal.aborted)) {
-        const rlDelay = computeRateLimitDelayMs(res.headers, Date.now(), 2500);
-        const backoff = rlDelay > 0 ? rlDelay : (300 * Math.pow(2, attempt) + Math.floor(Math.random() * 200));
+      const h = res && res.headers && typeof res.headers.get === 'function' ? res.headers : null;
+      const remaining = h ? h.get('x-ratelimit-remaining') : null;
+      const retryAfter = h ? h.get('retry-after') : null;
+      const resetHdr = h ? h.get('x-ratelimit-reset') : null;
+      const is403RateLimit = res.status === 403 && (remaining === '0' || !!retryAfter);
+      const isRateLimited = res.status === 429 || is403RateLimit;
+      const isServerErr = res.status >= 500;
+
+      if (isRateLimited) {
+        const rawDelay = computeRateLimitDelayMs(h, Date.now(), Number.MAX_SAFE_INTEGER);
+        if (rawDelay > 2500) {
+          logStage('rate-limit-deferred', `${endpoint} rate-limited (HTTP ${res.status}); reset in ${Math.ceil(rawDelay / 1000)}s, deferring retry`, {
+            endpoint, status: res.status, rateLimitRemaining: remaining, rateLimitReset: resetHdr, retryAfter
+          });
+          return { res, durationMs, err: null };
+        }
+        if (attempt < maxRetries && !(opts.signal && opts.signal.aborted)) {
+          const backoff = rawDelay > 0 ? rawDelay : (300 * Math.pow(2, attempt) + Math.floor(Math.random() * 200));
+          attempt++;
+          await new Promise(r => setTimeout(r, backoff));
+          continue;
+        }
+      } else if (isServerErr && attempt < maxRetries && !(opts.signal && opts.signal.aborted)) {
+        const backoff = 300 * Math.pow(2, attempt) + Math.floor(Math.random() * 200);
         attempt++;
         await new Promise(r => setTimeout(r, backoff));
         continue;
@@ -168,19 +188,29 @@ async function fetchWithBoundedRetry(endpoint, url, opts, maxRetries = 1) {
   }
 }
 
-async function fetchLatestManifest() {
+async function fetchLatestManifest(hasCachedManifest = false) {
   const stageErrors = [];
 
   // 1. Static latest.json from GitHub CDN
   logStage('check-json-start', `Fetching ${CDN_STATIC_MANIFEST}`);
   {
     const headers = { 'User-Agent': 'Eclipse-Player' };
-    if (lastManifestEtag) headers['If-None-Match'] = lastManifestEtag;
-    const { res, durationMs, err } = await fetchWithBoundedRetry('latest.json', CDN_STATIC_MANIFEST, {
+    if (lastManifestEtag && hasCachedManifest) headers['If-None-Match'] = lastManifestEtag;
+    let { res, durationMs, err } = await fetchWithBoundedRetry('latest.json', CDN_STATIC_MANIFEST, {
       headers,
       signal: AbortSignal.timeout(8000),
       redirect: 'follow'
     });
+
+    if (!err && res && res.status === 304 && !hasCachedManifest) {
+      logStage('check-json-result', 'Received 304 without cached manifest; retrying unconditionally without If-None-Match', buildResponseDiag('latest.json', CDN_STATIC_MANIFEST, res, 0, durationMs));
+      lastManifestEtag = null;
+      ({ res, durationMs, err } = await fetchWithBoundedRetry('latest.json', CDN_STATIC_MANIFEST, {
+        headers: { 'User-Agent': 'Eclipse-Player' },
+        signal: AbortSignal.timeout(8000),
+        redirect: 'follow'
+      }));
+    }
 
     if (err) {
       const diag = buildResponseDiag('latest.json', CDN_STATIC_MANIFEST, null, null, durationMs, err);
@@ -205,10 +235,10 @@ async function fetchLatestManifest() {
           data.sha512 = resolved.sha512;
           data.size = resolved.size;
           data.assetName = resolved.assetName;
-        } else {
-          data.url = null;
+          return data;
         }
-        return data;
+        stageErrors.push(`latest.json (no compatible asset for ${process.platform}/${process.arch})`);
+        logStage('check-fallback', 'latest.json has no compatible asset for current platform; falling back to latest.yml', { platform: process.platform, arch: process.arch });
       } catch (parseErr) {
         const diag = buildResponseDiag('latest.json', CDN_STATIC_MANIFEST, res, rawText.length, durationMs, parseErr);
         logStage('check-json-result', 'Malformed JSON in latest.json', diag);
@@ -219,8 +249,10 @@ async function fetchLatestManifest() {
       let bodyLen = 0;
       try { bodyLen = (await res.text()).length; } catch (_) {}
       const diag = buildResponseDiag('latest.json', CDN_STATIC_MANIFEST, res, bodyLen, durationMs);
+      const is403Rl = res.status === 403 && (diag.rateLimitRemaining === '0' || !!diag.retryAfter);
       const reason = res.status === 404 ? 'manifest asset missing (404)'
-        : (res.status === 403 || res.status === 429) ? `rate-limited (HTTP ${res.status})`
+        : (res.status === 429 || is403Rl) ? `rate-limited (HTTP ${res.status})`
+        : res.status === 403 ? 'forbidden (HTTP 403)'
         : `HTTP ${res.status}`;
       logStage('check-json-result', `latest.json failed: ${reason}`, diag);
       stageErrors.push(`latest.json (${reason})`);
@@ -256,17 +288,22 @@ async function fetchLatestManifest() {
             sha512: parsedYml.sha512,
             files: parsedYml.files
           }, REPO);
-          return {
-            version: parsedYml.version,
-            sha512: resolved ? resolved.sha512 : null,
-            size: resolved ? resolved.size : 0,
-            url: resolved ? resolved.url : null,
-            assetName: resolved ? resolved.assetName : null
-          };
+          if (resolved) {
+            return {
+              version: parsedYml.version,
+              sha512: resolved.sha512,
+              size: resolved.size,
+              url: resolved.url,
+              assetName: resolved.assetName
+            };
+          }
+          stageErrors.push(`latest.yml (no compatible asset for ${process.platform}/${process.arch})`);
+          logStage('check-fallback', 'latest.yml has no compatible asset for current platform; falling back to releases-api', { platform: process.platform, arch: process.arch });
+        } else {
+          logStage('check-yml-result', 'Malformed YAML in latest.yml', diag);
+          stageErrors.push(`latest.yml (HTTP ${ymlRes.status} malformed YAML)`);
+          logStage('check-fallback', 'Falling back from latest.yml to releases-api', { reason: 'malformed-yaml' });
         }
-        logStage('check-yml-result', 'Malformed YAML in latest.yml', diag);
-        stageErrors.push(`latest.yml (HTTP ${ymlRes.status} malformed YAML)`);
-        logStage('check-fallback', 'Falling back from latest.yml to releases-api', { reason: 'malformed-yaml' });
       } catch (parseErr) {
         const diag = buildResponseDiag('latest.yml', CDN_STATIC_YML, ymlRes, ymlText.length, durationMs, parseErr);
         logStage('check-yml-result', 'Failed reading/parsing latest.yml', diag);
@@ -277,8 +314,10 @@ async function fetchLatestManifest() {
       let bodyLen = 0;
       try { bodyLen = (await ymlRes.text()).length; } catch (_) {}
       const diag = buildResponseDiag('latest.yml', CDN_STATIC_YML, ymlRes, bodyLen, durationMs);
+      const is403Rl = ymlRes.status === 403 && (diag.rateLimitRemaining === '0' || !!diag.retryAfter);
       const reason = ymlRes.status === 404 ? 'manifest asset missing (404)'
-        : (ymlRes.status === 403 || ymlRes.status === 429) ? `rate-limited (HTTP ${ymlRes.status})`
+        : (ymlRes.status === 429 || is403Rl) ? `rate-limited (HTTP ${ymlRes.status})`
+        : ymlRes.status === 403 ? 'forbidden (HTTP 403)'
         : `HTTP ${ymlRes.status}`;
       logStage('check-yml-result', `latest.yml failed: ${reason}`, diag);
       stageErrors.push(`latest.yml (${reason})`);
@@ -306,8 +345,10 @@ async function fetchLatestManifest() {
     let bodyLen = 0;
     try { bodyLen = (await apiRes.text()).length; } catch (_) {}
     const diag = buildResponseDiag('releases-api', RELEASE_API, apiRes, bodyLen, durationMs);
-    const reason = (apiRes.status === 403 || apiRes.status === 429)
+    const is403Rl = apiRes.status === 403 && (diag.rateLimitRemaining === '0' || !!diag.retryAfter);
+    const reason = (apiRes.status === 429 || is403Rl)
       ? `rate-limited (HTTP ${apiRes.status}${diag.retryAfter ? `, Retry-After=${diag.retryAfter}` : ''}${diag.rateLimitReset ? `, Reset=${diag.rateLimitReset}` : ''})`
+      : apiRes.status === 403 ? 'forbidden (HTTP 403)'
       : `HTTP ${apiRes.status}`;
     logStage('check-api-result', `Releases API failed: ${reason}`, diag);
     stageErrors.push(`releases-api (${reason})`);
@@ -628,15 +669,16 @@ function initUpdater(getWindow, hooks = {}) {
     const run = (async () => {
       try {
         logStage('check', 'Checking for updates...');
-        let manifest = await fetchLatestManifest();
+        let manifest = await fetchLatestManifest(lastManifest !== null);
         if (manifest && manifest.notModified) {
           manifest = lastManifest;
         } else if (manifest) {
           lastManifest = manifest;
         }
         if (!manifest) {
-          logStage('check-no-update', `No cached manifest on 304; reporting up to date (v${currentVer})`);
-          if (manualCheck) send('update-not-available', { version: currentVer, manual: true });
+          const errMsg = 'Update check failed: empty manifest after 304 without cache.';
+          logStage('check-error', errMsg);
+          if (manualCheck) send('update-error', { stage: 'check', message: errMsg });
           manualCheck = false;
           return;
         }

@@ -214,11 +214,22 @@ test('304 ETag reuses cached lastManifest on manual update-check', async () => {
   }
 });
 
-test('304 ETag with no cached lastManifest emits update-not-available on manual check and resets manualCheck', async () => {
+test('304 ETag with no cached lastManifest retries unconditionally without If-None-Match and never reports false up-to-date', async () => {
+  let jsonCalls = 0;
+  let sawIfNoneMatchOnSecond = false;
   const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
     version: '1.5.0',
-    fetchImpl: async (url) => {
-      if (url.endsWith('latest.json')) return jsonResponse(304, null);
+    fetchImpl: async (url, opts) => {
+      if (url.endsWith('latest.json')) {
+        jsonCalls++;
+        if (jsonCalls === 1) return jsonResponse(304, null);
+        sawIfNoneMatchOnSecond = !!(opts && opts.headers && opts.headers['If-None-Match']);
+        return jsonResponse(200, {
+          version: '1.6.0',
+          url: 'https://example.com/eclipse-1.6.0-win-x64.exe',
+          notes: 'Release 1.6.0'
+        });
+      }
       return jsonResponse(404, {});
     }
   });
@@ -226,9 +237,10 @@ test('304 ETag with no cached lastManifest emits update-not-available on manual 
   try {
     const check = ipcHandlers.get('update-check');
     await check();
-    const notAvail = sentEvents.filter((e) => e.channel === 'update-not-available');
-    assert.strictEqual(notAvail.length, 1, '304 with no cached manifest must emit update-not-available on manual check');
-    assert.strictEqual(notAvail[0].payload.version, '1.5.0');
+    assert.strictEqual(jsonCalls, 2, 'Empty-cache 304 must trigger unconditional retry');
+    assert.strictEqual(sawIfNoneMatchOnSecond, false, 'Unconditional retry must omit If-None-Match');
+    assert.strictEqual(sentEvents.filter((e) => e.channel === 'update-not-available').length, 0);
+    assert.strictEqual(sentEvents.filter((e) => e.channel === 'update-available').length, 1);
   } finally {
     cleanup();
   }
@@ -509,6 +521,163 @@ test('Backward-compatible manifest & platform/arch safety (x64, ia32, linux, dar
   assert.strictEqual(resolveManifestAsset(winOnlyManifest, 'valzevox/Eclipse-music', 'linux', 'x64'), null);
   assert.strictEqual(resolveManifestAsset(winOnlyManifest, 'valzevox/Eclipse-music', 'win32', 'ia32'), null);
   assert.strictEqual(isAssetCompatibleWithPlatform('eclipse-1.5.1-win-x64.exe', 'win32', 'ia32'), false);
+});
+
+// Test 8: Section 4 — 403/429 Rate-Limit vs Ordinary 403 Forbidden
+test('403 with remaining=0 and far-future reset defers immediately without 2.5s wait and falls back', async () => {
+  let jsonCalls = 0;
+  const t0 = Date.now();
+  const farReset = String(Math.floor(Date.now() / 1000) + 3600);
+  const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+    version: '1.4.24',
+    fetchImpl: async (url) => {
+      if (url.endsWith('latest.json')) {
+        jsonCalls++;
+        return textResponse(403, 'Rate limit', { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': farReset });
+      }
+      if (url.endsWith('latest.yml')) return textResponse(200, SAMPLE_150_YML);
+      return textResponse(404, 'Not Found');
+    }
+  });
+  try {
+    await ipcHandlers.get('update-check')();
+    const elapsed = Date.now() - t0;
+    assert.strictEqual(jsonCalls, 1, 'Far-future reset must defer retry immediately');
+    assert.ok(elapsed < 1500, `Must not wait 2.5s when reset is 1h away (elapsed=${elapsed}ms)`);
+    assert.strictEqual(sentEvents.filter(e => e.channel === 'update-available').length, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test('403 with remaining>0 or without rate-limit headers is treated as forbidden and NOT retried', async () => {
+  for (const hdrs of [{ 'x-ratelimit-remaining': '10' }, {}]) {
+    let jsonCalls = 0;
+    const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+      version: '1.4.24',
+      fetchImpl: async (url) => {
+        if (url.endsWith('latest.json')) {
+          jsonCalls++;
+          return textResponse(403, 'Forbidden', hdrs);
+        }
+        if (url.endsWith('latest.yml')) return textResponse(200, SAMPLE_150_YML);
+        return textResponse(404, 'Not Found');
+      }
+    });
+    try {
+      await ipcHandlers.get('update-check')();
+      assert.strictEqual(jsonCalls, 1, 'Ordinary 403 forbidden must not be retried');
+      assert.strictEqual(sentEvents.filter(e => e.channel === 'update-available').length, 1);
+    } finally {
+      cleanup();
+    }
+  }
+});
+
+for (const status of [403, 429]) {
+  test(`${status} with Retry-After=0 retries once before falling back`, async () => {
+    let jsonCalls = 0;
+    const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+      version: '1.4.24',
+      fetchImpl: async (url) => {
+        if (url.endsWith('latest.json')) {
+          jsonCalls++;
+          return textResponse(status, 'Rate limited', { 'retry-after': '0' });
+        }
+        if (url.endsWith('latest.yml')) return textResponse(200, SAMPLE_150_YML);
+        return textResponse(404, 'Not Found');
+      }
+    });
+    try {
+      await ipcHandlers.get('update-check')();
+      assert.strictEqual(jsonCalls, 2, `${status} with Retry-After=0 must retry once`);
+      assert.strictEqual(sentEvents.filter(e => e.channel === 'update-available').length, 1);
+    } finally {
+      cleanup();
+    }
+  });
+}
+
+// Test 9: Section 6 — Platform fallback when latest.json / latest.yml lack current-platform asset
+test('Platform fallback: valid latest.json without current-platform asset falls back to latest.yml -> API', async () => {
+  const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+    version: '1.4.24',
+    fetchImpl: async (url) => {
+      if (url.endsWith('latest.json')) {
+        return jsonResponse(200, {
+          version: '1.5.0',
+          files: [{ name: 'eclipse-1.5.0-linux-x64.tar.gz', sha512: 'lin==', size: 100 }]
+        });
+      }
+      if (url.endsWith('latest.yml')) {
+        return textResponse(200, `version: 1.5.0\nfiles:\n  - url: eclipse-1.5.0-linux-x64.tar.gz\n    sha512: lin==\n    size: 100\npath: eclipse-1.5.0-linux-x64.tar.gz\nsha512: lin==\n`);
+      }
+      return jsonResponse(200, {
+        tag_name: 'v1.5.0',
+        draft: false,
+        assets: [{ name: 'eclipse-1.5.0-win-x64.exe', browser_download_url: 'https://example.com/eclipse-1.5.0-win-x64.exe', size: 100 }]
+      });
+    }
+  });
+  try {
+    await ipcHandlers.get('update-check')();
+    const avail = sentEvents.filter(e => e.channel === 'update-available');
+    assert.strictEqual(avail.length, 1, 'Must fall through to API when JSON and YML lack current-platform asset');
+    assert.strictEqual(avail[0].payload.downloadUrl, 'https://example.com/eclipse-1.5.0-win-x64.exe');
+  } finally {
+    cleanup();
+  }
+});
+
+test('Platform fallback: truly missing platform asset across all 3 sources emits update-error', async () => {
+  const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+    version: '1.4.24',
+    fetchImpl: async (url) => {
+      if (url.endsWith('latest.json')) {
+        return jsonResponse(200, { version: '1.5.0', files: [{ name: 'eclipse-1.5.0-linux-x64.tar.gz' }] });
+      }
+      if (url.endsWith('latest.yml')) {
+        return textResponse(200, `version: 1.5.0\nfiles:\n  - url: eclipse-1.5.0-linux-x64.tar.gz\n    sha512: lin==\n    size: 100\npath: eclipse-1.5.0-linux-x64.tar.gz\nsha512: lin==\n`);
+      }
+      return jsonResponse(200, {
+        tag_name: 'v1.5.0',
+        draft: false,
+        assets: [{ name: 'eclipse-1.5.0-linux-x64.tar.gz', browser_download_url: 'https://example.com/eclipse-1.5.0-linux-x64.tar.gz', size: 100 }]
+      });
+    }
+  });
+  try {
+    await ipcHandlers.get('update-check')();
+    const errs = sentEvents.filter(e => e.channel === 'update-error');
+    assert.strictEqual(errs.length, 1);
+    assert.match(errs[0].payload.message, /No compatible installer/i);
+  } finally {
+    cleanup();
+  }
+});
+
+// Test 10: Section 7 — Actual v1.5.0 legacy updater-core.js against actual dist/latest.yml (if present)
+test('Legacy v1.5.0 updater-core.js selects correct assets from actual dist/latest.yml', () => {
+  const { execFileSync } = require('child_process');
+  const vm = require('vm');
+  const legacyCode = execFileSync('git', ['show', 'f074260:src/main/updater-core.js'], {
+    cwd: path.resolve(__dirname, '..'),
+    encoding: 'utf8'
+  });
+  const legacyMod = { exports: {} };
+  vm.runInNewContext(legacyCode, { module: legacyMod, exports: legacyMod.exports, require, process, Buffer });
+  const legacyCore = legacyMod.exports;
+
+  const ymlPath = path.resolve(__dirname, '../dist/latest.yml');
+  if (!fs.existsSync(ymlPath)) return;
+  const ymlText = fs.readFileSync(ymlPath, 'utf8');
+  const parsed = legacyCore.parseLatestYml(ymlText);
+  assert.ok(parsed && parsed.version, 'Legacy v1.5.0 parseLatestYml must parse dist/latest.yml');
+
+  const win64 = legacyCore.findMatchingAsset(parsed.files, 'win32', 'x64');
+  const win32 = legacyCore.findMatchingAsset(parsed.files, 'win32', 'ia32');
+  assert.ok(win64 && /win-x64\.exe$/i.test(win64.name), `Legacy win64 must pick win-x64.exe, got ${win64 && win64.name}`);
+  assert.ok(win32 && /win-ia32\.exe$/i.test(win32.name), `Legacy win32 must pick win-ia32.exe, got ${win32 && win32.name}`);
 });
 
 console.log('ALL PHASE 0 UNIT TESTS PASSED SUCCESSFULLY (EXIT 0)');
