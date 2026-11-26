@@ -27,6 +27,7 @@
       this._onAutomixProgress = null;
       this._reducedMotionMql = null;
       this._onReducedMotionChange = null;
+      this._bodyClassObserver = null;
     }
 
     isReducedMotion() {
@@ -90,6 +91,16 @@
         }
       }
 
+      if (typeof document !== 'undefined' && document.body && typeof MutationObserver === 'function' && !this._bodyClassObserver) {
+        this._bodyClassObserver = new MutationObserver(() => {
+          if (document.body && document.body.classList.contains('perf')) {
+            this._stopMotionEffects();
+            this._notify();
+          }
+        });
+        this._bodyClassObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+      }
+
       this._ensureDomElements();
     }
 
@@ -99,6 +110,11 @@
         this._terminalCleanupTimer = null;
       }
       this._stopMotionEffects();
+
+      if (this._bodyClassObserver) {
+        this._bodyClassObserver.disconnect();
+        this._bodyClassObserver = null;
+      }
 
       if (this._isSubscribed && typeof window !== 'undefined') {
         if (this._onAutomixState) {

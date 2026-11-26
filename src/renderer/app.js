@@ -2951,6 +2951,28 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     return window._automixRainbowBlend;
   }
+  function strokeSeekbarWave(ctx, { baseColor, rainbowBlend, nowMs, isReduced, isAutomixing, reducedAccentColor }) {
+    if (rainbowBlend > 0.01 && !isReduced) {
+      if (rainbowBlend < 0.99) {
+        ctx.strokeStyle = baseColor;
+        ctx.stroke();
+      }
+      const hue = ((nowMs % 1000) / 1000) * 360;
+      ctx.save();
+      ctx.globalAlpha = rainbowBlend;
+      ctx.strokeStyle = `hsl(${hue.toFixed(1)}, 100%, 62%)`;
+      ctx.stroke();
+      ctx.restore();
+    } else if (isAutomixing && isReduced) {
+      ctx.strokeStyle = reducedAccentColor || baseColor;
+      ctx.stroke();
+    } else {
+      ctx.strokeStyle = baseColor;
+      ctx.stroke();
+    }
+  }
+  window._eclipseSeekbarStroke = strokeSeekbarWave;
+  window._eclipseUpdateAutomixRainbowBlend = updateAutomixRainbowBlend;
 
   function resizeCanvases() {
     const dpr = window.devicePixelRatio || 1;
@@ -3563,7 +3585,6 @@ document.addEventListener('DOMContentLoaded', async () => {
           const t = formatDuration(cur);
           if (el.timeCurrent && el.timeCurrent.textContent !== t) el.timeCurrent.textContent = t;
           if (el.tvkTimeCurrent && el.tvkTimeCurrent.textContent !== t) el.tvkTimeCurrent.textContent = t;
-            { const _d = document.getElementById('tvk-time-current-display'); if (_d && _d.textContent !== t) _d.textContent = t; }
           { const _d = document.getElementById('tvk-time-current-display'); if (_d && _d.textContent !== t) _d.textContent = t; }
           if (el.tvkSeekSlider && !isDraggingTvkSeek && dur > 0) {
             const val = Math.round((cur / dur) * 1000);
@@ -3595,6 +3616,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             updateSyncedLyricsHighlight(cur);
           }
         }
+
+        const frameNowMs = performance.now();
+        const frameRainbowBlend = updateAutomixRainbowBlend(frameNowMs);
+        const frameReducedNow = isReducedMotionActive();
+        const frameAutomixingNow = document.body.classList.contains('is-automixing');
 
         if (!state.isTvKaraokeOpen) {
           const targetProgress = dur > 0 ? Math.max(0, Math.min(1, cur / dur)) : 0;
@@ -3659,27 +3685,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             sCtx.lineWidth = 9.5;
             sCtx.lineCap = 'round';
             sCtx.lineJoin = 'round';
-            const isAutomixingNow = document.body.classList.contains('is-automixing');
-            const isReducedNow = isReducedMotionActive();
-            const nowMs = performance.now();
-            const rainbowBlend = updateAutomixRainbowBlend(nowMs);
-            if (rainbowBlend > 0.01 && !isReducedNow) {
-              const hue = ((nowMs % 1000) / 1000) * 360;
-              sCtx.strokeStyle = `hsla(${hue.toFixed(1)}, 100%, 62%, ${rainbowBlend.toFixed(3)})`;
-              if (rainbowBlend < 0.99) {
-                sCtx.save();
-                sCtx.globalAlpha = 1 - rainbowBlend;
-                sCtx.strokeStyle = primaryColor;
-                sCtx.restore();
-              }
-            } else {
-              sCtx.strokeStyle = primaryColor;
-            }
 
             if (document.body.classList.contains('no-wavy')) {
               sCtx.moveTo(waveStart, centerY);
               sCtx.lineTo(waveEnd, centerY);
-              sCtx.stroke();
             } else {
               const step = 2;
               for (let x = waveStart; x <= waveEnd; x += step) {
@@ -3694,8 +3703,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
               const finalY = centerY + Math.sin(scrubPhase) * 5;
               sCtx.lineTo(waveEnd, finalY);
-              sCtx.stroke();
             }
+            strokeSeekbarWave(sCtx, {
+              baseColor: primaryColor,
+              rainbowBlend: frameRainbowBlend,
+              nowMs: frameNowMs,
+              isReduced: frameReducedNow,
+              isAutomixing: frameAutomixingNow,
+              reducedAccentColor: primaryColor
+            });
           }
 
           if (!noKnob) {
@@ -3768,28 +3784,10 @@ document.addEventListener('DOMContentLoaded', async () => {
               tCtx.lineWidth = 9.5;
               tCtx.lineCap = 'round';
               tCtx.lineJoin = 'round';
-              const isTvkReduced = isReducedMotionActive();
-              const tvkNowMs = performance.now();
-              const tvkRainbowBlend = updateAutomixRainbowBlend(tvkNowMs);
-              if (tvkRainbowBlend > 0.01 && !isTvkReduced) {
-                const hue = ((tvkNowMs % 1000) / 1000) * 360;
-                tCtx.strokeStyle = `hsla(${hue.toFixed(1)}, 100%, 62%, ${tvkRainbowBlend.toFixed(3)})`;
-                if (tvkRainbowBlend < 0.99) {
-                  tCtx.save();
-                  tCtx.globalAlpha = 1 - tvkRainbowBlend;
-                  tCtx.strokeStyle = '#ffffff';
-                  tCtx.restore();
-                }
-              } else if (document.body.classList.contains('is-automixing') && isTvkReduced) {
-                tCtx.strokeStyle = primaryColor || '#a855f7';
-              } else {
-                tCtx.strokeStyle = '#ffffff';
-              }
 
               if (document.body.classList.contains('no-wavy')) {
                 tCtx.moveTo(waveStart, centerY);
                 tCtx.lineTo(waveEnd, centerY);
-                tCtx.stroke();
               } else {
                 const step = 2;
                 for (let x = waveStart; x <= waveEnd; x += step) {
@@ -3804,8 +3802,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 const finalY = centerY + Math.sin(scrubPhase) * 5;
                 tCtx.lineTo(waveEnd, finalY);
-                tCtx.stroke();
               }
+              strokeSeekbarWave(tCtx, {
+                baseColor: '#ffffff',
+                rainbowBlend: frameRainbowBlend,
+                nowMs: frameNowMs,
+                isReduced: frameReducedNow,
+                isAutomixing: frameAutomixingNow,
+                reducedAccentColor: primaryColor || '#a855f7'
+              });
             }
 
             if (!noKnob) {

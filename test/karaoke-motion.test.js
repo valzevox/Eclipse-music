@@ -50,12 +50,34 @@ function setupMockEnvironment() {
     return el;
   }
 
+  const activeObservers = new Set();
+  class MockMutationObserver {
+    constructor(cb) {
+      this._cb = cb;
+      this._observing = false;
+    }
+    observe(target, opts) {
+      this._observing = true;
+      activeObservers.add(this);
+    }
+    disconnect() {
+      this._observing = false;
+      activeObservers.delete(this);
+    }
+  }
+
   const document = {
     body: {
       classList: {
         _bodyClasses: new Set(),
-        add(c) { this._bodyClasses.add(c); },
-        remove(c) { this._bodyClasses.delete(c); },
+        add(c) {
+          this._bodyClasses.add(c);
+          activeObservers.forEach(obs => obs._cb([{ type: 'attributes', attributeName: 'class' }]));
+        },
+        remove(c) {
+          this._bodyClasses.delete(c);
+          activeObservers.forEach(obs => obs._cb([{ type: 'attributes', attributeName: 'class' }]));
+        },
         contains(c) { return this._bodyClasses.has(c); }
       }
     },
@@ -143,8 +165,9 @@ function setupMockEnvironment() {
   global.window = window;
   global.document = document;
   global.CustomEvent = CustomEvent;
+  global.MutationObserver = MockMutationObserver;
 
-  return { listeners, elements, window, document };
+  return { listeners, elements, window, document, _observerCount: () => activeObservers.size };
 }
 
 describe('KaraokeMotionController Unit & Integration Pipeline', () => {
@@ -875,51 +898,120 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
     controller.dispose();
   });
 
-  test('Seekbar sCtx/tCtx shared updateAutomixRainbowBlend & clean reset in app.js', () => {
+  test('Behavioral: body.perf MutationObserver cancels _bassPulseTimer immediately without duplicating observers/listeners', () => {
+    const controller = new KaraokeMotionController();
+    controller.init();
+    assert.strictEqual(env._observerCount(), 1, 'MutationObserver must be registered once on init');
+    assert.strictEqual(env.window._mqlListenerCount(), 1, 'MediaQueryList change listener must be registered once on init');
+
+    // Start active mixing + bass pulse timer
+    controller.handleAutomixState({ phase: 'mixing', active: true, transitionId: 'tx-perf-1', nextTrack: { title: 'T' } });
+    controller._bassPulseTimer = setTimeout(() => {}, 5000);
+    env.elements.get('tvk-ambient-bg').style.transform = 'scale(4.15) translateZ(0)';
+
+    // Adding body.perf must immediately cancel _bassPulseTimer and reset transform
+    env.document.body.classList.add('perf');
+    assert.strictEqual(controller.isReducedMotion(), true);
+    assert.strictEqual(controller._bassPulseTimer, null, 'Adding body.perf must immediately cancel _bassPulseTimer');
+    assert.strictEqual(env.elements.get('tvk-ambient-bg').style.transform, 'scale(4) translateZ(0)');
+
+    // Toggling body.perf off/on and calling init() again must not duplicate observers or listeners
+    env.document.body.classList.remove('perf');
+    env.document.body.classList.add('perf');
+    controller.init();
+    assert.strictEqual(env._observerCount(), 1, 'Toggling body.perf must not duplicate MutationObserver');
+    assert.strictEqual(env.window._mqlListenerCount(), 1, 'Toggling body.perf must not duplicate MediaQueryList listener');
+
+    controller.dispose();
+    assert.strictEqual(env._observerCount(), 0, 'dispose() must disconnect MutationObserver');
+    assert.strictEqual(env.window._mqlListenerCount(), 0, 'dispose() must remove MediaQueryList listener');
+  });
+
+  test('Behavioral: Seekbar sCtx/tCtx share single-per-frame rainbowBlend (300ms ramp) and two-pass strokeSeekbarWave at 0, 0.5, 1', () => {
     const fs = require('node:fs');
     const path = require('node:path');
     const vm = require('node:vm');
     const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
 
-    // Verify both sCtx and tCtx use shared updateAutomixRainbowBlend and isReducedMotionActive
-    assert.match(appSrc, /function updateAutomixRainbowBlend\(nowMs\)/);
-    const blendCalls = appSrc.match(/updateAutomixRainbowBlend\(nowMs\)/g) || [];
-    assert.ok(blendCalls.length >= 2, 'Both sCtx and tCtx must call updateAutomixRainbowBlend(nowMs)');
-    assert.match(appSrc, /const isArtReduced = document\.body\.classList\.contains\('perf'\) \|\| \(typeof window\.matchMedia === 'function' && window\.matchMedia\('\(prefers-reduced-motion: reduce\)'\)\.matches\);/, 'Artwork crossfade RAF must guard against both body.perf and prefers-reduced-motion');
-    assert.match(appSrc, /if \(el\.playbarArtwork\.src !== thumb && !isArtReduced\)/);
-    assert.match(appSrc, /window\._automixRainbowBlend = 0;\s*window\._automixRainbowLastMs = 0;/, 'Terminal automix state must reset rainbow blend');
+    // Verify single-per-frame computation before sCtx/tCtx branches
+    assert.match(appSrc, /const frameRainbowBlend = updateAutomixRainbowBlend\(frameNowMs\);/);
+    const blendCalls = appSrc.match(/updateAutomixRainbowBlend\(/g) || [];
+    assert.strictEqual(blendCalls.length, 2, 'updateAutomixRainbowBlend should only be defined once and called once per frame');
 
-    // Execute extracted updateAutomixRainbowBlend + MediaQueryList listener in VM
     const startIdx = appSrc.indexOf('const reducedMotionMql =');
     const endIdx = appSrc.indexOf('function resizeCanvases()');
     assert.ok(startIdx > 0 && endIdx > startIdx);
     const snippet = appSrc.slice(startIdx, endIdx);
 
-    const sandbox = {
-      window: env.window,
-      document: env.document,
-      Math
-    };
-    vm.runInNewContext(snippet + '\nthis.__exports = { isReducedMotionActive, updateAutomixRainbowBlend };', sandbox);
-    const { isReducedMotionActive, updateAutomixRainbowBlend } = sandbox.__exports;
+    const sandbox = { window: env.window, document: env.document, Math };
+    vm.runInNewContext(snippet, sandbox);
+    const updateBlend = env.window._eclipseUpdateAutomixRainbowBlend;
+    const strokeWave = env.window._eclipseSeekbarStroke;
+    assert.strictEqual(typeof updateBlend, 'function');
+    assert.strictEqual(typeof strokeWave, 'function');
 
-    // Ramps 0 -> 1 over 300ms (dtMs clamped to 100ms per frame) when is-automixing is active
+    function createMockCtx() {
+      const strokes = [];
+      const stack = [];
+      return {
+        strokeStyle: '#000000',
+        globalAlpha: 1,
+        save() { stack.push({ strokeStyle: this.strokeStyle, globalAlpha: this.globalAlpha }); },
+        restore() {
+          const prev = stack.pop();
+          if (prev) { this.strokeStyle = prev.strokeStyle; this.globalAlpha = prev.globalAlpha; }
+        },
+        stroke() { strokes.push({ strokeStyle: this.strokeStyle, globalAlpha: this.globalAlpha }); },
+        _strokes: strokes,
+        _stackDepth: () => stack.length
+      };
+    }
+
+    // 1. Both sCtx and tCtx use exact same rainbowBlend in same frame, ramping 0 -> 1 in ~300ms (never 2x)
     env.document.body.classList.add('is-automixing');
-    const b1 = updateAutomixRainbowBlend(1000);
-    const b2 = updateAutomixRainbowBlend(1100);
-    const b3 = updateAutomixRainbowBlend(1200);
-    const b4 = updateAutomixRainbowBlend(1300);
-    assert.ok(b1 > 0 && b2 > b1 && b3 > b2 && b4 === 1, `Expected smooth 300ms ramp, got ${b1}, ${b2}, ${b3}, ${b4}`);
+    const frameTimes = [1000, 1100, 1200, 1300];
+    const blends = [];
+    for (const nowMs of frameTimes) {
+      const frameBlend = updateBlend(nowMs);
+      blends.push(frameBlend);
+      const sCtx = createMockCtx();
+      const tCtx = createMockCtx();
+      strokeWave(sCtx, { baseColor: '#a855f7', rainbowBlend: frameBlend, nowMs, isReduced: false, isAutomixing: true, reducedAccentColor: '#a855f7' });
+      strokeWave(tCtx, { baseColor: '#ffffff', rainbowBlend: frameBlend, nowMs, isReduced: false, isAutomixing: true, reducedAccentColor: '#a855f7' });
+      assert.strictEqual(sCtx._stackDepth(), 0);
+      assert.strictEqual(tCtx._stackDepth(), 0);
+    }
+    assert.ok(blends[0] > 0 && blends[0] < 0.2, `Frame 0 blend should be ~0.053, got ${blends[0]}`);
+    assert.ok(blends[1] > 0.3 && blends[1] < 0.5, `Frame 1 (100ms) blend should be ~0.387, got ${blends[1]}`);
+    assert.ok(blends[2] > 0.6 && blends[2] < 0.85, `Frame 2 (200ms) blend should be ~0.72, got ${blends[2]}`);
+    assert.strictEqual(blends[3], 1, 'Frame 3 (300ms) blend must reach 1.0');
 
-    // Runtime MediaQueryList change snaps blend to 0
-    env.window.setPrefersReducedMotion(true);
-    assert.strictEqual(isReducedMotionActive(), true);
-    assert.strictEqual(env.window._automixRainbowBlend, 0);
-    assert.strictEqual(updateAutomixRainbowBlend(1400), 0);
+    // 2. Two-pass stroke verification at blend = 0, 0.5, and 1
+    const ctx0 = createMockCtx();
+    strokeWave(ctx0, { baseColor: '#a855f7', rainbowBlend: 0, nowMs: 1000, isReduced: false, isAutomixing: false });
+    assert.strictEqual(ctx0._strokes.length, 1);
+    assert.strictEqual(ctx0._strokes[0].strokeStyle, '#a855f7');
+    assert.strictEqual(ctx0._strokes[0].globalAlpha, 1);
 
-    // Restoring reduced motion allows ramp down to 0 when not automixing
-    env.window.setPrefersReducedMotion(false);
-    env.document.body.classList.remove('is-automixing');
-    assert.strictEqual(updateAutomixRainbowBlend(1500), 0);
+    const ctxHalf = createMockCtx();
+    strokeWave(ctxHalf, { baseColor: '#ffffff', rainbowBlend: 0.5, nowMs: 1250, isReduced: false, isAutomixing: true });
+    assert.strictEqual(ctxHalf._strokes.length, 2, 'Blend 0.5 must draw base pass + rainbow overlay pass');
+    assert.strictEqual(ctxHalf._strokes[0].strokeStyle, '#ffffff');
+    assert.strictEqual(ctxHalf._strokes[0].globalAlpha, 1);
+    assert.match(ctxHalf._strokes[1].strokeStyle, /^hsl\(/);
+    assert.strictEqual(ctxHalf._strokes[1].globalAlpha, 0.5, 'globalAlpha must be 0.5 during rainbow stroke()');
+    assert.strictEqual(ctxHalf.globalAlpha, 1, 'globalAlpha must be restored after stroke()');
+
+    const ctxFull = createMockCtx();
+    strokeWave(ctxFull, { baseColor: '#ffffff', rainbowBlend: 1, nowMs: 1500, isReduced: false, isAutomixing: true });
+    assert.strictEqual(ctxFull._strokes.length, 1, 'Blend 1.0 skips base pass and draws full rainbow');
+    assert.match(ctxFull._strokes[0].strokeStyle, /^hsl\(/);
+    assert.strictEqual(ctxFull._strokes[0].globalAlpha, 1);
+
+    // 3. Reduced motion draws static accent color without rainbow
+    const ctxReduced = createMockCtx();
+    strokeWave(ctxReduced, { baseColor: '#ffffff', rainbowBlend: 0.8, nowMs: 1500, isReduced: true, isAutomixing: true, reducedAccentColor: '#a855f7' });
+    assert.strictEqual(ctxReduced._strokes.length, 1);
+    assert.strictEqual(ctxReduced._strokes[0].strokeStyle, '#a855f7');
   });
 });

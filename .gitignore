@@ -76,3 +76,4 @@ opencode.json
 
 output/
 release-notes-*.md
+.agents/
