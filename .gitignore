@@ -60,11 +60,14 @@ test/lastfm-scrobbler.test.js
 # Local planning, agent scratchpads & metadata
 plan.md
 *.plan.md
+*_plan.md
+*-plan.md
 TODO.md
 todo.md
 AGENTS.md
 GEMINI.md
 CLAUDE.md
+antigravity.json
 opencode.json
 .mcp.json
 .claude/
@@ -72,8 +75,17 @@ opencode.json
 .gemini/
 .grok/
 .kiro/
+.agents/
 .ignore
 
+# Release notes, manifests & mobile/installer binaries
 output/
+release-*/
 release-notes-*.md
-.agents/
+release_notes_*.md
+RELEASE_NOTES*.md
+*.blockmap
+*.apk
+*.aab
+*.ipa
+*.jks
