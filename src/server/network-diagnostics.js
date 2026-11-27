@@ -30,7 +30,7 @@ class NetworkDiagnostics {
       lastUpstreamStatus: null,
       avgTtfbMs: 0,
       lastTtfbMs: 0,
-      firstAudibleMs: null,
+      firstPlayingMs: null,
       firstBufferedMs: null,
       waitingCount: 0,
       waitingTotalMs: 0
@@ -100,9 +100,9 @@ class NetworkDiagnostics {
     this.addBytes(category, bytes);
   }
 
-  recordPlaybackTiming({ firstAudibleMs = null, firstBufferedMs = null, waitingDeltaMs = 0 } = {}) {
-    if (Number.isFinite(firstAudibleMs) && firstAudibleMs >= 0) {
-      this.audioProxy.firstAudibleMs = Math.round(firstAudibleMs);
+  recordPlaybackTiming({ firstPlayingMs = null, firstBufferedMs = null, waitingDeltaMs = 0 } = {}) {
+    if (Number.isFinite(firstPlayingMs) && firstPlayingMs >= 0) {
+      this.audioProxy.firstPlayingMs = Math.round(firstPlayingMs);
     }
     if (Number.isFinite(firstBufferedMs) && firstBufferedMs >= 0) {
       this.audioProxy.firstBufferedMs = Math.round(firstBufferedMs);

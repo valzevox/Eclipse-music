@@ -145,7 +145,12 @@ test('Scenario 1: Cold app/Home startup diagnostics populated via /api/network-d
     const post1 = await fetch(`http://127.0.0.1:${serverPort}/api/network-diagnostics`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ startupToUiMs: 380, homeReadyMs: 820 })
+      body: JSON.stringify({
+        startupToUiMs: 380,
+        homeReadyMs: 820,
+        firstPlayingMs: 412,
+        waitingDeltaMs: 95
+      })
     });
     assert.equal(post1.status, 200);
 
@@ -154,6 +159,9 @@ test('Scenario 1: Cold app/Home startup diagnostics populated via /api/network-d
     assert.equal(body.success, true);
     assert.equal(body.diagnostics.startupToUiMs, 380);
     assert.equal(body.diagnostics.homeReadyMs, 820);
+    assert.equal(body.diagnostics.audioProxy.firstPlayingMs, 412);
+    assert.ok(body.diagnostics.audioProxy.waitingCount >= 1);
+    assert.ok(body.diagnostics.audioProxy.waitingTotalMs >= 95);
   } finally {
     await stopServer();
   }
@@ -460,11 +468,14 @@ test('Identical-Workload Before/After Benchmark (1.5 Mbps aggregate, 250 ms RTT,
   }
 });
 
-test('AbortSignal Propagation: aborting verifyStreamPlayable and fetchDirectYoutubeStreamServer closes upstream connections', async () => {
-  let closedCount = 0;
+test('AbortSignal Propagation: aborting verifyStreamPlayable and fetchDirectYoutubeStreamServer closes upstream TCP sockets', async () => {
+  const trackedSockets = [];
   const slowServer = http.createServer((req, res) => {
-    req.on('close', () => { closedCount += 1; });
-    // Hold connection open without responding
+    const sock = req.socket;
+    const entry = { url: req.url, socket: sock, closed: false };
+    sock.once('close', () => { entry.closed = true; });
+    trackedSockets.push(entry);
+    // Hold response open indefinitely so socket only closes on client abort
   });
   await new Promise((r) => slowServer.listen(0, '127.0.0.1', r));
   const port = slowServer.address().port;
@@ -475,9 +486,14 @@ test('AbortSignal Propagation: aborting verifyStreamPlayable and fetchDirectYout
       signal: ac1.signal,
       httpClient: http
     });
-    await sleep(30);
+    await sleep(40);
+    assert.equal(trackedSockets.length, 1, 'verifyStreamPlayable must open 1 upstream socket');
+    assert.equal(trackedSockets[0].closed, false, 'verifyStreamPlayable socket must remain open before abort');
+    assert.equal(trackedSockets[0].socket.destroyed, false, 'verifyStreamPlayable socket must not be destroyed before abort');
     ac1.abort();
     assert.equal(await probePromise, false);
+    await sleep(40);
+    assert.equal(trackedSockets[0].closed, true, 'verifyStreamPlayable upstream socket must close after AbortSignal');
 
     const ac2 = new AbortController();
     const directPromise = fetchDirectYoutubeStreamServer('dQw4w9WgXcQ', 'medium', {
@@ -485,13 +501,18 @@ test('AbortSignal Propagation: aborting verifyStreamPlayable and fetchDirectYout
       httpClient: http,
       clients: [{ clientName: 'IOS', clientVersion: '20.10.4', userAgent: 'test', host: '127.0.0.1', port }]
     });
-    await sleep(30);
+    await sleep(40);
+    assert.equal(trackedSockets.length, 2, 'fetchDirectYoutubeStreamServer must open 1 upstream socket');
+    assert.equal(trackedSockets[1].closed, false, 'fetchDirectYoutubeStreamServer socket must remain open before abort');
+    assert.equal(trackedSockets[1].socket.destroyed, false, 'fetchDirectYoutubeStreamServer socket must not be destroyed before abort');
     ac2.abort();
     assert.equal(await directPromise, null);
-
-    await sleep(30);
-    assert.ok(closedCount >= 2, `Expected upstream to observe >= 2 closed connections, got ${closedCount}`);
+    await sleep(40);
+    assert.equal(trackedSockets[1].closed, true, 'fetchDirectYoutubeStreamServer upstream socket must close after AbortSignal');
   } finally {
+    for (const entry of trackedSockets) {
+      try { entry.socket.destroy(); } catch (_) {}
+    }
     await new Promise((r) => slowServer.close(r));
   }
 });

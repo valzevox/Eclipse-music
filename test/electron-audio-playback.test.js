@@ -167,9 +167,9 @@ app.whenReady().then(() => {
         const match = /ECLIPSE_AUDIO_PLAYING:(\d+)/.exec(result.stdout);
         assert.equal(result.code, 0, `Electron audio test failed (code=${result.code}): stdout=${result.stdout} stderr=${result.stderr}`);
         assert.ok(match, `Expected ECLIPSE_AUDIO_PLAYING marker, got: ${result.stdout}`);
-        const firstAudibleMs = Number(match[1]);
-        assert.ok(Number.isFinite(firstAudibleMs) && firstAudibleMs >= 0);
-        console.log(JSON.stringify({ electronRealAudioPlayback: { firstAudibleMs } }));
+        const firstPlayingMs = Number(match[1]);
+        assert.ok(Number.isFinite(firstPlayingMs) && firstPlayingMs >= 0);
+        console.log(JSON.stringify({ electronRealAudioPlayback: { firstPlayingMs } }));
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
         await new Promise((resolve) => proxyServer.close(resolve));

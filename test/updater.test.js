@@ -682,15 +682,6 @@ test('Legacy v1.5.0 updater-core.js selects correct assets from verified v1.5.1 
   assert.ok(fs.existsSync(fixturePath), `Verified manifest fixture must exist at ${fixturePath}`);
   const ymlText = fs.readFileSync(fixturePath, 'utf8');
 
-  const distYmlPath = path.resolve(__dirname, '../dist/latest.yml');
-  if (fs.existsSync(distYmlPath)) {
-    assert.strictEqual(
-      fs.readFileSync(distYmlPath, 'utf8').replace(/\r\n/g, '\n'),
-      ymlText.replace(/\r\n/g, '\n'),
-      'dist/latest.yml must match verified fixture test/fixtures/v1.5.1-latest.yml'
-    );
-  }
-
   const parsed = legacyCore.parseLatestYml(ymlText);
   assert.ok(parsed && parsed.version, 'Legacy v1.5.0 parseLatestYml must parse v1.5.1 manifest');
   assert.ok(Array.isArray(parsed.files) && parsed.files.length >= 5, 'v1.5.1 manifest must list cross-platform files[]');

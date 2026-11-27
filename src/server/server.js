@@ -11152,9 +11152,9 @@ if (parsedUrl.pathname === '/api/ytm/intercept-cookie' && req.method === 'POST')
         const parsed = JSON.parse(body || '{}');
         if (Number.isFinite(parsed.startupToUiMs)) networkDiagnostics.recordStartupUi(parsed.startupToUiMs);
         if (Number.isFinite(parsed.homeReadyMs)) networkDiagnostics.recordHomeReady(parsed.homeReadyMs);
-        if (Number.isFinite(parsed.firstAudibleMs) || Number.isFinite(parsed.firstBufferedMs) || Number.isFinite(parsed.waitingDeltaMs)) {
+        if (Number.isFinite(parsed.firstPlayingMs) || Number.isFinite(parsed.firstBufferedMs) || Number.isFinite(parsed.waitingDeltaMs)) {
           networkDiagnostics.recordPlaybackTiming({
-            firstAudibleMs: parsed.firstAudibleMs,
+            firstPlayingMs: parsed.firstPlayingMs,
             firstBufferedMs: parsed.firstBufferedMs,
             waitingDeltaMs: parsed.waitingDeltaMs
           });

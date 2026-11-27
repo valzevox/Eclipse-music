@@ -4916,8 +4916,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     if (track) {
       track._errorRetryStage = 0;
       track._playStartPerfMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-      track._firstAudibleRecorded = false;
+      track._firstPlayingRecorded = false;
       track._firstBufferedRecorded = false;
+      state._waitingStartedPerfMs = 0;
     }
     if (track && track.artist) track.artist = stripYoutubeTopic(track.artist);
     preloadedTrack10sFired = false;
@@ -9342,16 +9343,23 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       }
     });
 
+    function postNetworkDiagnostics(payload) {
+      if (!state.serverPort || !payload) return;
+      const headers = { 'Content-Type': 'application/json' };
+      const token = (window.electronAPI && window.electronAPI.serverToken) || state.serverToken || '';
+      if (token) headers['x-eclipse-token'] = token;
+      fetch(`http://127.0.0.1:${state.serverPort}/api/network-diagnostics`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload)
+      }).catch(() => {});
+    }
+
     el.nativeAudio.addEventListener('waiting', () => {
       updatePlayPauseButton(state.isPlaying, true);
-      state._waitingStartedAt = Date.now();
-      if (state.serverPort) {
-        fetch(`http://127.0.0.1:${state.serverPort}/api/network-diagnostics`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ playbackBuffering: true })
-        }).catch(() => {});
-      }
+      const nowPerf = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      if (!state._waitingStartedPerfMs) state._waitingStartedPerfMs = nowPerf;
+      postNetworkDiagnostics({ playbackBuffering: true });
     });
 
     function prefetchNextQueueTrack() {
@@ -9366,22 +9374,18 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       document.body.classList.add('is-playing');
       updatePlayPauseButton(true, false);
       if (state.serverPort) {
+        const nowPerf = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
         const payload = { playbackBuffering: false };
-        if (state._waitingStartedAt) {
-          payload.waitingDeltaMs = Math.max(0, Date.now() - state._waitingStartedAt);
-          state._waitingStartedAt = 0;
+        if (state._waitingStartedPerfMs) {
+          payload.waitingDeltaMs = Math.max(0, nowPerf - state._waitingStartedPerfMs);
+          state._waitingStartedPerfMs = 0;
         }
         const cur = state.currentTrack;
-        if (cur && !cur._firstAudibleRecorded && Number.isFinite(cur._playStartPerfMs)) {
-          cur._firstAudibleRecorded = true;
-          const nowPerf = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-          payload.firstAudibleMs = Math.max(0, nowPerf - cur._playStartPerfMs);
+        if (cur && !cur._firstPlayingRecorded && Number.isFinite(cur._playStartPerfMs)) {
+          cur._firstPlayingRecorded = true;
+          payload.firstPlayingMs = Math.max(0, nowPerf - cur._playStartPerfMs);
         }
-        fetch(`http://127.0.0.1:${state.serverPort}/api/network-diagnostics`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        }).catch(() => {});
+        postNetworkDiagnostics(payload);
       }
       // Start resolving the next track as soon as playback begins instead of
       // waiting 10s, so the following track starts without a pause.
@@ -9397,11 +9401,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       if (state.serverPort && cur && !cur._firstBufferedRecorded && Number.isFinite(cur._playStartPerfMs)) {
         cur._firstBufferedRecorded = true;
         const nowPerf = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-        fetch(`http://127.0.0.1:${state.serverPort}/api/network-diagnostics`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ firstBufferedMs: Math.max(0, nowPerf - cur._playStartPerfMs) })
-        }).catch(() => {});
+        postNetworkDiagnostics({ firstBufferedMs: Math.max(0, nowPerf - cur._playStartPerfMs) });
       }
       if (audioEngine && typeof audioEngine.applySettings === 'function') {
         audioEngine.applySettings(el.nativeAudio);
@@ -9410,6 +9410,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
     el.nativeAudio.addEventListener('loadstart', () => {
       state.audioDurationStale = true;
+      state._waitingStartedPerfMs = 0;
     });
 
     el.nativeAudio.addEventListener('loadedmetadata', () => {
