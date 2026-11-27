@@ -4,18 +4,34 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Git commit SHA or ref to build'
+        description: 'Immutable 40-char Git commit SHA to build (never use branch names)'
         required: true
-        default: 'c226a389ebfaac8f83318c525ebbbf5dbc3ed538'
 
 jobs:
   build-mac:
     runs-on: macos-latest
     steps:
+      - name: Validate immutable commit SHA
+        run: |
+          if [[ ! "${{ inputs.ref }}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: ref must be a 40-char immutable commit SHA, got '${{ inputs.ref }}'"
+            exit 1
+          fi
+
       - name: Checkout exact commit
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Verify checked-out SHA
+        run: |
+          ACTUAL_SHA=$(git rev-parse HEAD)
+          echo "Checked out SHA: $ACTUAL_SHA"
+          if [ "$ACTUAL_SHA" != "${{ inputs.ref }}" ]; then
+            echo "ERROR: SHA mismatch ($ACTUAL_SHA != ${{ inputs.ref }})"
+            exit 1
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -32,14 +48,15 @@ jobs:
       - name: Build macOS DMG (arm64 + x64)
         run: npx electron-builder --mac dmg --x64 --arm64 --publish never
 
-      - name: List built DMG artifacts
-        run: ls -lh dist/*.dmg dist/*.blockmap 2>/dev/null || ls -lh dist/
+      - name: Generate macOS provenance
+        run: node scripts/generate-provenance.js --commit "${{ inputs.ref }}" --run-id "${{ github.run_id }}" --runner-os "${{ runner.os }}" --out dist/macos-provenance.json
 
-      - name: Upload DMG artifacts
+      - name: Upload DMG artifacts & provenance
         uses: actions/upload-artifact@v4
         with:
           name: macos-dmg-artifacts
           path: |
             dist/*.dmg
             dist/*.dmg.blockmap
+            dist/macos-provenance.json
           if-no-files-found: error

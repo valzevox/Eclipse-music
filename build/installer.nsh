@@ -1,10 +1,10 @@
 !macro customInit
-  nsExec::ExecToLog 'taskkill /F /IM "Eclipse.exe" /T'
+  nsExec::ExecToLog 'powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name=\x27Eclipse.exe\x27\" | Where-Object { $_.ExecutablePath -eq \"$INSTDIR\\Eclipse.exe\" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"'
   Sleep 500
 !macroend
 
 !macro customCheckAppRunning
-  nsExec::ExecToLog 'taskkill /F /IM "Eclipse.exe" /T'
+  nsExec::ExecToLog 'powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name=\x27Eclipse.exe\x27\" | Where-Object { $_.ExecutablePath -eq \"$INSTDIR\\Eclipse.exe\" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"'
   Sleep 500
 !macroend
 

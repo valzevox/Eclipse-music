@@ -1,6 +1,6 @@
 {
   "name": "eclipse",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "main": "src/main/main.js",
   "bin": {
     "eclipse": "src/main/cli.js"
@@ -13,9 +13,12 @@
     "dist": "electron-builder",
     "conveyor:app": "conveyor --cache-free-space-limit=1 make --overwrite=HARD_REPLACE app",
     "conveyor:site": "conveyor --cache-free-space-limit=1 make --overwrite=HARD_REPLACE site",
-    "release": "npm version patch && git push --follow-tags",
-    "release:minor": "npm version minor && git push --follow-tags",
-    "release:major": "npm version major && git push --follow-tags"
+    "release:preflight": "node scripts/release-preflight.js",
+    "release:verify-manifest": "node scripts/verify-release-manifest.js",
+    "release:provenance": "node scripts/generate-provenance.js",
+    "release": "echo \"Direct npm version/push is disabled. Run npm run release:preflight and use the Release Gate workflow.\" && exit 1",
+    "release:minor": "echo \"Direct npm version/push is disabled. Run npm run release:preflight and use the Release Gate workflow.\" && exit 1",
+    "release:major": "echo \"Direct npm version/push is disabled. Run npm run release:preflight and use the Release Gate workflow.\" && exit 1"
   },
   "keywords": [],
   "author": "Eclipse Team",

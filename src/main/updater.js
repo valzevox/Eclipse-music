@@ -685,10 +685,26 @@ async function executeInstaller(installerPath, hooks = {}, getWindow = null) {
         handoffTimer = setTimeout(() => {
           if (earlyExit || settled || !spawned) return;
           settled = true;
-          logStage('install-success', 'Installer handoff confirmed; exiting app for update', {
+          logStage('installer-started', 'NSIS installer confirmed running', {
             pid: child.pid || null,
             installDir,
             args
+          });
+          try {
+            const st = readUpdateState();
+            st.startedOk = true;
+            st.consecutiveCrashes = 0;
+            st.pendingVerification = {
+              targetVersion: pendingTargetVersion || null,
+              expectedExecPath: execPath,
+              timestamp: new Date().toISOString()
+            };
+            writeUpdateState(st);
+          } catch (_) {}
+          logStage('update-handoff', 'Handing off to NSIS installer and exiting app', {
+            pid: child.pid || null,
+            installDir,
+            targetVersion: pendingTargetVersion || null
           });
           exitFn(0);
           resolve({ ok: true, pid: child.pid || null, args, installDir });
@@ -782,6 +798,33 @@ function initUpdater(getWindow, hooks = {}) {
   const currentVer = app.getVersion();
   initLogger(app.getPath('userData'));
   logStage('init', `Updater initialized for Eclipse v${currentVer}`, { pid: process.pid, platform: process.platform, arch: process.arch });
+
+  // Verify post-update version and execPath if a handoff was recorded
+  try {
+    const st = readUpdateState();
+    if (st.pendingVerification) {
+      const pv = st.pendingVerification;
+      const normActual = path.win32.resolve(process.execPath || '').toLowerCase();
+      const normExpected = path.win32.resolve(pv.expectedExecPath || '').toLowerCase();
+      const verOk = !pv.targetVersion || String(currentVer).replace(/^v/i, '') === String(pv.targetVersion).replace(/^v/i, '');
+      const pathOk = !pv.expectedExecPath || normActual === normExpected;
+      if (verOk && pathOk) {
+        logStage('update-verified', `Verified post-update launch v${currentVer}`, {
+          version: currentVer,
+          execPath: process.execPath
+        });
+      } else {
+        logStage('installer-failed', 'Post-update verification mismatch', {
+          expectedVersion: pv.targetVersion,
+          actualVersion: currentVer,
+          expectedExecPath: pv.expectedExecPath,
+          actualExecPath: process.execPath
+        });
+      }
+      delete st.pendingVerification;
+      writeUpdateState(st);
+    }
+  } catch (_) {}
 
   checkCrashRollback(currentVer);
 
@@ -955,6 +998,12 @@ function initUpdater(getWindow, hooks = {}) {
       pendingTargetVersion = targetVer;
       pendingExpectedSha512 = activeManifest.sha512 || null;
       isDownloading = false;
+
+      logStage('download-complete', `Installer downloaded and verified for v${targetVer}`, {
+        dest,
+        version: targetVer,
+        sha512: pendingExpectedSha512
+      });
 
       send('update-ready', {
         version: targetVer,

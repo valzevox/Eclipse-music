@@ -1,0 +1,221 @@
+name: Release Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Immutable 40-char Git commit SHA to verify and build'
+        required: true
+      version:
+        description: 'Expected SemVer (e.g. 1.5.2)'
+        required: true
+
+jobs:
+  preflight-and-ubuntu-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate immutable commit SHA
+        run: |
+          if [[ ! "${{ inputs.commit_sha }}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: commit_sha must be a 40-char SHA"
+            exit 1
+          fi
+
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Version consistency preflight
+        run: node scripts/release-preflight.js --allow-dirty
+
+      - name: Run Architecture & Integration Verification
+        run: node test-integration-verification.js
+
+      - name: Run Full Unit & Regression Test Suite
+        run: npm test
+
+  windows-tests-and-nsis-e2e:
+    needs: preflight-and-ubuntu-tests
+    runs-on: windows-latest
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run Windows updater tests
+        run: node --test test/updater.test.js
+
+      - name: Build Windows NSIS installers (x64 + ia32 + zip)
+        run: npm run dist -- --win
+
+      - name: Windows NSIS silent install & --updated --force-run E2E
+        shell: pwsh
+        run: |
+          $ver = "${{ inputs.version }}"
+          $inst = "dist/eclipse-$ver-win-x64.exe"
+          if (!(Test-Path $inst)) { throw "Missing $inst" }
+          $target = "C:\eclipse-ci-e2e"
+          $p = Start-Process -FilePath $inst -ArgumentList "--updated","/S","/D=$target" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "NSIS exit $($p.ExitCode)" }
+          $pv = (Get-Item "$target\Eclipse.exe").VersionInfo.ProductVersion
+          if ($pv -ne "$ver.0") { throw "ProductVersion mismatch: $pv != $ver.0" }
+          Write-Output "Windows NSIS E2E verified: $target\Eclipse.exe ($pv)"
+
+      - name: Generate Windows provenance
+        run: node scripts/generate-provenance.js --commit "${{ inputs.commit_sha }}" --run-id "${{ github.run_id }}" --runner-os "${{ runner.os }}" --out dist/windows-provenance.json
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifacts
+          path: |
+            dist/*.exe
+            dist/*.exe.blockmap
+            dist/*.zip
+            dist/windows-provenance.json
+          if-no-files-found: error
+
+  linux-build-verify:
+    needs: preflight-and-ubuntu-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build Linux AppImage & tar.gz
+        run: npx electron-builder --linux AppImage tar.gz --x64 --publish never
+
+      - name: Generate Linux provenance
+        run: node scripts/generate-provenance.js --commit "${{ inputs.commit_sha }}" --run-id "${{ github.run_id }}" --runner-os "${{ runner.os }}" --out dist/linux-provenance.json
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts
+          path: |
+            dist/*.AppImage
+            dist/*.tar.gz
+            dist/linux-provenance.json
+          if-no-files-found: error
+
+  macos-build-verify:
+    needs: preflight-and-ubuntu-tests
+    runs-on: macos-latest
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build macOS DMG (arm64 + x64) & ZIP
+        run: npx electron-builder --mac dmg zip --x64 --arm64 --publish never
+
+      - name: Generate macOS provenance
+        run: node scripts/generate-provenance.js --commit "${{ inputs.commit_sha }}" --run-id "${{ github.run_id }}" --runner-os "${{ runner.os }}" --out dist/macos-provenance.json
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
+          path: |
+            dist/*.dmg
+            dist/*.dmg.blockmap
+            dist/*.zip
+            dist/macos-provenance.json
+          if-no-files-found: error
+
+  manifest-and-provenance-gate:
+    needs: [windows-tests-and-nsis-e2e, linux-build-verify, macos-build-verify]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Build unified cross-platform latest.yml & verify legacy parser matrix
+        shell: pwsh
+        run: |
+          $ver = "${{ inputs.version }}"
+          $files = Get-ChildItem dist -File | Where-Object { $_.Name -match '\.(exe|AppImage|deb|tar\.gz|dmg|zip)$' -and $_.Name -notmatch 'win-x64\.zip$' }
+          $entries = @()
+          $univ = $null
+          foreach ($f in $files) {
+            $sha = [Convert]::ToBase64String([System.Security.Cryptography.SHA512]::Create().ComputeHash([System.IO.File]::ReadAllBytes($f.FullName)))
+            $entries += "  - url: $($f.Name)`n    sha512: $sha`n    size: $($f.Length)"
+            if ($f.Name -eq "eclipse-$ver-win.exe") { $univ = @{ name = $f.Name; sha = $sha } }
+          }
+          if (-not $univ) { throw "Missing universal Windows installer eclipse-$ver-win.exe" }
+          $yml = "version: $ver`nfiles:`n$($entries -join "`n")`npath: $($univ.name)`nsha512: $($univ.sha)`nreleaseDate: '$(Get-Date -Format o)'`n"
+          Set-Content -Path dist/latest.yml -Value $yml -Encoding UTF8
+          node scripts/verify-release-manifest.js --manifest dist/latest.yml --version $ver
+          node scripts/generate-provenance.js --commit "${{ inputs.commit_sha }}" --run-id "${{ github.run_id }}" --runner-os "unified" --out dist/release-provenance.json
+
+      - name: Upload verified manifest & provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest-and-provenance
+          path: |
+            dist/latest.yml
+            dist/release-provenance.json
+          if-no-files-found: error
