@@ -271,7 +271,29 @@ class BrowserPairingServer {
         if (typeof this.onCookiesReceived === 'function') {
           try {
             const authResult = await this.onCookiesReceived(cookieRecords);
-            this.sendJson(res, 200, { success: true, account: authResult && authResult.account }, origin);
+            const isUnverifiedWebSession = Boolean(
+              authResult && (
+                authResult.webSessionUnverified ||
+                (authResult.account && authResult.account.webSessionStatus === 'spotify_web_session_unverified')
+              )
+            );
+            if (isUnverifiedWebSession) {
+              this.sendJson(res, 200, {
+                success: true,
+                transferAccepted: true,
+                authenticated: false,
+                sessionStatus: 'UNVERIFIED_WEB_SESSION',
+                account: authResult.account
+              }, origin);
+            } else {
+              this.sendJson(res, 200, {
+                success: true,
+                transferAccepted: true,
+                authenticated: true,
+                sessionStatus: 'VALID',
+                account: authResult && authResult.account
+              }, origin);
+            }
             setTimeout(() => this.close(), 1000);
           } catch (verifyErr) {
             this.sendJson(res, 400, {

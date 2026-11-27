@@ -104,8 +104,8 @@ class ExternalPkceAuth {
 
   async authenticate(options = {}) {
     const clientId = (typeof options.clientId === 'string' ? options.clientId.trim() : '') || this.clientId;
-    if (!clientId) {
-      const err = new Error('External OAuth client ID is not configured');
+    if (!/^[a-f0-9]{32}$/i.test(clientId)) {
+      const err = new Error('Missing or invalid Spotify Client ID. Enter your 32-character hex Client ID in Settings before connecting.');
       err.code = 'PKCE_CLIENT_ID_MISSING';
       throw err;
     }

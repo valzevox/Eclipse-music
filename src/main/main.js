@@ -2219,14 +2219,23 @@ ipcMain.on('window-minimize', () => {
         if (!isValidMainWindowIpcSender(event)) {
           return { success: false, error: 'Unauthorized IPC sender' };
         }
+        const clientId = opts && typeof opts.clientId === 'string' ? opts.clientId.trim() : '';
+        if (!/^[a-f0-9]{32}$/i.test(clientId)) {
+          return {
+            success: false,
+            canceled: false,
+            code: 'PKCE_CLIENT_ID_MISSING',
+            error: 'Missing or invalid Spotify Client ID. Enter your 32-character hex Client ID in Settings before connecting.'
+          };
+        }
         activeExternalOpId = opts && opts.operationId !== undefined ? opts.operationId : null;
         try {
-          const status = sanitizeExternalSessionStatus(await externalSessionService.startPkceLogin(opts || {}));
+          const status = sanitizeExternalSessionStatus(await externalSessionService.startPkceLogin({ ...(opts || {}), clientId }));
           return { success: status.connected, status };
         } catch (err) {
           const msg = err && err.message ? err.message : 'PKCE authorization failed';
           const canceled = Boolean(err && (err.code === 'PKCE_CANCELLED' || /cancel/i.test(msg)));
-          return { success: false, canceled, error: msg };
+          return { success: false, canceled, code: err && err.code ? err.code : undefined, error: msg };
         }
       });
 

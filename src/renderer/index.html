@@ -4268,7 +4268,11 @@
             </div>
             <span class="pairing-badge">Recommended</span>
           </div>
-          <p class="stage-desc" style="margin: 8px 0 12px;">Opens your default system browser to authorize securely using S256 PKCE without sharing browser cookies.</p>
+          <p class="stage-desc" style="margin: 8px 0 10px;">Opens your default system browser to authorize securely using S256 PKCE without sharing browser cookies.</p>
+          <div class="extension-path-box" style="margin: 0 0 12px; padding: 8px 10px; font-size: 12px; line-height: 1.45;">
+            <div><strong>OAuth Setup:</strong> Uses your saved Client ID from Settings (<code>#sp-client-id</code>).</div>
+            <div>Register redirect URI <code>http://127.0.0.1/callback</code> (loopback <code>/callback</code> on <code>127.0.0.1</code> with dynamic port) in your app dashboard before connecting.</div>
+          </div>
           <div class="pairing-actions">
             <button type="button" id="btn-ext-start-pkce" class="btn-pill-primary" disabled>Connect via System Browser</button>
             <button type="button" id="btn-ext-cancel-pkce" class="btn-outline-pill hidden">Cancel</button>

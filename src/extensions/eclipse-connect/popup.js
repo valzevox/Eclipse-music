@@ -270,9 +270,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const resJson = await response.json().catch(() => ({}));
 
     if (response.ok && resJson.success) {
-      showStatus('Connected successfully! You can close this popup.', 'success');
-      nonceInput.value = '';
-      setTimeout(() => { window.close(); }, 2500);
+      if (resJson.transferAccepted && (resJson.authenticated === false || resJson.sessionStatus === 'UNVERIFIED_WEB_SESSION')) {
+        showStatus('Session transferred to Eclipse. This web session is unverified. Complete Official OAuth PKCE in Eclipse to connect your Spotify account.', 'warning');
+        nonceInput.value = '';
+        btnPair.disabled = false;
+      } else if (resJson.authenticated !== false && resJson.sessionStatus !== 'UNVERIFIED_WEB_SESSION') {
+        showStatus('Connected successfully! You can close this popup.', 'success');
+        nonceInput.value = '';
+        setTimeout(() => { window.close(); }, 2500);
+      } else {
+        showStatus('Session transferred to Eclipse. Complete Official OAuth PKCE in Eclipse to connect your Spotify account.', 'warning');
+        nonceInput.value = '';
+        btnPair.disabled = false;
+      }
     } else {
       const errMsg = resJson.error || 'Failed to authenticate pairing with Eclipse';
       showStatus(`Error: ${errMsg}`, 'error');

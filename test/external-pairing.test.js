@@ -719,3 +719,130 @@ test('Extension MV3 manifest, popup.js permission timing & zero storage, and bui
   assert.ok(buildExtSrc.includes('optional_host_permissions'));
   assert.ok(buildExtSrc.includes('*.spotify.com'));
 });
+
+test('BrowserPairingServer: returns UNVERIFIED_WEB_SESSION payload when onCookiesReceived returns webSessionUnverified: true', async () => {
+  const server = new BrowserPairingServer({
+    target: BrowserLoginTarget.EXTERNAL_WEB,
+    isPackaged: false,
+    onCookiesReceived: async () => ({
+      account: { displayName: 'Unverified Web', webSessionStatus: 'spotify_web_session_unverified' },
+      webSessionUnverified: true
+    })
+  });
+  const { port, nonce } = await server.start();
+  try {
+    const res = await sendRawHttpRequest({
+      port,
+      headers: {
+        Host: `127.0.0.1:${port}`,
+        Origin: 'null',
+        'Content-Type': 'application/json',
+        'X-Eclipse-Nonce': nonce
+      },
+      body: JSON.stringify({
+        version: 1,
+        target: BrowserLoginTarget.EXTERNAL_WEB,
+        cookies: [{ name: 'sp_dc', value: 'unverified-cookie-val', domain: 'open.spotify.com', secure: true }]
+      })
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.success, true);
+    assert.equal(res.json.transferAccepted, true);
+    assert.equal(res.json.authenticated, false);
+    assert.equal(res.json.sessionStatus, 'UNVERIFIED_WEB_SESSION');
+  } finally {
+    server.close();
+  }
+});
+
+test('Extension popup.js: displays unverified warning instead of Connected successfully! when transferAccepted and unverified', async () => {
+  const vm = require('node:vm');
+  const popupSrc = fs.readFileSync(path.join(EXT_DIR, 'popup.js'), 'utf8');
+
+  assert.ok(
+    popupSrc.includes("resJson.transferAccepted && (resJson.authenticated === false || resJson.sessionStatus === 'UNVERIFIED_WEB_SESSION')"),
+    'popup.js must check transferAccepted and unverified session flags'
+  );
+
+  function makeEl(id, initialValue = '') {
+    const listeners = {};
+    return {
+      id,
+      value: initialValue,
+      disabled: false,
+      textContent: '',
+      className: '',
+      style: {},
+      addEventListener: (ev, fn) => {
+        listeners[ev] = listeners[ev] || [];
+        listeners[ev].push(fn);
+      },
+      click: async () => {
+        for (const fn of listeners.click || []) {
+          await fn();
+        }
+      }
+    };
+  }
+
+  const els = {
+    service: makeEl('service', 'external_web'),
+    'cookie-notice': makeEl('cookie-notice'),
+    port: makeEl('port', '25123'),
+    nonce: makeEl('nonce', 'a'.repeat(64)),
+    'btn-pair': makeEl('btn-pair'),
+    'missing-session-actions': makeEl('missing-session-actions'),
+    'btn-open-login': makeEl('btn-open-login'),
+    'btn-scan-again': makeEl('btn-scan-again'),
+    status: makeEl('status')
+  };
+
+  let domReadyHandler = null;
+  const sandbox = {
+    chrome: {
+      permissions: { request: async () => true },
+      cookies: {
+        getAll: async () => [{
+          name: 'sp_dc',
+          value: 'test-sp-dc',
+          domain: 'open.spotify.com',
+          path: '/',
+          secure: true,
+          httpOnly: true,
+          hostOnly: true
+        }]
+      }
+    },
+    window: {
+      location: { search: '' },
+      close: () => {}
+    },
+    document: {
+      getElementById: (id) => els[id] || null,
+      addEventListener: (ev, fn) => {
+        if (ev === 'DOMContentLoaded') domReadyHandler = fn;
+      }
+    },
+    fetch: async () => ({
+      ok: true,
+      json: async () => ({
+        success: true,
+        transferAccepted: true,
+        authenticated: false,
+        sessionStatus: 'UNVERIFIED_WEB_SESSION'
+      })
+    }),
+    URLSearchParams,
+    setTimeout,
+    clearTimeout
+  };
+
+  vm.runInNewContext(popupSrc, sandbox);
+  assert.equal(typeof domReadyHandler, 'function');
+  domReadyHandler();
+
+  await els['btn-pair'].click();
+  assert.match(els.status.textContent, /unverified/i);
+  assert.equal(els.status.textContent.includes('Connected successfully!'), false);
+  assert.equal(els.status.className, 'status warning');
+});

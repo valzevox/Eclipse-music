@@ -30878,14 +30878,26 @@ document.addEventListener('DOMContentLoaded', () => {
         return !!(chkConsent && chkConsent.checked);
       },
 
-      setError(msg) {
+      setError(msg, tone = 'error') {
         if (!errorBox) return;
         if (!msg) {
           errorBox.textContent = '';
           errorBox.classList.add('hidden');
+          errorBox.style.color = '';
+          errorBox.style.background = '';
+          errorBox.style.borderColor = '';
         } else {
           errorBox.textContent = String(msg);
           errorBox.classList.remove('hidden');
+          if (tone === 'warning' || tone === 'info') {
+            errorBox.style.color = '#fbbf24';
+            errorBox.style.background = 'rgba(251, 191, 36, 0.12)';
+            errorBox.style.borderColor = 'rgba(251, 191, 36, 0.3)';
+          } else {
+            errorBox.style.color = '';
+            errorBox.style.background = '';
+            errorBox.style.borderColor = '';
+          }
         }
       },
 
@@ -30966,7 +30978,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (meta.error) {
-          this.setError(meta.error);
+          this.setError(meta.error, meta.errorTone || 'error');
         } else if (normalized === 'connected' || normalized === 'unpaired' || normalized === 'disconnect') {
           this.setError('');
         }
@@ -30999,6 +31011,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
       async startPkce() {
         if (this.activeOp || !this.hasConsent()) return;
+        const spInput = document.getElementById('sp-client-id');
+        const rawClientId = (spInput && typeof spInput.value === 'string' && spInput.value.trim())
+          ? spInput.value.trim()
+          : String(localStorage.getItem('eclipse_spotify_client_id') || '').trim();
+        if (!/^[a-f0-9]{32}$/i.test(rawClientId)) {
+          this.setError('Missing or invalid Spotify Client ID. Enter your 32-character hex Client ID in Settings before connecting.', 'error');
+          return;
+        }
         const api = getApi();
         if (!api || typeof api.externalSessionStartPkce !== 'function') {
           this.applyState('error', { error: 'Official PKCE IPC is unavailable in this runtime.' });
@@ -31009,7 +31029,7 @@ document.addEventListener('DOMContentLoaded', () => {
         this.setError('');
         this.applyState('pairing', { pkceStatus: 'authorizing' });
         try {
-          const res = await api.externalSessionStartPkce({ operationId: opId });
+          const res = await api.externalSessionStartPkce({ operationId: opId, clientId: rawClientId });
           if (this.isStaleOp(opId)) return;
           this.activeOp = null;
           if (res && res.canceled) {
@@ -31129,10 +31149,11 @@ document.addEventListener('DOMContentLoaded', () => {
           const res = await api.externalSessionOpenLoginWindow({ operationId: opId });
           if (this.isStaleOp(opId)) return;
           this.activeOp = null;
-          if (res && res.webSessionUnverified) {
+          if (res && (res.webSessionUnverified || res.error === 'spotify_web_session_unverified')) {
             this.applyState('unpaired', {
               bridgeStatus: 'unverified local web session',
-              error: res.error || 'Local web session captured (unverified). Use Official OAuth PKCE to connect your external account.'
+              error: 'Unverified local web session captured. This does not authenticate your account — use Official OAuth PKCE to connect.',
+              errorTone: 'warning'
             });
           } else if (res && res.canceled) {
             this.applyState('unpaired');
@@ -31181,15 +31202,16 @@ document.addEventListener('DOMContentLoaded', () => {
         if (payload.operationId !== undefined && controller.isStaleOp(payload.operationId)) return;
         controller.activeOp = null;
         controller.stopCountdown();
-        if (payload.success) {
+        if (payload.success && !payload.webSessionUnverified && payload.error !== 'spotify_web_session_unverified') {
           controller.applyState('connected', {
             pkceStatus: payload.method === 'pkce' ? 'connected' : controller.pkceStatus,
-            bridgeStatus: payload.webSessionUnverified ? 'unverified local web session' : controller.bridgeStatus
+            bridgeStatus: controller.bridgeStatus
           });
-        } else if (payload.webSessionUnverified) {
+        } else if (payload.webSessionUnverified || payload.error === 'spotify_web_session_unverified') {
           controller.applyState('unpaired', {
             bridgeStatus: 'unverified local web session',
-            error: 'Local web session captured (unverified). Use Official OAuth PKCE to connect your external account.'
+            error: 'Unverified local web session captured. This does not authenticate your account — use Official OAuth PKCE to connect.',
+            errorTone: 'warning'
           });
         } else if (payload.canceled) {
           controller.applyState('unpaired');

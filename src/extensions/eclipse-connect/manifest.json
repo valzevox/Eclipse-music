@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Eclipse Connect",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Secure one-time session connector for Eclipse Music Player",
   "optional_permissions": [
     "cookies"
