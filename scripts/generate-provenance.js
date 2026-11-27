@@ -18,8 +18,13 @@ const workflowRunId = getArg('--run-id', process.env.GITHUB_RUN_ID || 'local');
 const runnerOs = getArg('--runner-os', process.env.RUNNER_OS || process.platform);
 const outPath = getArg('--out', path.join(root, 'dist', 'release-provenance.json'));
 
-const electronPkg = JSON.parse(fs.readFileSync(path.join(root, 'node_modules', 'electron', 'package.json'), 'utf8'));
-const builderPkg = JSON.parse(fs.readFileSync(path.join(root, 'node_modules', 'electron-builder', 'package.json'), 'utf8'));
+const readPkgVer = (name) => {
+  const p = path.join(root, 'node_modules', name, 'package.json');
+  if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8')).version;
+  return (pkg.devDependencies && pkg.devDependencies[name]) || (pkg.dependencies && pkg.dependencies[name]) || 'unknown';
+};
+const electronPkg = { version: readPkgVer('electron') };
+const builderPkg = { version: readPkgVer('electron-builder') };
 
 const assetDirs = [path.join(root, 'dist'), path.join(root, 'output')];
 const seen = new Set();
