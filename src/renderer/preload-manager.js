@@ -295,32 +295,33 @@ class EclipsePreloadManager {
           }
           const contentRange = res.headers && typeof res.headers.get === 'function' ? (res.headers.get('content-range') || '') : '';
           const crMatch = /^bytes\s+0-(\d+)\/(\d+|\*)$/i.exec(contentRange.trim());
-          if (!crMatch || Number(crMatch[1]) > endByte) {
+          const declaredSpan = crMatch ? (Number(crMatch[1]) + 1) : 0;
+          if (!crMatch || declaredSpan <= 0 || declaredSpan > warmBytes) {
+            if (res.body && typeof res.body.cancel === 'function') {
+              res.body.cancel().catch(() => {});
+            }
+            return false;
+          }
+          if (!res.body || typeof res.body.getReader !== 'function') {
             if (res.body && typeof res.body.cancel === 'function') {
               res.body.cancel().catch(() => {});
             }
             return false;
           }
           let totalRead = 0;
-          if (res.body && typeof res.body.getReader === 'function') {
-            const reader = res.body.getReader();
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              if (value) {
-                totalRead += value.byteLength;
-                if (totalRead > warmBytes) {
-                  await reader.cancel().catch(() => {});
-                  return false;
-                }
+          const reader = res.body.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) {
+              totalRead += value.byteLength;
+              if (totalRead > warmBytes || totalRead > declaredSpan) {
+                await reader.cancel().catch(() => {});
+                return false;
               }
             }
-          } else {
-            const buf = await res.arrayBuffer();
-            totalRead = buf ? buf.byteLength : 0;
-            if (totalRead > warmBytes) return false;
           }
-          if (totalRead === 0) continue;
+          if (totalRead === 0 || totalRead !== declaredSpan) continue;
           state.verified.set(url, { ts: Date.now(), bytes: totalRead });
           if (state.verified.size > 64) state.verified.delete(state.verified.keys().next().value);
           return true;

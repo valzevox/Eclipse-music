@@ -706,14 +706,19 @@ function evictStreamCache(rawUrl) {
   }
 }
 
-function verifyStreamPlayable(streamUrl, userAgent, redirectsLeft = 3) {
+function verifyStreamPlayable(streamUrl, userAgent, redirectsLeft = 3, options = {}) {
   return new Promise((resolve) => {
     if (!streamUrl || typeof streamUrl !== 'string') return resolve(false);
     if (streamUrl.includes('.m3u8')) return resolve(true);
+    const signal = options && options.signal ? options.signal : null;
+    if (signal && signal.aborted) return resolve(false);
     let settled = false;
+    let req = null;
+    let onAbort = null;
     const done = (ok) => {
       if (settled) return;
       settled = true;
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
       resolve(ok);
     };
     try {
@@ -725,9 +730,10 @@ function verifyStreamPlayable(streamUrl, userAgent, redirectsLeft = 3) {
         else if (cParam === 'ANDROID_VR') ua = 'com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip';
       }
       const isGooglevideo = parsed.hostname.endsWith('googlevideo.com');
-      const req = https.request(streamUrl, {
+      const client = (options && options.httpClient) || (parsed.protocol === 'http:' ? http : https);
+      req = client.request(streamUrl, {
         method: 'GET',
-        agent: keepAliveHttpsAgent,
+        agent: parsed.protocol === 'https:' ? keepAliveHttpsAgent : undefined,
         family: 4,
         timeout: 5000,
         headers: Object.assign({
@@ -747,7 +753,8 @@ function verifyStreamPlayable(streamUrl, userAgent, redirectsLeft = 3) {
         if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirectsLeft > 0) {
           res.resume();
           const nextUrl = new URL(res.headers.location, streamUrl).toString();
-          return verifyStreamPlayable(nextUrl, ua, redirectsLeft - 1).then(done);
+          if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+          return verifyStreamPlayable(nextUrl, ua, redirectsLeft - 1, options).then(done);
         }
         if (res.statusCode !== 200 && res.statusCode !== 206) {
           res.destroy();
@@ -764,6 +771,11 @@ function verifyStreamPlayable(streamUrl, userAgent, redirectsLeft = 3) {
         res.on('end', () => done(received >= 16384 || received > 0));
         res.on('error', () => done(false));
       });
+      onAbort = () => {
+        try { if (req) req.destroy(new Error('aborted')); } catch (_) {}
+        done(false);
+      };
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
       req.on('timeout', () => { req.destroy(); done(false); });
       req.on('error', () => done(false));
       req.end();
@@ -773,11 +785,13 @@ function verifyStreamPlayable(streamUrl, userAgent, redirectsLeft = 3) {
   });
 }
 const verifyGoogleVideoStream = verifyStreamPlayable;
-async function fetchDirectYoutubeStreamServer(videoId, quality = 'medium') {
+async function fetchDirectYoutubeStreamServer(videoId, quality = 'medium', options = {}) {
   const vid = extractYtIdFromAny(videoId);
   if (!vid) return null;
+  const signal = options && options.signal ? options.signal : null;
+  if (signal && signal.aborted) return null;
   const visitorData = '';
-  const clients = [
+  const clients = Array.isArray(options.clients) ? options.clients : [
     {
       clientName: 'IOS',
       clientVersion: '20.10.4',
@@ -809,6 +823,7 @@ async function fetchDirectYoutubeStreamServer(videoId, quality = 'medium') {
   }
 
   const queryClient = (c) => new Promise((resolve, reject) => {
+    if (signal && signal.aborted) return reject(new Error('aborted'));
     const clientPayload = {
       clientName: c.clientName,
       clientVersion: c.clientVersion,
@@ -839,11 +854,13 @@ async function fetchDirectYoutubeStreamServer(videoId, quality = 'medium') {
       'X-Goog-Api-Format-Version': '2'
     }, c.extraHeaders || (visitorData ? { 'X-Goog-Visitor-Id': visitorData } : {}));
 
-    const req = https.request({
+    const client = (options && options.httpClient) || https;
+    const req = client.request({
       hostname: c.host || 'www.youtube.com',
+      port: c.port || undefined,
       path: '/youtubei/v1/player?prettyPrint=false',
       method: 'POST',
-      agent: keepAliveHttpsAgent,
+      agent: c.port ? undefined : keepAliveHttpsAgent,
       family: 4,
       timeout: 2200,
       headers: reqHeaders
@@ -852,6 +869,7 @@ async function fetchDirectYoutubeStreamServer(videoId, quality = 'medium') {
       res.setEncoding('utf8');
       res.on('data', chunk => { raw += chunk; });
       res.on('end', () => {
+        cleanupAbort();
         if (res.statusCode !== 200) return reject(new Error('status ' + res.statusCode));
         try {
           const data = JSON.parse(raw);
@@ -884,8 +902,16 @@ async function fetchDirectYoutubeStreamServer(videoId, quality = 'medium') {
         }
       });
     });
-    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
-    req.on('error', reject);
+    const onAbort = () => {
+      try { req.destroy(new Error('aborted')); } catch (_) {}
+      reject(new Error('aborted'));
+    };
+    const cleanupAbort = () => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+    };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    req.on('timeout', () => { cleanupAbort(); req.destroy(); reject(new Error('timeout')); });
+    req.on('error', (err) => { cleanupAbort(); reject(err); });
     req.write(bodyPayload);
     req.end();
   });
@@ -2986,7 +3012,7 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
           s = await networkScheduler.schedule({
             priority: streamPriority,
             signal: reqAbortController.signal,
-            fn: () => fetchDirectYoutubeStreamServer(vid, quality)
+            fn: (signal) => fetchDirectYoutubeStreamServer(vid, quality, { signal })
           });
         } catch (_) {}
         stageTimings.directResolverMs += Date.now() - directStart;
@@ -3043,7 +3069,7 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
                 verified = await networkScheduler.schedule({
                   priority: streamPriority,
                   signal: reqAbortController.signal,
-                  fn: () => verifyStreamPlayable(lineUrl)
+                  fn: (signal) => verifyStreamPlayable(lineUrl, undefined, 3, { signal })
                 }).catch(() => false);
                 if (!verified) await new Promise((r) => setTimeout(r, 500 + check * 500));
               }
@@ -11499,7 +11525,7 @@ async function handleInterceptCookie(req, res, deps = {}) {
   
 function stopServer() { return new Promise((resolve) => { if (!server || !server.listening) return resolve(); server.close(() => resolve()); }); }
 
-module.exports = { stopServer, matchAndResolveTrack, handleLyrics, handleAudioProxy, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchSyncLrc, parseKaraokeToWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc, cleanSearchResults, handleInterceptCookie, handleConfirmCandidate, validateBackendSapisidCredential, pendingCandidateSessions, networkScheduler, networkDiagnostics, adaptiveRangeCache, artworkCache };
+module.exports = { stopServer, matchAndResolveTrack, handleLyrics, handleAudioProxy, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchSyncLrc, parseKaraokeToWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc, cleanSearchResults, handleInterceptCookie, handleConfirmCandidate, validateBackendSapisidCredential, pendingCandidateSessions, networkScheduler, networkDiagnostics, adaptiveRangeCache, artworkCache, verifyStreamPlayable, fetchDirectYoutubeStreamServer };
 
 if (require.main === module) {
   startServer();

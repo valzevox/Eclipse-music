@@ -130,3 +130,72 @@ test('NetworkPriorityScheduler: playback buffering aborts active NEXT_TRACK_PREP
   assert.equal(prepAborted, true);
   assert.equal(artAborted, true);
 });
+
+test('NetworkPriorityScheduler: buffering queue gate blocks queued NEXT_TRACK_PREP and VISIBLE_ARTWORK_LYRICS while allowing PLAYBACK_AUDIO and PLAYBACK_SEEK', async () => {
+  const scheduler = new NetworkPriorityScheduler({ profile: 'constrained', autoCacheEnabled: true });
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const s1 = scheduler.schedule({ priority: Priority.PLAYBACK_AUDIO, fn: () => gate });
+  const s2 = scheduler.schedule({ priority: Priority.PLAYBACK_AUDIO, fn: () => gate });
+
+  const ran = [];
+  const queuedPrep = scheduler.schedule({ priority: Priority.NEXT_TRACK_PREP, fn: async () => { ran.push('prep'); } });
+  const queuedArt = scheduler.schedule({ priority: Priority.VISIBLE_ARTWORK_LYRICS, fn: async () => { ran.push('art'); } });
+
+  scheduler.setPlaybackBuffering(true);
+  release();
+  await Promise.all([s1, s2]);
+  await sleep(20);
+  assert.deepEqual(ran, [], 'Queued NEXT_TRACK_PREP and VISIBLE_ARTWORK_LYRICS must not start while buffering');
+
+  const play = scheduler.schedule({ priority: Priority.PLAYBACK_AUDIO, fn: async () => { ran.push('play'); } });
+  const seek = scheduler.schedule({ priority: Priority.PLAYBACK_SEEK, fn: async () => { ran.push('seek'); } });
+  await Promise.all([play, seek]);
+  assert.deepEqual(ran, ['play', 'seek']);
+
+  scheduler.setPlaybackBuffering(false);
+  await Promise.all([queuedPrep, queuedArt]);
+  assert.deepEqual(ran, ['play', 'seek', 'prep', 'art']);
+});
+
+test('NetworkPriorityScheduler: bumpGeneration aborts active stale NEXT_TRACK_PREP and preserves active accounting until exit', async () => {
+  const scheduler = new NetworkPriorityScheduler({ profile: 'normal', autoCacheEnabled: true });
+  let prepAborted = false;
+  let playAborted = false;
+  let activeDuringAbort = 0;
+
+  const gen0 = scheduler.generation;
+  const activePrep = scheduler.schedule({
+    priority: Priority.NEXT_TRACK_PREP,
+    generation: gen0,
+    fn: (signal) => new Promise((resolve) => {
+      signal.addEventListener('abort', async () => {
+        prepAborted = true;
+        activeDuringAbort = scheduler.getStats().activeCount;
+        await sleep(30);
+        resolve('prep_aborted');
+      }, { once: true });
+    })
+  });
+
+  let releasePlay;
+  const activePlay = scheduler.schedule({
+    priority: Priority.PLAYBACK_AUDIO,
+    generation: gen0,
+    fn: (signal) => new Promise((resolve) => {
+      signal.addEventListener('abort', () => { playAborted = true; }, { once: true });
+      releasePlay = () => resolve('play_ok');
+    })
+  });
+
+  await sleep(10);
+  scheduler.bumpGeneration();
+  assert.equal(prepAborted, true);
+  assert.equal(playAborted, false, 'PLAYBACK_AUDIO must not be aborted by bumpGeneration');
+  assert.equal(activeDuringAbort, 2, 'Active slot must not be released before underlying task exits');
+
+  releasePlay();
+  assert.equal(await activePrep, 'prep_aborted');
+  assert.equal(await activePlay, 'play_ok');
+  assert.equal(scheduler.getStats().activeCount, 0);
+});

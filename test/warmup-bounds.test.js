@@ -71,6 +71,41 @@ test('Warm-up Bounds: accepts valid 206, rejects HTTP 200 multi-MB, bad Content-
     // 4. Empty response must be rejected and NOT marked verified
     assert.equal(await ep._warmUpRange(`${base}/empty-206`), false);
     assert.equal(globalThis.__eclipseWarmedState.verified.has(`${base}/empty-206`), false);
+
+    // 5. Truncated 206 body (declares 0-65535 but sends only 1024 bytes) must be rejected
+    const truncServer = http.createServer((req, res) => {
+      res.writeHead(206, {
+        'Content-Type': 'audio/mp4',
+        'Content-Range': 'bytes 0-65535/524288',
+        'Content-Length': '1024'
+      });
+      res.end(Buffer.alloc(1024, 0x44));
+    });
+    await new Promise((r) => truncServer.listen(0, '127.0.0.1', r));
+    const truncUrl = `http://127.0.0.1:${truncServer.address().port}/trunc`;
+    try {
+      assert.equal(await ep._warmUpRange(truncUrl), false);
+      assert.equal(globalThis.__eclipseWarmedState.verified.has(truncUrl), false);
+    } finally {
+      await new Promise((r) => truncServer.close(r));
+    }
+
+    // 6. Missing getReader() must return false and cancel body rather than buffering unboundedly
+    const origFetch = globalThis.fetch;
+    let cancelled = false;
+    globalThis.fetch = async () => ({
+      status: 206,
+      headers: { get: (k) => (k.toLowerCase() === 'content-range' ? 'bytes 0-65535/524288' : null) },
+      body: { cancel: async () => { cancelled = true; } },
+      arrayBuffer: async () => { throw new Error('arrayBuffer must not be called'); }
+    });
+    try {
+      assert.equal(await ep._warmUpRange(`${base}/no-reader`), false);
+      assert.equal(cancelled, true);
+      assert.equal(globalThis.__eclipseWarmedState.verified.has(`${base}/no-reader`), false);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   } finally {
     await new Promise((r) => server.close(r));
   }

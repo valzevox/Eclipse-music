@@ -14,7 +14,9 @@ const {
   networkScheduler,
   networkDiagnostics,
   adaptiveRangeCache,
-  artworkCache
+  artworkCache,
+  verifyStreamPlayable,
+  fetchDirectYoutubeStreamServer
 } = require('../src/server/server');
 const { Priority } = require('../src/server/network-scheduler');
 const { parseRangeHeader } = require('../src/server/range-cache');
@@ -157,7 +159,7 @@ test('Scenario 1: Cold app/Home startup diagnostics populated via /api/network-d
   }
 });
 
-test('Scenario 2: First Play range completion and genuine audio-element playing event timing', async () => {
+test('Scenario 2 (Simulated Proxy): First Play range completion through real handleAudioProxy', async () => {
   const upstream = createShapedUpstream({ mbps: 3.0, rttMs: 100, totalBytes: 256 * 1024 });
   const upPort = await upstream.start();
   const proxy = createTestProxyServer();
@@ -174,15 +176,6 @@ test('Scenario 2: First Play range completion and genuine audio-element playing 
     const firstRangeCompleteMs = Date.now() - playStart;
     assert.equal(buf.length, 65536);
     assert.ok(firstRangeCompleteMs >= 100);
-
-    // Simulate media element playing event after initial range buffer arrives
-    const audioEl = new EventTarget();
-    let firstAudibleMs = null;
-    audioEl.addEventListener('playing', () => {
-      firstAudibleMs = Date.now() - playStart;
-    }, { once: true });
-    audioEl.dispatchEvent(new Event('playing'));
-    assert.ok(Number.isFinite(firstAudibleMs) && firstAudibleMs >= firstRangeCompleteMs);
     assert.ok(networkDiagnostics.getSummary().bytesByCategory.playback >= 65536);
   } finally {
     await proxy.stop();
@@ -441,7 +434,7 @@ test('Identical-Workload Before/After Benchmark (1.5 Mbps aggregate, 250 ms RTT,
 
     console.log(JSON.stringify({
       identicalWorkloadBenchmark: {
-        condition: '1.5 Mbps aggregate / 250 ms RTT / deterministic 503 every 3rd req',
+        condition: '1.5 Mbps aggregate / 250 ms RTT / deterministic 503 every 4th req',
         before: {
           firstRangeCompleteMs: beforeFirstRangeCompleteMs,
           totalWorkloadMs: beforeTotalMs,
@@ -464,5 +457,73 @@ test('Identical-Workload Before/After Benchmark (1.5 Mbps aggregate, 250 ms RTT,
     networkScheduler.setProfile('normal');
     await proxy.stop();
     await upstream.stop();
+  }
+});
+
+test('AbortSignal Propagation: aborting verifyStreamPlayable and fetchDirectYoutubeStreamServer closes upstream connections', async () => {
+  let closedCount = 0;
+  const slowServer = http.createServer((req, res) => {
+    req.on('close', () => { closedCount += 1; });
+    // Hold connection open without responding
+  });
+  await new Promise((r) => slowServer.listen(0, '127.0.0.1', r));
+  const port = slowServer.address().port;
+
+  try {
+    const ac1 = new AbortController();
+    const probePromise = verifyStreamPlayable(`http://127.0.0.1:${port}/stream.m4a`, undefined, 3, {
+      signal: ac1.signal,
+      httpClient: http
+    });
+    await sleep(30);
+    ac1.abort();
+    assert.equal(await probePromise, false);
+
+    const ac2 = new AbortController();
+    const directPromise = fetchDirectYoutubeStreamServer('dQw4w9WgXcQ', 'medium', {
+      signal: ac2.signal,
+      httpClient: http,
+      clients: [{ clientName: 'IOS', clientVersion: '20.10.4', userAgent: 'test', host: '127.0.0.1', port }]
+    });
+    await sleep(30);
+    ac2.abort();
+    assert.equal(await directPromise, null);
+
+    await sleep(30);
+    assert.ok(closedCount >= 2, `Expected upstream to observe >= 2 closed connections, got ${closedCount}`);
+  } finally {
+    await new Promise((r) => slowServer.close(r));
+  }
+});
+
+test('Optimized-Path Transient HTTP 503 Recovery: warm-up retries and succeeds after injected 503', async () => {
+  let attempts = 0;
+  let injected503 = 0;
+  const srv = http.createServer((req, res) => {
+    attempts += 1;
+    if (attempts === 1) {
+      injected503 += 1;
+      res.writeHead(503, { 'Content-Type': 'text/plain' });
+      return res.end('Transient 503');
+    }
+    res.writeHead(206, {
+      'Content-Type': 'audio/mp4',
+      'Content-Range': 'bytes 0-65535/524288',
+      'Content-Length': '65536'
+    });
+    res.end(Buffer.alloc(65536, 0x55));
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+
+  try {
+    globalThis.__eclipseWarmedState = { inflight: new Map(), verified: new Map() };
+    const ep = new EclipsePreloadManager({ serverPort: port, rangeWarmUpBytes: 65536 });
+    const ok = await ep._warmUpRange(`http://127.0.0.1:${port}/retry-503`);
+    assert.equal(injected503, 1, 'HTTP 503 must be injected on first attempt');
+    assert.equal(attempts, 2, 'Warm-up must retry once after 503');
+    assert.equal(ok, true, 'Warm-up must succeed on retry');
+  } finally {
+    await new Promise((r) => srv.close(r));
   }
 });

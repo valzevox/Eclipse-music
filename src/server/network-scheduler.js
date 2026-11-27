@@ -95,6 +95,13 @@ class NetworkPriorityScheduler {
       }
       return true;
     });
+    for (const [, task] of this._active.entries()) {
+      if (task.priority >= Priority.NEXT_TRACK_PREP && task.generation !== this.generation && task.abortController) {
+        try {
+          task.abortController.abort(Object.assign(new Error('stale_generation'), { code: 'STALE_GENERATION' }));
+        } catch (_) {}
+      }
+    }
     return this.generation;
   }
 
@@ -190,7 +197,7 @@ class NetworkPriorityScheduler {
     const cfg = PROFILE_CONFIG[this.profile];
     while (this._active.size < cfg.maxConcurrent && this._queue.length > 0) {
       const nextIdx = this._queue.findIndex((item) => {
-        if (this.playbackBuffering && item.priority >= Priority.SPECULATIVE_PRELOAD) {
+        if (this.playbackBuffering && item.priority >= Priority.NEXT_TRACK_PREP) {
           return false;
         }
         if (item.priority === Priority.BACKGROUND_DOWNLOAD && !this.canRunBackgroundDownload({ explicitOptIn: item.explicitOptIn })) {
