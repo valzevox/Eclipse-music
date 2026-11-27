@@ -502,20 +502,21 @@ function flushPlaybackResume(rendererWindow) {
 }
 
 function inspectWindowsInstallLocations(execDir, existsFn = fs.existsSync) {
+  const winPath = path.win32;
   const candidates = [
-    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'Eclipse') : null,
+    process.env.LOCALAPPDATA ? winPath.join(process.env.LOCALAPPDATA, 'Programs', 'Eclipse') : null,
     'C:\\Program Files\\Eclipse',
     'C:\\Program Files (x86)\\Eclipse'
   ].filter(Boolean);
 
-  const normExec = path.resolve(execDir || '').toLowerCase();
+  const normExec = winPath.resolve(execDir || '').toLowerCase();
   const found = [];
   const duplicates = [];
   for (const dir of candidates) {
-    const exe = path.join(dir, 'Eclipse.exe');
+    const exe = winPath.join(dir, 'Eclipse.exe');
     if (existsFn(exe)) {
       found.push(dir);
-      if (path.resolve(dir).toLowerCase() !== normExec) {
+      if (winPath.resolve(dir).toLowerCase() !== normExec) {
         duplicates.push(dir);
       }
     }
@@ -571,10 +572,11 @@ async function executeInstaller(installerPath, hooks = {}, getWindow = null) {
 
   const platform = (hooks && hooks.platform) || process.platform;
   if (platform === 'win32') {
+    const winPath = path.win32;
     const execPath = (hooks && hooks.execPath) || process.execPath;
-    const execDir = path.dirname(execPath);
+    const execDir = winPath.dirname(execPath);
     const existsFn = (hooks && typeof hooks.existsSync === 'function') ? hooks.existsSync : fs.existsSync;
-    const isUnpacked = existsFn(path.join(execDir, 'resources', 'app.asar'));
+    const isUnpacked = existsFn(winPath.join(execDir, 'resources', 'app.asar'));
     const pid = process.pid;
 
     // electron-builder NSIS: --updated + /S + --force-run, with /D=<execDir> last and unquoted.
