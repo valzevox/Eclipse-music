@@ -4674,10 +4674,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     return (typeof localStorage !== 'undefined' && localStorage.getItem('eclipse_audio_quality')) || 'medium';
   }
 
-  function isFastStartQuality(quality) {
-    return quality === 'high' || quality === 'max';
-  }
-
   function isTrackPreloadValid(track, requestedQuality) {
     if (!track || !track._preloadedStreamUrl) return false;
     if (track._preloadedStreamUrlExpires && Date.now() >= track._preloadedStreamUrlExpires) return false;
@@ -4762,7 +4758,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (data && data.success && (data.proxyUrl || data.streamUrl)) {
         const chosenUrl = data.proxyUrl || data.streamUrl;
         nextTrack._preloadedStreamUrl = chosenUrl;
-        nextTrack._preloadedStreamQuality = curQuality;
+        nextTrack._preloadedStreamQuality = (data.resolvedQuality ? String(data.resolvedQuality).trim().toLowerCase() : curQuality);
         nextTrack._preloadedStreamPlatform = String(nextTrack.platform || 'ytmusic').trim().toLowerCase();
         nextTrack._preloadedStreamUrlExpires = Date.now() + 3600 * 1000;
         warmUpNextAudioBuffer(chosenUrl);
@@ -5181,7 +5177,6 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         resolvedUrl = 'https://www.youtube.com/watch?v=' + track._matchedYtId;
       }
 
-      const initialQuality = isFastStartQuality(configuredQuality) ? 'low' : configuredQuality;
       const qSearch = encodeURIComponent(track.searchQuery || ((track.artist ? track.artist + ' - ' : '') + track.title));
       const streamInfoPlatform = (state.platform === 'soundcloud' && (!track.url || !track.url.includes('youtube.com'))) ? 'soundcloud' : (track.platform || state.platform || 'ytmusic');
       const buildStreamInfoUrl = (qVal) => `http://127.0.0.1:${state.serverPort}/api/stream-info?url=${encodeURIComponent(resolvedUrl || '')}&id=${encodeURIComponent(resolvedId || '')}&platform=${encodeURIComponent(streamInfoPlatform)}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&thumbnail=${encodeURIComponent(track.thumbnail || '')}&quality=${encodeURIComponent(qVal)}&q=${qSearch}&token=${encodeURIComponent((window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '')}`;
@@ -5202,18 +5197,12 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         return r.json();
       };
 
-      let resolvedQuality = initialQuality;
       let data = null;
       try {
-        data = await fetchStreamInfoWithRetry(initialQuality);
+        data = await fetchStreamInfoWithRetry(configuredQuality);
       } catch (err) {
         if (err && err.name === 'AbortError') throw err;
         data = null;
-      }
-
-      if ((!data || !data.success || !data.streamUrl) && initialQuality === 'low' && configuredQuality !== 'low' && currentToken === state.loadToken) {
-        resolvedQuality = configuredQuality;
-        data = await fetchStreamInfoWithRetry(configuredQuality);
       }
 
       if (currentToken !== state.loadToken) return;
@@ -5224,6 +5213,11 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           throw new Error('Offline: track not cached locally');
         }
         throw new Error((data && data.error) || 'Failed to extract audio stream');
+      }
+
+      const resolvedQuality = (data && data.resolvedQuality) ? String(data.resolvedQuality).trim().toLowerCase() : configuredQuality;
+      if (resolvedQuality !== configuredQuality) {
+        showToast(`Requested ${configuredQuality} quality unavailable; playing ${resolvedQuality}`, 'warning');
       }
 
       track._preloadedStreamUrl = data.proxyUrl || data.streamUrl;
@@ -9308,7 +9302,8 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       if (retryStage <= 1) {
         cur._errorRetryStage = 2;
         try {
-          const qQuality = encodeURIComponent(localStorage.getItem('eclipse_audio_quality') || 'medium');
+          const reqQuality = getConfiguredAudioQuality();
+          const qQuality = encodeURIComponent(reqQuality);
           const qSearch = encodeURIComponent(cur.searchQuery || ((cur.artist ? cur.artist + ' - ' : '') + (cur.title || '')));
           const retryYtId = cur._matchedYtId || cur.id || '';
           const retryTrackUrl = cur.url || (cur._matchedYtId ? ('https://www.youtube.com/watch?v=' + cur._matchedYtId) : '');
@@ -9318,7 +9313,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
           if (myToken !== state.loadToken) return;
           if (d && d.success && d.streamUrl) {
             cur._preloadedStreamUrl = d.proxyUrl || d.streamUrl;
-            cur._preloadedStreamQuality = decodeURIComponent(qQuality);
+            cur._preloadedStreamQuality = (d.resolvedQuality ? String(d.resolvedQuality).trim().toLowerCase() : reqQuality);
             cur._preloadedStreamPlatform = String(cur.platform || state.platform || 'ytmusic').trim().toLowerCase();
             cur._preloadedStreamUrlExpires = Date.now() + 3600 * 1000;
             el.nativeAudio.src = d.proxyUrl || d.streamUrl;
@@ -12078,7 +12073,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         .then((d) => {
           if (d && d.success && d.streamUrl) {
             track._preloadedStreamUrl = d.proxyUrl || d.streamUrl;
-            track._preloadedStreamQuality = quality;
+            track._preloadedStreamQuality = (d.resolvedQuality ? String(d.resolvedQuality).trim().toLowerCase() : quality);
             track._preloadedStreamPlatform = String(track.platform || state.platform || 'ytmusic').trim().toLowerCase();
             track._preloadedStreamUrlExpires = Date.now() + 3600 * 1000;
           } else {

@@ -19,7 +19,9 @@ class NetworkDiagnostics {
         directResolverMs: 0,
         ytDlpFallbackMs: 0,
         probeMs: 0
-      }
+      },
+      lastQualityResolution: null,
+      qualityResolutions: []
     };
 
     this.audioProxy = {
@@ -59,7 +61,7 @@ class NetworkDiagnostics {
     if (Number.isFinite(ms) && ms >= 0) this.homeReadyMs = Math.round(ms);
   }
 
-  recordStreamInfo({ hit = false, durationMs = 0, stage = null } = {}) {
+  recordStreamInfo({ hit = false, durationMs = 0, stage = null, qualityMeta = null } = {}) {
     if (hit) this.streamInfo.cacheHits += 1;
     else this.streamInfo.cacheMisses += 1;
 
@@ -75,6 +77,23 @@ class NetworkDiagnostics {
         if (Number.isFinite(stage[k])) {
           this.streamInfo.stages[k] = Math.round(stage[k]);
         }
+      }
+    }
+
+    if (qualityMeta && typeof qualityMeta === 'object') {
+      const entry = {
+        requestedQuality: qualityMeta.requestedQuality || null,
+        resolvedQuality: qualityMeta.resolvedQuality || null,
+        resolverPath: qualityMeta.resolverPath || null,
+        mimeType: qualityMeta.mimeType || null,
+        bitrate: Number.isFinite(qualityMeta.bitrate) ? Math.round(qualityMeta.bitrate) : null,
+        cacheHit: Boolean(qualityMeta.cacheHit),
+        ts: Date.now()
+      };
+      this.streamInfo.lastQualityResolution = entry;
+      this.streamInfo.qualityResolutions.push(entry);
+      if (this.streamInfo.qualityResolutions.length > 20) {
+        this.streamInfo.qualityResolutions.shift();
       }
     }
   }

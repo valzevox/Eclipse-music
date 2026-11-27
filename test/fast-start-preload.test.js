@@ -134,9 +134,10 @@ describe('Fast-Start Quality Policy & Rolling One-Track-Ahead Preload', () => {
       assert.strictEqual(prepFail.ready, false);
       assert.strictEqual(audioA.paused, false);
 
-      // Scenario 11: Medium/Low do not trigger Fast-Start
+      // Scenario 11: Normal playback uses configuredQuality directly without Low override
       const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
-      assert.match(appSrc, /function isFastStartQuality\(quality\)\s*\{\s*return quality === 'high' \|\| quality === 'max';\s*\}/);
+      assert.doesNotMatch(appSrc, /isFastStartQuality\s*\(/);
+      assert.match(appSrc, /fetchStreamInfoWithRetry\(configuredQuality\)/);
     } finally {
       server.close();
     }
@@ -218,8 +219,123 @@ describe('Fast-Start Quality Policy & Rolling One-Track-Ahead Preload', () => {
     const upcomingFn = appSrc.slice(appSrc.indexOf('function prefetchUpcomingQueueStreams()'), appSrc.indexOf('// === ECLIPSE MERGE: OFFLINE MODE ==='));
     assert.doesNotMatch(upcomingFn, /secondNext/);
 
-    // Fast-Start fallback to configuredQuality when low fails
-    assert.match(appSrc, /const initialQuality = isFastStartQuality\(configuredQuality\) \? 'low' : configuredQuality;/);
-    assert.match(appSrc, /initialQuality === 'low' && configuredQuality !== 'low'/);
+    // Authoritative quality: normal playback, retry, and preload all use configuredQuality
+    assert.match(appSrc, /fetchStreamInfoWithRetry\(configuredQuality\)/);
+    assert.match(appSrc, /const reqQuality = getConfiguredAudioQuality\(\);[\s\S]*?forceYtDlp=1/);
+    assert.match(appSrc, /localStorage\.getItem\('eclipse_audio_quality'\)/);
+    assert.match(appSrc, /localStorage\.setItem\('eclipse_audio_quality',\s*val\)/);
+  });
+
+  test('Authoritative Max Quality: cold cache requests quality=max, isolates Low/Medium cache, and records redacted diagnostics', async () => {
+    const { networkDiagnostics, fetchDirectYoutubeStreamServer } = require('../src/server/server.js');
+    const requestedQualities = [];
+    const server = http.createServer((req, res) => {
+      const u = new URL(req.url, 'http://127.0.0.1');
+      if (u.pathname === '/api/stream-info') {
+        const id = u.searchParams.get('id');
+        const quality = u.searchParams.get('quality');
+        requestedQualities.push({ id, quality });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({
+          success: true,
+          streamUrl: `http://127.0.0.1:${server.address().port}/audio/${id}_${quality}.m4a`,
+          proxyUrl: `http://127.0.0.1:${server.address().port}/audio/${id}_${quality}.m4a`,
+          requestedQuality: quality,
+          resolvedQuality: quality,
+          resolverPath: 'direct_youtube',
+          mimeType: 'audio/mp4; codecs="mp4a.40.2"',
+          bitrate: quality === 'max' ? 256000 : quality === 'high' ? 192000 : quality === 'medium' ? 128000 : 48000
+        }));
+      }
+      if (u.pathname.startsWith('/audio/')) {
+        res.writeHead(206, {
+          'Content-Type': 'audio/mp4',
+          'Content-Range': 'bytes 0-1023/4096',
+          'Content-Length': '1024'
+        });
+        return res.end(Buffer.alloc(1024));
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+
+    try {
+      const pm = new PreloadManager({ apiBase: `http://127.0.0.1:${port}` });
+      const epm = new EclipsePreloadManager({ serverPort: port });
+      const audio = createMockAudioElement();
+
+      // 1-3. Cold cache with Max -> first request is quality=max, attached to audio, _preloadedStreamQuality === 'max'
+      const trackMax = { id: 'max_cold_1', platform: 'ytmusic', title: 'MaxTrack' };
+      const maxUrl = await pm.resolveStreamUrl(trackMax, 'max');
+      audio.src = maxUrl;
+      await audio.play();
+      assert.strictEqual(requestedQualities[0].quality, 'max');
+      assert.ok(audio.src.includes('max_cold_1_max.m4a'));
+      assert.strictEqual(trackMax._preloadedStreamQuality, 'max');
+
+      // 4-5. Low cache entry never satisfies Max request
+      epm.setCache(trackMax, { streamUrl: 'http://127.0.0.1/low.m4a', proxyUrl: 'http://127.0.0.1/low.m4a' }, 'low');
+      assert.strictEqual(epm.getCached(trackMax, 'max'), null);
+
+      // 6. Medium, High, Low all resolve their exact requested quality
+      for (const q of ['low', 'medium', 'high']) {
+        const t = { id: `q_${q}`, platform: 'ytmusic', title: q };
+        const u = await pm.resolveStreamUrl(t, q);
+        assert.ok(u.includes(`q_${q}_${q}.m4a`));
+        assert.strictEqual(t._preloadedStreamQuality, q);
+      }
+
+      // 7. Direct YouTube resolver picks highest bitrate for max
+      const ytMock = http.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          playabilityStatus: { status: 'OK' },
+          streamingData: {
+            adaptiveFormats: [
+              { itag: 139, mimeType: 'audio/mp4; codecs="mp4a.40.5"', bitrate: 48000, url: 'https://example.com/low?sig=secret' },
+              { itag: 140, mimeType: 'audio/mp4; codecs="mp4a.40.2"', bitrate: 128000, url: 'https://example.com/med?sig=secret' },
+              { itag: 251, mimeType: 'audio/webm; codecs="opus"', bitrate: 160000, url: 'https://example.com/max?sig=secret' }
+            ]
+          }
+        }));
+      });
+      await new Promise(resolve => ytMock.listen(0, '127.0.0.1', resolve));
+      try {
+        const selected = await fetchDirectYoutubeStreamServer('dQw4w9WgXcQ', 'max', {
+          httpClient: http,
+          withMeta: true,
+          clients: [{ clientName: 'IOS', clientVersion: '20.10.4', userAgent: 'test', host: '127.0.0.1', port: ytMock.address().port }]
+        });
+        assert.ok(selected && selected.url.includes('/max'));
+        assert.strictEqual(selected.bitrate, 160000);
+        assert.strictEqual(selected.resolverPath, 'direct_youtube');
+      } finally {
+        await new Promise(resolve => ytMock.close(resolve));
+      }
+
+      // 8. Redacted diagnostics record quality metadata without signed URLs or cookies
+      networkDiagnostics.recordStreamInfo({
+        hit: false,
+        durationMs: 42,
+        qualityMeta: {
+          requestedQuality: 'max',
+          resolvedQuality: 'max',
+          resolverPath: 'direct_youtube',
+          mimeType: 'audio/webm; codecs="opus"',
+          bitrate: 160000,
+          cacheHit: false
+        }
+      });
+      const summary = networkDiagnostics.getSummary();
+      assert.strictEqual(summary.streamInfo.lastQualityResolution.requestedQuality, 'max');
+      assert.strictEqual(summary.streamInfo.lastQualityResolution.resolvedQuality, 'max');
+      assert.strictEqual(summary.streamInfo.lastQualityResolution.bitrate, 160000);
+      assert.strictEqual(JSON.stringify(summary.streamInfo.lastQualityResolution).includes('sig='), false);
+    } finally {
+      server.close();
+    }
   });
 });

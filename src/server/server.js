@@ -892,10 +892,29 @@ async function fetchDirectYoutubeStreamServer(videoId, quality = 'medium', optio
               pool = m4a.length > 0 ? m4a : webm.length > 0 ? webm : audioFormats;
               pool.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
             }
-            return resolve(pool[0].url);
+            const selected = pool[0];
+            if (options && options.withMeta) {
+              return resolve({
+                url: selected.url,
+                mimeType: selected.mimeType || null,
+                bitrate: Number.isFinite(selected.bitrate) ? selected.bitrate : null,
+                resolverPath: 'direct_youtube'
+              });
+            }
+            return resolve(selected.url);
           }
           const itag18 = muxed.find(f => f && f.itag === 18 && f.url && !f.signatureCipher && !f.cipher);
-          if (itag18) return resolve(itag18.url);
+          if (itag18) {
+            if (options && options.withMeta) {
+              return resolve({
+                url: itag18.url,
+                mimeType: itag18.mimeType || 'video/mp4',
+                bitrate: Number.isFinite(itag18.bitrate) ? itag18.bitrate : null,
+                resolverPath: 'direct_youtube_muxed'
+              });
+            }
+            return resolve(itag18.url);
+          }
           reject(new Error('no audio formats'));
         } catch (e) {
           reject(e);
@@ -2914,13 +2933,32 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
 
   const streamInfoStartMs = Date.now();
   const stageTimings = { cacheLookupMs: 0, directResolverMs: 0, ytDlpFallbackMs: 0, probeMs: 0 };
+  const resolutionMeta = {
+    requestedQuality: quality,
+    resolvedQuality: quality,
+    resolverPath: null,
+    mimeType: null,
+    bitrate: null
+  };
   const cacheKey = (cleanId || trackUrl || queryQ || `${artist}_${title}`).toLowerCase() + '_' + quality;
   if (!forShare && !forceYtDlp && cacheKey && (streamUrlCache.has(cacheKey) || (cleanId && streamUrlCache.has(cleanId + '_' + quality)))) {
     const cached = streamUrlCache.get(cacheKey) || (cleanId ? streamUrlCache.get(cleanId + '_' + quality) : null);
     const notExpired = cached && (cached.expiresAt ? Date.now() < cached.expiresAt : (Date.now() - cached.timestamp < 7200000));
     if (notExpired) {
       stageTimings.cacheLookupMs = Date.now() - streamInfoStartMs;
-      networkDiagnostics.recordStreamInfo({ hit: true, durationMs: stageTimings.cacheLookupMs, stage: stageTimings });
+      networkDiagnostics.recordStreamInfo({
+        hit: true,
+        durationMs: stageTimings.cacheLookupMs,
+        stage: stageTimings,
+        qualityMeta: {
+          requestedQuality: quality,
+          resolvedQuality: (cached.data && cached.data.resolvedQuality) || quality,
+          resolverPath: (cached.data && cached.data.resolverPath) || 'cache',
+          mimeType: (cached.data && cached.data.mimeType) || null,
+          bitrate: (cached.data && cached.data.bitrate) || null,
+          cacheHit: true
+        }
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       if (cleanId && networkScheduler.canRunBackgroundDownload()) {
         setTimeout(() => downloadTrackToDisk(trackUrl, cleanId, platform, meta), 45000);
@@ -2980,18 +3018,42 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
       }
       const isHls = url.includes('.m3u8');
       const proxyUrl = `http://127.0.0.1:${getActiveServerPort()}/api/audio-proxy?url=${encodeURIComponent(url)}`;
+      if (!resolutionMeta.mimeType) {
+        try {
+          const uObj = new URL(url);
+          const mimeParam = uObj.searchParams.get('mime');
+          if (mimeParam) resolutionMeta.mimeType = mimeParam;
+        } catch (_) {}
+      }
       const data = {
         success: true,
         isLocal: false,
         streamUrl: url,
         isHls: isHls,
-        proxyUrl: proxyUrl
+        proxyUrl: proxyUrl,
+        requestedQuality: resolutionMeta.requestedQuality,
+        resolvedQuality: resolutionMeta.resolvedQuality,
+        resolverPath: resolutionMeta.resolverPath || 'yt-dlp',
+        mimeType: resolutionMeta.mimeType || null,
+        bitrate: resolutionMeta.bitrate || null
       };
       const expiresAt = extractUpstreamExpiryMs(url) || (Date.now() + 7200000);
       if (resolvedId) data.resolvedId = resolvedId;
       if (cacheKey) streamUrlCache.set(cacheKey, { timestamp: Date.now(), expiresAt, data });
-      if (finalId && finalId !== cacheKey) streamUrlCache.set(finalId, { timestamp: Date.now(), expiresAt, data });
-      networkDiagnostics.recordStreamInfo({ hit: false, durationMs: Date.now() - streamInfoStartMs, stage: stageTimings });
+      if (finalId && (finalId + '_' + quality) !== cacheKey) streamUrlCache.set(finalId + '_' + quality, { timestamp: Date.now(), expiresAt, data });
+      networkDiagnostics.recordStreamInfo({
+        hit: false,
+        durationMs: Date.now() - streamInfoStartMs,
+        stage: stageTimings,
+        qualityMeta: {
+          requestedQuality: resolutionMeta.requestedQuality,
+          resolvedQuality: resolutionMeta.resolvedQuality,
+          resolverPath: data.resolverPath,
+          mimeType: data.mimeType,
+          bitrate: data.bitrate,
+          cacheHit: false
+        }
+      });
       if (finalId && networkScheduler.canRunBackgroundDownload()) {
         setTimeout(() => downloadTrackToDisk(trackUrl || `https://www.youtube.com/watch?v=${finalId}`, finalId, 'youtube', meta), 45000);
       }
@@ -3009,11 +3071,20 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
       if (!forceYtDlp) {
         const directStart = Date.now();
         try {
-          s = await networkScheduler.schedule({
+          const directRes = await networkScheduler.schedule({
             priority: streamPriority,
             signal: reqAbortController.signal,
-            fn: (signal) => fetchDirectYoutubeStreamServer(vid, quality, { signal })
+            fn: (signal) => fetchDirectYoutubeStreamServer(vid, quality, { signal, withMeta: true })
           });
+          if (directRes && typeof directRes === 'object' && directRes.url) {
+            s = directRes.url;
+            resolutionMeta.resolverPath = directRes.resolverPath || 'direct_youtube';
+            resolutionMeta.mimeType = directRes.mimeType || null;
+            resolutionMeta.bitrate = Number.isFinite(directRes.bitrate) ? directRes.bitrate : null;
+          } else if (typeof directRes === 'string') {
+            s = directRes;
+            resolutionMeta.resolverPath = 'direct_youtube';
+          }
         } catch (_) {}
         stageTimings.directResolverMs += Date.now() - directStart;
         if (s) return s;
