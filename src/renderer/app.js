@@ -21019,9 +21019,15 @@ function bindCoverHoldZoom(wrapEl) {
         latestUpdateInfo = { ...info };
       }
       if (isWaitingToRestart) {
-        setTimeout(() => {
+        setTimeout(async () => {
           if (window.electronAPI && window.electronAPI.installUpdateNow) {
-            window.electronAPI.installUpdateNow();
+            try {
+              await window.electronAPI.installUpdateNow();
+            } catch (err) {
+              isWaitingToRestart = false;
+              restoreButton();
+              showToast(err?.message || 'Failed to launch installer', 'error');
+            }
           } else if (window.electronAPI && window.electronAPI.updateAction) {
             window.electronAPI.updateAction('now');
           }
@@ -21052,22 +21058,14 @@ function bindCoverHoldZoom(wrapEl) {
     }
 
     if (api && api.onUpdateError) {
-      api.onUpdateError(() => {
+      api.onUpdateError((err) => {
         const wasManual = manualUpdateCheck;
         restoreButton();
         if (isWaitingToRestart) {
           isWaitingToRestart = false;
-          if (latestUpdateInfo?.htmlUrl) {
-            window.open(latestUpdateInfo.htmlUrl, '_blank');
-          } else {
-            try {
-              if (window.electronAPI && window.electronAPI.installUpdateNow) {
-                window.electronAPI.installUpdateNow();
-              }
-            } catch (_) {}
-          }
+          showToast(err?.message || 'Update installation failed', 'error');
         } else if (wasManual) {
-          showToast('Could not check for updates', 'error');
+          showToast(err?.message || 'Could not check for updates', 'error');
         }
       });
     }
@@ -21090,7 +21088,7 @@ function bindCoverHoldZoom(wrapEl) {
 
     const btnUpdateNow = document.getElementById('btn-update-now');
     if (btnUpdateNow) {
-      btnUpdateNow.addEventListener('click', () => {
+      btnUpdateNow.addEventListener('click', async () => {
         const sheet = document.getElementById('update-sheet-card');
         const spinnerBox = document.getElementById('update-center-spinner');
         const spinnerLabel = document.getElementById('update-spinner-label');
@@ -21101,7 +21099,13 @@ function bindCoverHoldZoom(wrapEl) {
         if (wrap) wrap.classList.remove('hidden');
 
         if (window.electronAPI && window.electronAPI.installUpdateNow) {
-          window.electronAPI.installUpdateNow();
+          try {
+            await window.electronAPI.installUpdateNow();
+          } catch (err) {
+            if (sheet) sheet.classList.remove('leaving');
+            if (spinnerBox) spinnerBox.classList.add('hidden');
+            showToast(err?.message || 'Failed to launch installer', 'error');
+          }
         } else if (window.electronAPI && window.electronAPI.updateAction) {
           window.electronAPI.updateAction('now');
         }

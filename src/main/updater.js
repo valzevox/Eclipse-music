@@ -501,14 +501,45 @@ function flushPlaybackResume(rendererWindow) {
   }
 }
 
+function inspectWindowsInstallLocations(execDir, existsFn = fs.existsSync) {
+  const candidates = [
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'Eclipse') : null,
+    'C:\\Program Files\\Eclipse',
+    'C:\\Program Files (x86)\\Eclipse'
+  ].filter(Boolean);
+
+  const normExec = path.resolve(execDir || '').toLowerCase();
+  const found = [];
+  const duplicates = [];
+  for (const dir of candidates) {
+    const exe = path.join(dir, 'Eclipse.exe');
+    if (existsFn(exe)) {
+      found.push(dir);
+      if (path.resolve(dir).toLowerCase() !== normExec) {
+        duplicates.push(dir);
+      }
+    }
+  }
+  return { found, duplicates };
+}
+
+function emitInstallerError(getWindow, message) {
+  try {
+    const win = typeof getWindow === 'function' ? getWindow() : null;
+    if (win && !win.isDestroyed() && win.webContents) {
+      win.webContents.send('update-error', { stage: 'install', message });
+    }
+  } catch (_) {}
+}
+
 async function executeInstaller(installerPath, hooks = {}, getWindow = null) {
   if (isApplyingUpdate) {
     logStage('apply', 'executeInstaller already running. Skipping re-entrant call.');
-    return;
+    return { ok: false, skipped: true };
   }
   if (isSystemShuttingDown) {
     logStage('apply', 'System is shutting down. Skipping installer execution to avoid corruption.');
-    return;
+    return { ok: false, skipped: true };
   }
 
   isApplyingUpdate = true;
@@ -521,12 +552,15 @@ async function executeInstaller(installerPath, hooks = {}, getWindow = null) {
       const ok = verifyBufferSha512Base64(fileBuf, pendingExpectedSha512);
       if (!ok) {
         isApplyingUpdate = false;
-        throw new Error('sha512 mismatch on pre-install verification! Installer file corrupted or tampered.');
+        const msg = 'sha512 mismatch on pre-install verification! Installer file corrupted or tampered.';
+        emitInstallerError(getWindow, msg);
+        throw new Error(msg);
       }
       logStage('apply', 'Pre-install sha512 verification passed.');
     } catch (verr) {
       isApplyingUpdate = false;
       logStage('apply-error', `Pre-install sha512 check failed: ${verr.message}`);
+      emitInstallerError(getWindow, verr.message);
       throw verr;
     }
   }
@@ -535,41 +569,143 @@ async function executeInstaller(installerPath, hooks = {}, getWindow = null) {
 
   try { if (hooks && typeof hooks.beforeExit === 'function') hooks.beforeExit(); } catch (_) {}
 
-  if (process.platform === 'win32') {
-    const execPath = process.execPath;
+  const platform = (hooks && hooks.platform) || process.platform;
+  if (platform === 'win32') {
+    const execPath = (hooks && hooks.execPath) || process.execPath;
     const execDir = path.dirname(execPath);
-    const isUnpacked = fs.existsSync(path.join(execDir, 'resources', 'app.asar'));
+    const existsFn = (hooks && typeof hooks.existsSync === 'function') ? hooks.existsSync : fs.existsSync;
+    const isUnpacked = existsFn(path.join(execDir, 'resources', 'app.asar'));
     const pid = process.pid;
 
-    // electron-builder NSIS: --force-run relaunches the app after a silent install.
-    // Spawning the installer directly (no cmd/bat) removes console popups; NSIS itself waits for/closes the running app.
-    // /D= must be last and unquoted (NSIS rule).
-    const args = ['/S', '--force-run'];
-    if (isUnpacked) args.push('/D=' + execDir);
+    // electron-builder NSIS: --updated + /S + --force-run, with /D=<execDir> last and unquoted.
+    const args = ['--updated', '/S', '--force-run'];
+    if (isUnpacked) {
+      args.push('/D=' + execDir);
+    }
+    const installDir = isUnpacked ? execDir : null;
 
-    // Mark clean exit before handing off to installer so crash-guard never counts this as a crash
-    try {
-      const st = readUpdateState();
-      st.startedOk = true;
-      st.consecutiveCrashes = 0;
-      writeUpdateState(st);
-    } catch (_) {}
+    const locInfo = inspectWindowsInstallLocations(execDir, existsFn);
+    logStage('apply', 'Pre-install path & duplicate check', {
+      execPath,
+      execDir,
+      pendingInstallerPath: installerPath,
+      targetVersion: pendingTargetVersion,
+      args,
+      installDir,
+      foundInstallations: locInfo.found,
+      duplicateInstallations: locInfo.duplicates
+    });
+    if (locInfo.duplicates.length > 0) {
+      logStage('apply-warning', 'Duplicate Eclipse installations detected outside active execDir', {
+        execDir,
+        duplicates: locInfo.duplicates
+      });
+    }
 
-    const child = spawn(installerPath, args, { detached: true, stdio: 'ignore', windowsHide: true });
-    child.unref();
+    const spawnFn = (hooks && typeof hooks.spawnImpl === 'function') ? hooks.spawnImpl : spawn;
+    const exitFn = (hooks && typeof hooks.exitImpl === 'function')
+      ? hooks.exitImpl
+      : (code) => { try { app.exit(code); } catch (_) { process.exit(code); } };
+    const handoffDelayMs = (hooks && Number.isFinite(hooks.handoffDelayMs)) ? hooks.handoffDelayMs : 200;
 
-    logStage('apply', 'Spawned installer directly with --force-run. Exiting app (0).', { args, pid });
-    setTimeout(() => { try { app.exit(0); } catch (_) { process.exit(0); } }, 200);
-    return;
+    return await new Promise((resolve, reject) => {
+      let settled = false;
+      let spawned = false;
+      let earlyExit = false;
+      let handoffTimer = null;
+
+      let child;
+      try {
+        child = spawnFn(installerPath, args, { detached: true, stdio: 'ignore', windowsHide: true });
+      } catch (syncErr) {
+        isApplyingUpdate = false;
+        logStage('installer-error', 'Synchronous spawn failure', {
+          code: syncErr.code || null,
+          message: syncErr.message,
+          installerPath
+        });
+        logStage('install-failed', 'Installer failed to start', { code: syncErr.code || null, message: syncErr.message });
+        emitInstallerError(getWindow, `Installer failed to start: ${syncErr.message}`);
+        return reject(syncErr);
+      }
+
+      const fail = (err, stage = 'installer-error') => {
+        if (handoffTimer) { clearTimeout(handoffTimer); handoffTimer = null; }
+        if (settled) return;
+        settled = true;
+        isApplyingUpdate = false;
+        logStage(stage, err.message, { code: err.code || null, installerPath });
+        logStage('install-failed', err.message, { code: err.code || null, installerPath });
+        emitInstallerError(getWindow, err.message);
+        reject(err);
+      };
+
+      child.once('error', (err) => {
+        fail(err, 'installer-error');
+      });
+
+      const onExitOrClose = (eventName, code, signal) => {
+        logStage('installer-exit', `Installer ${eventName}`, {
+          exitCode: code,
+          signal: signal || null,
+          installerPath
+        });
+        if (!settled && code !== 0) {
+          earlyExit = true;
+          const err = new Error(`Installer exited with code ${code}${signal ? ` (signal ${signal})` : ''}`);
+          err.exitCode = code;
+          fail(err, 'installer-exit');
+        }
+      };
+
+      child.once('exit', (code, signal) => onExitOrClose('exit', code, signal));
+      child.once('close', (code, signal) => onExitOrClose('close', code, signal));
+
+      child.once('spawn', () => {
+        spawned = true;
+        logStage('installer-spawn', 'NSIS installer process spawned', {
+          pid: child.pid || null,
+          parentPid: pid,
+          installerPath,
+          args
+        });
+
+        // Mark clean exit before handing off to installer so crash-guard never counts this as a crash
+        try {
+          const st = readUpdateState();
+          st.startedOk = true;
+          st.consecutiveCrashes = 0;
+          writeUpdateState(st);
+        } catch (_) {}
+
+        try { if (typeof child.unref === 'function') child.unref(); } catch (_) {}
+
+        handoffTimer = setTimeout(() => {
+          if (earlyExit || settled || !spawned) return;
+          settled = true;
+          logStage('install-success', 'Installer handoff confirmed; exiting app for update', {
+            pid: child.pid || null,
+            installDir,
+            args
+          });
+          exitFn(0);
+          resolve({ ok: true, pid: child.pid || null, args, installDir });
+        }, handoffDelayMs);
+      });
+    });
   }
 
   // Linux AppImage / macOS
   const err = await shell.openPath(installerPath);
   if (err) {
     isApplyingUpdate = false;
+    logStage('install-failed', `Could not launch installer: ${err}`, { installerPath });
+    emitInstallerError(getWindow, `Could not launch installer: ${err}`);
     throw new Error(`Could not launch installer: ${err}`);
   }
+  logStage('install-success', 'Launched non-Windows installer via shell.openPath', { installerPath });
   setTimeout(() => { try { app.exit(0); } catch (_) { process.exit(0); } }, 500);
+  return { ok: true };
 }
 
 async function checkAndUpdateYtDlp() {
@@ -883,7 +1019,9 @@ function initUpdater(getWindow, hooks = {}) {
     }
     if (pendingInstallerPath && fs.existsSync(pendingInstallerPath)) {
       logStage('apply', 'Triggering pending update during app before-quit');
-      executeInstaller(pendingInstallerPath, hooks, getWindow);
+      executeInstaller(pendingInstallerPath, hooks, getWindow).catch((err) => {
+        logStage('install-failed', 'before-quit installer failed', { message: err.message });
+      });
     }
   });
 

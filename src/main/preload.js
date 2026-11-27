@@ -70,11 +70,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkForUpdates: () => ipcRenderer.invoke('update-check'),
   cleanOldVersions: () => ipcRenderer.invoke('clean-old-versions'),
   updateAction: (action) => ipcRenderer.send('update-action', action),
-  installUpdateNow: () => {
-    try { ipcRenderer.invoke('install-update-now'); } catch (_) {}
-    try { ipcRenderer.send('install-update-now'); } catch (_) {}
-    try { ipcRenderer.send('update-action', 'now'); } catch (_) {}
-  },
+  installUpdateNow: () => ipcRenderer.invoke('install-update-now'),
   installUpdateOnQuit: () => ipcRenderer.invoke('install-update-on-quit'),
   syncPlaybackState: (state) => ipcRenderer.send('playback-state-sync', state),
   onPlaybackPersistReq: (cb) => ipcRenderer.on('playback-persist-req', () => cb()),

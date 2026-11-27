@@ -233,7 +233,12 @@
         if (laterBtn) laterBtn.style.display = 'none';
         if (progWrap) progWrap.style.display = 'flex';
 
-        window.electronAPI.installUpdateNow();
+        Promise.resolve(window.electronAPI.installUpdateNow()).catch((err) => {
+          goBtn.disabled = false;
+          goBtn.style.opacity = '1';
+          if (laterBtn) laterBtn.style.display = '';
+          if (statusTxt) statusTxt.textContent = (err && err.message) ? err.message : 'Failed to launch installer';
+        });
         return;
       }
 

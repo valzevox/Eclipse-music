@@ -170,6 +170,8 @@ function loadUpdaterWithMocks({ version = '1.5.0', fetchImpl, platform = 'win32'
 
   updater.initUpdater(() => mockWin);
   return {
+    updater,
+    mockWin,
     ipcHandlers,
     sentEvents,
     cleanup: () => {
@@ -748,5 +750,157 @@ for (const { platform, arch, expectedAsset } of [
     }
   });
 }
+
+// Test 11: P0-1..P0-5 — executeInstaller NSIS args, spawn lifecycle, error/exit handling
+const { EventEmitter } = require('events');
+
+function createMockChild() {
+  const child = new EventEmitter();
+  child.pid = 42424;
+  child.unrefCalled = false;
+  child.unref = () => { child.unrefCalled = true; };
+  return child;
+}
+
+test('executeInstaller passes --updated, /S, --force-run and unquoted /D= last, and exits only after spawn', async () => {
+  const { updater, mockWin, cleanup } = loadUpdaterWithMocks({ version: '1.5.0', fetchImpl: async () => textResponse(404, '') });
+  try {
+    let capturedArgs = null;
+    let exitCode = null;
+    let spawnedBeforeExit = false;
+    const child = createMockChild();
+
+    const p = updater.executeInstaller('C:\\Temp\\eclipse-1.5.1-win-x64.exe', {
+      platform: 'win32',
+      execPath: 'C:\\Users\\Test\\AppData\\Local\\Programs\\Eclipse\\Eclipse.exe',
+      existsSync: (p) => p.endsWith('app.asar'),
+      handoffDelayMs: 10,
+      spawnImpl: (_exe, args) => {
+        capturedArgs = args;
+        setTimeout(() => {
+          assert.strictEqual(exitCode, null, 'Must NOT exit app before spawn event');
+          spawnedBeforeExit = true;
+          child.emit('spawn');
+        }, 5);
+        return child;
+      },
+      exitImpl: (code) => { exitCode = code; }
+    }, () => mockWin);
+
+    const res = await p;
+    assert.strictEqual(res.ok, true);
+    assert.strictEqual(spawnedBeforeExit, true);
+    assert.strictEqual(exitCode, 0);
+    assert.strictEqual(child.unrefCalled, true);
+    assert.deepStrictEqual(capturedArgs.slice(0, 3), ['--updated', '/S', '--force-run']);
+    assert.strictEqual(capturedArgs[capturedArgs.length - 1], '/D=C:\\Users\\Test\\AppData\\Local\\Programs\\Eclipse');
+    assert.ok(!capturedArgs[capturedArgs.length - 1].includes('"'), '/D= must be unquoted');
+  } finally {
+    cleanup();
+  }
+});
+
+for (const errCode of ['ENOENT', 'EACCES']) {
+  test(`executeInstaller on spawn ${errCode} keeps app open, resets isApplyingUpdate, and emits update-error`, async () => {
+    const { updater, mockWin, sentEvents, cleanup } = loadUpdaterWithMocks({ version: '1.5.0', fetchImpl: async () => textResponse(404, '') });
+    try {
+      let exitCalled = false;
+      let attempts = 0;
+      const runAttempt = () => updater.executeInstaller('C:\\Temp\\missing.exe', {
+        platform: 'win32',
+        execPath: 'C:\\Program Files\\Eclipse\\Eclipse.exe',
+        existsSync: () => true,
+        handoffDelayMs: 10,
+        spawnImpl: () => {
+          attempts++;
+          const child = createMockChild();
+          setTimeout(() => {
+            const err = new Error(`spawn ${errCode}`);
+            err.code = errCode;
+            child.emit('error', err);
+          }, 5);
+          return child;
+        },
+        exitImpl: () => { exitCalled = true; }
+      }, () => mockWin);
+
+      await assert.rejects(runAttempt, new RegExp(errCode));
+      assert.strictEqual(exitCalled, false, 'Must NOT exit app on spawn error');
+      assert.strictEqual(sentEvents.filter(e => e.channel === 'update-error').length, 1);
+
+      // Verify isApplyingUpdate was reset so user can retry
+      await assert.rejects(runAttempt, new RegExp(errCode));
+      assert.strictEqual(attempts, 2, 'isApplyingUpdate must reset after spawn error');
+    } finally {
+      cleanup();
+    }
+  });
+}
+
+test('executeInstaller on non-zero exit before handoff keeps app open and emits update-error', async () => {
+  const { updater, mockWin, sentEvents, cleanup } = loadUpdaterWithMocks({ version: '1.5.0', fetchImpl: async () => textResponse(404, '') });
+  try {
+    let exitCalled = false;
+    const child = createMockChild();
+    await assert.rejects(
+      updater.executeInstaller('C:\\Temp\\bad.exe', {
+        platform: 'win32',
+        execPath: 'C:\\Program Files\\Eclipse\\Eclipse.exe',
+        existsSync: () => true,
+        handoffDelayMs: 30,
+        spawnImpl: () => {
+          setTimeout(() => {
+            child.emit('spawn');
+            child.emit('exit', 2, null);
+          }, 5);
+          return child;
+        },
+        exitImpl: () => { exitCalled = true; }
+      }, () => mockWin),
+      /exited with code 2/
+    );
+    assert.strictEqual(exitCalled, false, 'Must NOT exit app when installer exits non-zero');
+    assert.strictEqual(sentEvents.filter(e => e.channel === 'update-error').length, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test('Download completion alone emits update-ready without exiting app or claiming install success', async () => {
+  const payload = Buffer.from('fake-installer-bytes');
+  const sha512 = crypto.createHash('sha512').update(payload).digest('base64');
+  const { ipcHandlers, sentEvents, cleanup } = loadUpdaterWithMocks({
+    version: '1.5.0',
+    platform: 'win32',
+    arch: 'x64',
+    fetchImpl: async (url) => {
+      if (url.endsWith('latest.yml')) {
+        return textResponse(200, `version: 1.5.1\nfiles:\n  - url: eclipse-1.5.1-win-x64.exe\n    sha512: ${sha512}\n    size: ${payload.length}\npath: eclipse-1.5.1-win-x64.exe\nsha512: ${sha512}\n`);
+      }
+      if (url.endsWith('eclipse-1.5.1-win-x64.exe')) {
+        return {
+          status: 200,
+          ok: true,
+          headers: { get: () => String(payload.length) },
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(payload));
+              controller.close();
+            }
+          })
+        };
+      }
+      return textResponse(404, 'Not Found');
+    }
+  });
+  try {
+    await ipcHandlers.get('update-check')();
+    const res = await ipcHandlers.get('install-update-now')();
+    assert.strictEqual(res.status, 'ready');
+    assert.strictEqual(sentEvents.filter(e => e.channel === 'update-ready').length, 1);
+  } finally {
+    cleanup();
+  }
+});
 
 console.log('ALL PHASE 0 UNIT TESTS PASSED SUCCESSFULLY (EXIT 0)');
