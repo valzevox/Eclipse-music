@@ -74,6 +74,22 @@ class PreloadManager {
       this.preloadedStreams.delete(cacheKey);
     }
 
+    // Reuse shared EclipsePreloadManager cache to avoid duplicate stream-info & warm-up
+    const sharedMgr = typeof globalThis !== 'undefined' ? globalThis.__eclipsePreloadManager : null;
+    if (sharedMgr && typeof sharedMgr.getCached === 'function') {
+      const shared = sharedMgr.getCached(track, reqQuality);
+      const sharedUrl = shared && (shared.proxyUrl || shared.streamUrl);
+      if (sharedUrl) {
+        const expires = Date.now() + 3600 * 1000;
+        track._preloadedStreamUrl = sharedUrl;
+        track._preloadedStreamQuality = reqQuality;
+        track._preloadedStreamPlatform = platform;
+        track._preloadedStreamUrlExpires = expires;
+        this.warmUpBuffer(sharedUrl);
+        return sharedUrl;
+      }
+    }
+
     const qFallback = encodeURIComponent(track.searchQuery || ((track.artist ? track.artist + ' - ' : '') + (track.title || '')));
     const tkn = this.token || (typeof window !== 'undefined' && window.electronAPI?.serverToken) || '';
     const url = `${this.apiBase}/api/stream-info?id=${encodeURIComponent(trackId)}&url=${encodeURIComponent(track.url || '')}&platform=${encodeURIComponent(platform)}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&q=${qFallback}&quality=${encodeURIComponent(reqQuality)}&token=${encodeURIComponent(tkn)}&t=${encodeURIComponent(tkn)}`;
@@ -117,12 +133,26 @@ class PreloadManager {
 
   warmUpBuffer(streamUrl) {
     if (!streamUrl || typeof streamUrl !== 'string' || streamUrl.includes('.m3u8')) return;
+    const warmed = (globalThis.__eclipseWarmedUrls = globalThis.__eclipseWarmedUrls || new Map());
+    const prevTs = warmed.get(streamUrl);
+    if (prevTs && Date.now() - prevTs < 30 * 60 * 1000) return;
+    let warmBytes = 262144;
+    if (typeof navigator !== 'undefined' && navigator.connection) {
+      const conn = navigator.connection;
+      if (conn.saveData || conn.effectiveType === 'slow-2g' || conn.effectiveType === '2g' || conn.effectiveType === '3g' || (Number.isFinite(conn.downlink) && conn.downlink > 0 && conn.downlink < 5)) {
+        warmBytes = 65536;
+      }
+    }
     try {
+      warmed.set(streamUrl, Date.now());
+      if (warmed.size > 64) warmed.delete(warmed.keys().next().value);
       fetch(streamUrl, {
-        headers: { 'Range': 'bytes=0-262143' },
+        headers: { 'Range': `bytes=0-${warmBytes - 1}`, 'X-Eclipse-Prefetch': '1' },
         signal: this.abortController ? this.abortController.signal : undefined
-      }).catch(() => {});
-    } catch (_) {}
+      }).catch(() => { warmed.delete(streamUrl); });
+    } catch (_) {
+      warmed.delete(streamUrl);
+    }
   }
 
   async fetchSponsorSegments(track) {

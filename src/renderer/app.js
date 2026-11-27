@@ -4867,7 +4867,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 async function playTrack(track, queueList = null, startIndex = -1, context = null) {
   try { checkDonatePromptMilestone(); } catch (_) {}
-    if (track) track._errorRetryStage = 0;
+    if (track) {
+      track._errorRetryStage = 0;
+      track._playStartPerfMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      track._firstAudibleRecorded = false;
+      track._firstBufferedRecorded = false;
+    }
     if (track && track.artist) track.artist = stripYoutubeTopic(track.artist);
     preloadedTrack10sFired = false;
     lastDisplayedSec = -1;
@@ -9286,6 +9291,14 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
     el.nativeAudio.addEventListener('waiting', () => {
       updatePlayPauseButton(state.isPlaying, true);
+      state._waitingStartedAt = Date.now();
+      if (state.serverPort) {
+        fetch(`http://127.0.0.1:${state.serverPort}/api/network-diagnostics`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ playbackBuffering: true })
+        }).catch(() => {});
+      }
     });
 
     function prefetchNextQueueTrack() {
@@ -9299,6 +9312,24 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       state.isPlaying = true;
       document.body.classList.add('is-playing');
       updatePlayPauseButton(true, false);
+      if (state.serverPort) {
+        const payload = { playbackBuffering: false };
+        if (state._waitingStartedAt) {
+          payload.waitingDeltaMs = Math.max(0, Date.now() - state._waitingStartedAt);
+          state._waitingStartedAt = 0;
+        }
+        const cur = state.currentTrack;
+        if (cur && !cur._firstAudibleRecorded && Number.isFinite(cur._playStartPerfMs)) {
+          cur._firstAudibleRecorded = true;
+          const nowPerf = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+          payload.firstAudibleMs = Math.max(0, nowPerf - cur._playStartPerfMs);
+        }
+        fetch(`http://127.0.0.1:${state.serverPort}/api/network-diagnostics`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }).catch(() => {});
+      }
       // Start resolving the next track as soon as playback begins instead of
       // waiting 10s, so the following track starts without a pause.
       if (!preloadedTrack10sFired) {
@@ -9309,6 +9340,16 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
     el.nativeAudio.addEventListener('canplay', () => {
       updatePlayPauseButton(state.isPlaying, false);
+      const cur = state.currentTrack;
+      if (state.serverPort && cur && !cur._firstBufferedRecorded && Number.isFinite(cur._playStartPerfMs)) {
+        cur._firstBufferedRecorded = true;
+        const nowPerf = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        fetch(`http://127.0.0.1:${state.serverPort}/api/network-diagnostics`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ firstBufferedMs: Math.max(0, nowPerf - cur._playStartPerfMs) })
+        }).catch(() => {});
+      }
       if (audioEngine && typeof audioEngine.applySettings === 'function') {
         audioEngine.applySettings(el.nativeAudio);
       }
@@ -27408,6 +27449,15 @@ function bindCoverHoldZoom(wrapEl) {
           vibeGrid.style.transition = 'opacity 250ms ease';
           vibeGrid.style.opacity = '1';
         }
+      }
+      if (state.serverPort && !state._homeReadyReported) {
+        state._homeReadyReported = true;
+        const nowPerf = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        fetch(`http://127.0.0.1:${state.serverPort}/api/network-diagnostics`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ homeReadyMs: Math.round(nowPerf) })
+        }).catch(() => {});
       }
       return true;
     } catch (err) {

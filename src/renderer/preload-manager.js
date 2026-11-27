@@ -254,16 +254,33 @@ class EclipsePreloadManager {
     return data;
   }
 
+  _getAdaptiveWarmUpBytes() {
+    if (typeof navigator !== 'undefined' && navigator.connection) {
+      const conn = navigator.connection;
+      if (conn.saveData || conn.effectiveType === 'slow-2g' || conn.effectiveType === '2g' || conn.effectiveType === '3g' || (Number.isFinite(conn.downlink) && conn.downlink > 0 && conn.downlink < 5)) {
+        return 65536; // 64 KiB on constrained Wi-Fi
+      }
+    }
+    return this.rangeWarmUpBytes || 262144;
+  }
+
   async _warmUpRange(url, signal) {
     if (!url || typeof url !== 'string' || url.includes('.m3u8')) return;
+    const warmed = (globalThis.__eclipseWarmedUrls = globalThis.__eclipseWarmedUrls || new Map());
+    const prevTs = warmed.get(url);
+    if (prevTs && Date.now() - prevTs < this.cacheTtlMs) return;
     try {
-      // Warm up first 256 KiB
-      const endByte = this.rangeWarmUpBytes - 1;
+      const warmBytes = this._getAdaptiveWarmUpBytes();
+      const endByte = warmBytes - 1;
+      warmed.set(url, Date.now());
+      if (warmed.size > 64) warmed.delete(warmed.keys().next().value);
       await fetch(url, {
-        headers: { 'Range': `bytes=0-${endByte}` },
+        headers: { 'Range': `bytes=0-${endByte}`, 'X-Eclipse-Prefetch': '1' },
         signal
       });
-    } catch (_) {}
+    } catch (_) {
+      warmed.delete(url);
+    }
   }
 }
 

@@ -33,6 +33,15 @@ const ytmCharts = require('./ytm-charts');
 const ytmArtistFull = require('./ytm-artist-full');
 const ytmDiscovery = require('./ytm-discovery');
 const ytmMv = require('./ytm-mv');
+const { NetworkPriorityScheduler, Priority } = require('./network-scheduler');
+const { NetworkDiagnostics } = require('./network-diagnostics');
+const { AdaptiveRangeCache, parseRangeHeader, extractUpstreamExpiryMs } = require('./range-cache');
+const { StaleFirstArtworkCache } = require('./artwork-cache');
+
+const networkScheduler = new NetworkPriorityScheduler({ profile: 'normal', autoCacheEnabled: false });
+const networkDiagnostics = new NetworkDiagnostics();
+const adaptiveRangeCache = new AdaptiveRangeCache({ maxTotalBytes: 32 * 1024 * 1024, maxEntries: 64 });
+const artworkCache = new StaleFirstArtworkCache({ maxConcurrent: 4 });
 const storageManager = require('./storage-manager');
 const qrTransfer = require('./qr-session-transfer');
 
@@ -1983,6 +1992,9 @@ async function cacheThumbnailToDisk(cleanId, thumbnailUrl) {
 
 async function downloadTrackToDisk(trackUrl, trackId, platform, meta = {}) {
   const cleanId = cleanTrackId(trackId);
+  if (!networkScheduler.canRunBackgroundDownload({ explicitOptIn: Boolean(meta && meta.explicitOptIn) })) {
+    return;
+  }
   if (downloadingSet.has(cleanId) || await findCachedFile(cleanId)) return;
   downloadingSet.add(cleanId);
 
@@ -2853,12 +2865,17 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
     return res.end(JSON.stringify(data));
   }
 
+  const streamInfoStartMs = Date.now();
   const cacheKey = (cleanId || trackUrl || queryQ || `${artist}_${title}`).toLowerCase() + '_' + quality;
   if (!forShare && !forceYtDlp && cacheKey && (streamUrlCache.has(cacheKey) || (cleanId && streamUrlCache.has(cleanId + '_' + quality)))) {
     const cached = streamUrlCache.get(cacheKey) || (cleanId ? streamUrlCache.get(cleanId + '_' + quality) : null);
-    if (cached && (Date.now() - cached.timestamp < 7200000)) {
+    const notExpired = cached && (cached.expiresAt ? Date.now() < cached.expiresAt : (Date.now() - cached.timestamp < 7200000));
+    if (notExpired) {
+      networkDiagnostics.recordStreamInfo({ hit: true, durationMs: Date.now() - streamInfoStartMs });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      if (cleanId) setTimeout(() => downloadTrackToDisk(trackUrl, cleanId, platform, meta), 45000);
+      if (cleanId && networkScheduler.canRunBackgroundDownload()) {
+        setTimeout(() => downloadTrackToDisk(trackUrl, cleanId, platform, meta), 45000);
+      }
       return res.end(JSON.stringify(cached.data));
     }
   }
@@ -2920,10 +2937,14 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
         isHls: isHls,
         proxyUrl: proxyUrl
       };
+      const expiresAt = extractUpstreamExpiryMs(url) || (Date.now() + 7200000);
       if (resolvedId) data.resolvedId = resolvedId;
-      if (cacheKey) streamUrlCache.set(cacheKey, { timestamp: Date.now(), data });
-      if (finalId && finalId !== cacheKey) streamUrlCache.set(finalId, { timestamp: Date.now(), data });
-      if (finalId) setTimeout(() => downloadTrackToDisk(trackUrl || `https://www.youtube.com/watch?v=${finalId}`, finalId, 'youtube', meta), 45000);
+      if (cacheKey) streamUrlCache.set(cacheKey, { timestamp: Date.now(), expiresAt, data });
+      if (finalId && finalId !== cacheKey) streamUrlCache.set(finalId, { timestamp: Date.now(), expiresAt, data });
+      networkDiagnostics.recordStreamInfo({ hit: false, durationMs: Date.now() - streamInfoStartMs });
+      if (finalId && networkScheduler.canRunBackgroundDownload()) {
+        setTimeout(() => downloadTrackToDisk(trackUrl || `https://www.youtube.com/watch?v=${finalId}`, finalId, 'youtube', meta), 45000);
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify(data));
     };
@@ -3282,9 +3303,13 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
     proxyUrl: proxyUrl
   };
 
-  if (cacheKey) streamUrlCache.set(cacheKey, { timestamp: Date.now(), data });
-  if (cleanId && cleanId !== cacheKey) streamUrlCache.set(cleanId, { timestamp: Date.now(), data });
-  if (cleanId) setTimeout(() => downloadTrackToDisk(trackUrl, cleanId, platform, meta), 45000);
+  const expiresAt = extractUpstreamExpiryMs(streamUrl) || (Date.now() + 7200000);
+  if (cacheKey) streamUrlCache.set(cacheKey, { timestamp: Date.now(), expiresAt, data });
+  if (cleanId && cleanId !== cacheKey) streamUrlCache.set(cleanId, { timestamp: Date.now(), expiresAt, data });
+  networkDiagnostics.recordStreamInfo({ hit: false, durationMs: Date.now() - streamInfoStartMs });
+  if (cleanId && networkScheduler.canRunBackgroundDownload()) {
+    setTimeout(() => downloadTrackToDisk(trackUrl, cleanId, platform, meta), 45000);
+  }
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
@@ -3958,24 +3983,29 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
     const isGv = hostLower.endsWith('googlevideo.com');
     const pinnedIp = ssrfCheck.pinnedAddress;
 
-    // Check if initial chunk cache (first 256 KiB) is available for exact Range match
+    // Check generalized seek-aware range cache (supports any contained finite range or complete tail)
     const rangeHdr = forward['range'] || '';
-    if (rangeHdr && req.method === 'GET' && streamInitialChunkCache.has(targetUrl)) {
-      const cachedChunk = streamInitialChunkCache.get(targetUrl);
-      if (cachedChunk && (Date.now() - cachedChunk.timestamp < 30 * 60 * 1000)) {
-        if (rangeHdr === 'bytes=0-262143') {
-          // Exact match for the warm-up probe
-          res.writeHead(206, {
-            'Content-Type': cachedChunk.contentType || 'audio/mp4',
-            'Content-Length': String(cachedChunk.buffer.length),
-            'Content-Range': `bytes 0-${cachedChunk.buffer.length - 1}/${cachedChunk.totalLength || '*'}`,
-            'Accept-Ranges': 'bytes',
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Headers': '*',
-            'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges'
-          });
-          return res.end(cachedChunk.buffer);
-        }
+    const proxyStartMs = Date.now();
+    if (rangeHdr && req.method === 'GET') {
+      const cachedRange = adaptiveRangeCache.get(targetUrl, rangeHdr);
+      if (cachedRange) {
+        networkDiagnostics.recordProxyRequest({
+          cacheHit: true,
+          upstreamStatus: 206,
+          ttfbMs: Date.now() - proxyStartMs,
+          bytes: cachedRange.buffer.length,
+          category: 'playback'
+        });
+        res.writeHead(206, {
+          'Content-Type': cachedRange.contentType || 'audio/mp4',
+          'Content-Length': String(cachedRange.buffer.length),
+          'Content-Range': `bytes ${cachedRange.start}-${cachedRange.end}/${cachedRange.totalLength || '*'}`,
+          'Accept-Ranges': 'bytes',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Headers': '*',
+          'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges'
+        });
+        return res.end(cachedRange.buffer);
       }
     }
 
@@ -4015,9 +4045,22 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
       if (proxyRes.statusCode >= 400) {
         evictStreamCache(initialUrl);
         evictStreamCache(targetUrl);
+        adaptiveRangeCache.evictUrl(targetUrl);
+        networkDiagnostics.recordProxyRequest({
+          cacheHit: false,
+          upstreamStatus: proxyRes.statusCode,
+          ttfbMs: Date.now() - proxyStartMs,
+          bytes: 0,
+          category: req.headers['x-eclipse-prefetch'] ? 'prefetch' : 'playback'
+        });
         proxyRes.resume();
-        res.writeHead(502, { 'Access-Control-Allow-Origin': '*' });
-        return res.end('Upstream error');
+        const isExpired = proxyRes.statusCode === 403 || proxyRes.statusCode === 410;
+        res.writeHead(isExpired ? 403 : 502, {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Expose-Headers': 'X-Eclipse-Stream-Expired',
+          ...(isExpired ? { 'X-Eclipse-Stream-Expired': '1' } : {})
+        });
+        return res.end(isExpired ? 'Upstream stream expired' : 'Upstream error');
       }
       const outHeaders = Object.assign({}, proxyRes.headers);
       delete outHeaders['access-control-allow-origin'];
@@ -4030,28 +4073,34 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
 
       res.writeHead(proxyRes.statusCode || 200, outHeaders);
 
-      // If this request was a 256 KiB warm-up probe (Range: bytes=0-262143), record the chunk into streamInitialChunkCache
-      const isWarmProbe = rangeHdr === 'bytes=0-262143' && proxyRes.statusCode === 206;
-      if (isWarmProbe) {
+      const ttfbMs = Date.now() - proxyStartMs;
+      const parsedReqRange = parseRangeHeader(rangeHdr);
+      const isCacheableRange = proxyRes.statusCode === 206 && parsedReqRange && !parsedReqRange.openEnded && (parsedReqRange.end - parsedReqRange.start + 1) <= 1024 * 1024;
+      if (isCacheableRange) {
         const chunks = [];
         const cType = proxyRes.headers['content-type'] || 'audio/mp4';
         const cRange = proxyRes.headers['content-range'] || '';
         const totalLen = cRange.includes('/') ? cRange.split('/')[1] : '*';
+        const rangeMatch = /^bytes\s+(\d+)-(\d+)\//i.exec(cRange);
+        const spanStart = rangeMatch ? Number(rangeMatch[1]) : parsedReqRange.start;
         proxyRes.on('data', c => {
           chunks.push(c);
           res.write(c);
         });
         proxyRes.on('end', () => {
           const buf = Buffer.concat(chunks);
-          if (streamInitialChunkCache.size >= 25) {
-            const first = streamInitialChunkCache.keys().next().value;
-            streamInitialChunkCache.delete(first);
-          }
-          streamInitialChunkCache.set(targetUrl, {
+          adaptiveRangeCache.put(targetUrl, {
+            start: spanStart,
             buffer: buf,
             contentType: cType,
-            totalLength: totalLen,
-            timestamp: Date.now()
+            totalLength: totalLen
+          });
+          networkDiagnostics.recordProxyRequest({
+            cacheHit: false,
+            upstreamStatus: proxyRes.statusCode,
+            ttfbMs,
+            bytes: buf.length,
+            category: req.headers['x-eclipse-prefetch'] ? 'prefetch' : 'playback'
           });
           res.end();
         });
@@ -10706,27 +10755,51 @@ if (parsedUrl.pathname === '/api/ytm/intercept-cookie' && req.method === 'POST')
     const key = crypto.createHash('sha1').update(target).digest('hex');
     const cachePath = path.join(THUMBNAILS_DIR, `proxy-${key}.img`);
     let buffer = null;
-    try {
-      if (fs.existsSync(cachePath)) buffer = await fs.promises.readFile(cachePath);
-    } catch (e) {}
-    let host = '';
-    try { host = new URL(target).hostname; } catch (e) {}
-    const hostDead = !!host && (thumbHostFails.get(host) || 0) > Date.now();
-    if (!buffer && !hostDead) {
-      try {
-        const r = await fetch(target, {
-          signal: AbortSignal.timeout(6000),
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36' }
-        });
-        if (!r.ok) throw new Error(String(r.status));
-        const data = Buffer.from(await r.arrayBuffer());
-        if (data.length < 500) throw new Error('empty image');
-        buffer = data;
-        fs.promises.writeFile(cachePath, data).catch(() => {});
-      } catch (e) {
-        if (host) thumbHostFails.set(host, Date.now() + 600000);
+    let contentType = null;
+
+    const memResult = await artworkCache.getOrFetch(
+      target,
+      async (fetchUrl) => {
+        try {
+          if (fs.existsSync(cachePath)) {
+            const diskBuf = await fs.promises.readFile(cachePath);
+            if (diskBuf && diskBuf.length >= 500) {
+              return { buffer: diskBuf, contentType: imageContentType(diskBuf) };
+            }
+          }
+        } catch (_) {}
+        let host = '';
+        try { host = new URL(fetchUrl).hostname; } catch (_) {}
+        if (host && (thumbHostFails.get(host) || 0) > Date.now()) return null;
+        try {
+          const r = await fetch(fetchUrl, {
+            signal: AbortSignal.timeout(6000),
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36' }
+          });
+          if (!r.ok) throw new Error(String(r.status));
+          const data = Buffer.from(await r.arrayBuffer());
+          if (data.length < 500) throw new Error('empty image');
+          fs.promises.writeFile(cachePath, data).catch(() => {});
+          networkDiagnostics.addBytes('artwork', data.length);
+          return { buffer: data, contentType: imageContentType(data) };
+        } catch (_) {
+          if (host) thumbHostFails.set(host, Date.now() + 600000);
+          return null;
+        }
+      },
+      {
+        validateImage: (buf) => Buffer.isBuffer(buf) && buf.length >= 500
       }
+    );
+
+    if (memResult && memResult.buffer) {
+      buffer = memResult.buffer;
+      contentType = memResult.contentType;
+      networkDiagnostics.recordImageCache({ hit: memResult.hit, stale: memResult.stale });
+    } else {
+      networkDiagnostics.recordImageCache({ hit: false, stale: false });
     }
+
     if (!buffer && parsedUrl.query.artist && parsedUrl.query.title) {
       const alt = await lookupCoverArt(parsedUrl.query.artist, parsedUrl.query.title);
       if (alt) {
@@ -10737,7 +10810,7 @@ if (parsedUrl.pathname === '/api/ytm/intercept-cookie' && req.method === 'POST')
       res.writeHead(302, { Location: target });
       return res.end();
     }
-    res.writeHead(200, { 'Content-Type': imageContentType(buffer), 'Cache-Control': 'public, max-age=31536000' });
+    res.writeHead(200, { 'Content-Type': contentType || imageContentType(buffer), 'Cache-Control': 'public, max-age=31536000' });
     return res.end(buffer);
   }
 
@@ -10906,6 +10979,56 @@ if (parsedUrl.pathname === '/api/ytm/intercept-cookie' && req.method === 'POST')
   if (parsedUrl.pathname === '/api/audio-proxy') {
     const targetUrl = parsedUrl.query.url || '';
     return handleAudioProxy(req, res, targetUrl);
+  }
+
+  if (parsedUrl.pathname === '/api/network-diagnostics' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    return res.end(JSON.stringify({
+      success: true,
+      scheduler: networkScheduler.getStats(),
+      diagnostics: networkDiagnostics.getSummary()
+    }));
+  }
+
+  if (parsedUrl.pathname === '/api/network-diagnostics' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => { if (body.length < 4096) body += c; });
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(body || '{}');
+        if (Number.isFinite(parsed.startupToUiMs)) networkDiagnostics.recordStartupUi(parsed.startupToUiMs);
+        if (Number.isFinite(parsed.homeReadyMs)) networkDiagnostics.recordHomeReady(parsed.homeReadyMs);
+        if (Number.isFinite(parsed.firstAudibleMs) || Number.isFinite(parsed.firstBufferedMs) || Number.isFinite(parsed.waitingDeltaMs)) {
+          networkDiagnostics.recordPlaybackTiming({
+            firstAudibleMs: parsed.firstAudibleMs,
+            firstBufferedMs: parsed.firstBufferedMs,
+            waitingDeltaMs: parsed.waitingDeltaMs
+          });
+        }
+        if (typeof parsed.playbackBuffering === 'boolean') {
+          networkScheduler.setPlaybackBuffering(parsed.playbackBuffering);
+        }
+      } catch (_) {}
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: true }));
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/network-profile' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => { if (body.length < 4096) body += c; });
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(body || '{}');
+        if (parsed.profile) networkScheduler.setProfile(parsed.profile);
+        if (typeof parsed.autoCacheEnabled === 'boolean') networkScheduler.setAutoCacheEnabled(parsed.autoCacheEnabled);
+        if (typeof parsed.playbackBuffering === 'boolean') networkScheduler.setPlaybackBuffering(parsed.playbackBuffering);
+      } catch (_) {}
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ success: true, scheduler: networkScheduler.getStats() }));
+    });
+    return;
   }
 
   if (parsedUrl.pathname === '/api/save-custom-lyrics' && req.method === 'POST') {
