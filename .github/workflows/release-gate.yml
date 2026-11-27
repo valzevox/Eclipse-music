@@ -71,7 +71,7 @@ jobs:
         run: node --test test/updater.test.js
 
       - name: Build Windows NSIS installers (x64 + ia32 + zip)
-        run: npm run dist -- --win
+        run: npm run dist -- --win --publish never
 
       - name: Windows NSIS silent install & --updated --force-run E2E
         shell: pwsh
