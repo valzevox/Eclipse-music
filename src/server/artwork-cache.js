@@ -72,7 +72,7 @@ class StaleFirstArtworkCache {
     }
   }
 
-  async getOrFetch(url, fetcher, { validateImage = null } = {}) {
+  async getOrFetch(url, fetcher, { validateImage = null, scheduleRefresh = null } = {}) {
     if (!url || typeof fetcher !== 'function') return null;
 
     const existing = this.cache.get(url);
@@ -82,10 +82,15 @@ class StaleFirstArtworkCache {
       if (isFresh) {
         return { buffer: existing.buffer, contentType: existing.contentType, stale: false, hit: true };
       }
-      // Stale-first: return stale immediately and refresh in background if not in cooldown
+      // Stale-first: return stale immediately and refresh in background via scheduler if provided
       const lastFail = this.failedAt.get(url) || 0;
       if (now - lastFail >= this.failureCooldownMs && !this.inflight.has(url)) {
-        this._refresh(url, fetcher, validateImage).catch(() => {});
+        const runRefresh = (signal) => this._refresh(url, (u) => fetcher(u, signal), validateImage);
+        if (typeof scheduleRefresh === 'function') {
+          Promise.resolve().then(() => scheduleRefresh(runRefresh)).catch(() => {});
+        } else {
+          runRefresh(null).catch(() => {});
+        }
       }
       return { buffer: existing.buffer, contentType: existing.contentType, stale: true, hit: true };
     }

@@ -77,7 +77,7 @@ class NetworkPriorityScheduler {
     this.playbackBuffering = next;
     if (next) {
       for (const [, task] of this._active.entries()) {
-        if (task.priority >= Priority.SPECULATIVE_PRELOAD && task.abortController) {
+        if (task.priority >= Priority.NEXT_TRACK_PREP && task.abortController) {
           try { task.abortController.abort(new Error('preempted_by_playback_buffering')); } catch (_) {}
         }
       }
@@ -150,6 +150,7 @@ class NetworkPriorityScheduler {
         priority,
         key,
         generation,
+        explicitOptIn: Boolean(explicitOptIn),
         fn,
         resolve: (v) => { cleanupSignal(); resolve(v); },
         reject: (e) => { cleanupSignal(); reject(e); },
@@ -192,7 +193,7 @@ class NetworkPriorityScheduler {
         if (this.playbackBuffering && item.priority >= Priority.SPECULATIVE_PRELOAD) {
           return false;
         }
-        if (item.priority === Priority.BACKGROUND_DOWNLOAD && !this.canRunBackgroundDownload({ explicitOptIn: true })) {
+        if (item.priority === Priority.BACKGROUND_DOWNLOAD && !this.canRunBackgroundDownload({ explicitOptIn: item.explicitOptIn })) {
           return false;
         }
         return true;

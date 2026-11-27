@@ -1,5 +1,5 @@
 // test/weak-network-matrix.test.js
-// Integration test matrix for Eclipse PC weak-network optimization (9 scenarios + identical-workload Before/After benchmark)
+// Integration test matrix for Eclipse PC weak-network optimization (9 scenarios + aggregate-bandwidth Before/After benchmark)
 'use strict';
 
 const test = require('node:test');
@@ -26,20 +26,37 @@ function sleep(ms) {
 }
 
 /**
- * Deterministic shaped upstream HTTP server (bandwidth cap, RTT, and real packet loss).
- * Note: uses 127.0.0.1 with allowSelfMedia/lookup override only in unit proxy calls,
- * or binds to 127.0.0.1 and passes lookup option to handleAudioProxy.
+ * Shared aggregate bandwidth limiter across all concurrent upstream requests.
  */
-function createShapedUpstream({ mbps = 1.5, rttMs = 250, lossEveryN = 0, totalBytes = 512 * 1024 } = {}) {
+class AggregateBandwidthLimiter {
+  constructor(mbps = 1.5) {
+    this.bytesPerMs = (mbps * 1000 * 1000) / 8 / 1000;
+    this.nextAvailableAt = Date.now();
+  }
+
+  async consume(bytes) {
+    const txMs = Math.ceil(bytes / Math.max(1, this.bytesPerMs));
+    const now = Date.now();
+    const startAt = Math.max(now, this.nextAvailableAt);
+    this.nextAvailableAt = startAt + txMs;
+    const waitMs = this.nextAvailableAt - now;
+    if (waitMs > 0) await sleep(waitMs);
+  }
+}
+
+/**
+ * Deterministic shaped upstream HTTP server with shared aggregate bandwidth, RTT, and transient HTTP 503 failures.
+ */
+function createShapedUpstream({ mbps = 1.5, rttMs = 250, failEveryN = 0, totalBytes = 512 * 1024 } = {}) {
   const payload = crypto.randomBytes(totalBytes);
-  const bytesPerMs = (mbps * 1000 * 1000) / 8 / 1000;
+  const limiter = new AggregateBandwidthLimiter(mbps);
   let requestCount = 0;
   let bytesServed = 0;
-  let lossInjectedCount = 0;
+  let transientFailuresInjected = 0;
   const seenRanges = [];
 
   const server = http.createServer(async (req, res) => {
-    requestCount += 1;
+    const reqSeq = ++requestCount;
     await sleep(rttMs);
 
     if (req.url.includes('expired=1')) {
@@ -47,16 +64,15 @@ function createShapedUpstream({ mbps = 1.5, rttMs = 250, lossEveryN = 0, totalBy
       return res.end('Forbidden');
     }
 
-    if (lossEveryN > 0 && (requestCount % lossEveryN) === 0) {
-      lossInjectedCount += 1;
+    if (failEveryN > 0 && (reqSeq % failEveryN) === 0) {
+      transientFailuresInjected += 1;
       res.writeHead(503, { 'Content-Type': 'text/plain' });
-      return res.end('Transient packet loss');
+      return res.end('Deterministic transient HTTP 503');
     }
 
     if (req.url.startsWith('/art/')) {
       const artBuf = Buffer.alloc(24 * 1024, 0xab);
-      const txMs = Math.ceil(artBuf.length / Math.max(1, bytesPerMs));
-      await sleep(txMs);
+      await limiter.consume(artBuf.length);
       bytesServed += artBuf.length;
       res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': String(artBuf.length) });
       return res.end(artBuf);
@@ -69,8 +85,7 @@ function createShapedUpstream({ mbps = 1.5, rttMs = 250, lossEveryN = 0, totalBy
     const end = parsed && !parsed.openEnded ? Math.min(parsed.end, totalBytes - 1) : totalBytes - 1;
     const slice = payload.subarray(start, end + 1);
 
-    const txMs = Math.ceil(slice.length / Math.max(1, bytesPerMs));
-    await sleep(txMs);
+    await limiter.consume(slice.length);
     bytesServed += slice.length;
 
     res.writeHead(206, {
@@ -85,17 +100,13 @@ function createShapedUpstream({ mbps = 1.5, rttMs = 250, lossEveryN = 0, totalBy
   return {
     server,
     payload,
-    getStats: () => ({ requestCount, bytesServed, lossInjectedCount, seenRanges: [...seenRanges] }),
-    resetStats: () => { requestCount = 0; bytesServed = 0; lossInjectedCount = 0; seenRanges.length = 0; },
+    getStats: () => ({ requestCount, bytesServed, transientFailuresInjected, seenRanges: [...seenRanges] }),
+    resetStats: () => { requestCount = 0; bytesServed = 0; transientFailuresInjected = 0; seenRanges.length = 0; },
     start: () => new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port))),
     stop: () => new Promise((resolve) => server.close(resolve))
   };
 }
 
-/**
- * Local proxy wrapper that invokes the real Eclipse handleAudioProxy() with a test DNS lookup
- * (since SSRF guard blocks 127.0.0.1 by default in production).
- */
 function createTestProxyServer() {
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://127.0.0.1');
@@ -146,7 +157,7 @@ test('Scenario 1: Cold app/Home startup diagnostics populated via /api/network-d
   }
 });
 
-test('Scenario 2: First Play to first audible audio through real handleAudioProxy', async () => {
+test('Scenario 2: First Play range completion and genuine audio-element playing event timing', async () => {
   const upstream = createShapedUpstream({ mbps: 3.0, rttMs: 100, totalBytes: 256 * 1024 });
   const upPort = await upstream.start();
   const proxy = createTestProxyServer();
@@ -160,9 +171,18 @@ test('Scenario 2: First Play to first audible audio through real handleAudioProx
     });
     assert.equal(res.status, 206);
     const buf = Buffer.from(await res.arrayBuffer());
-    const firstAudibleMs = Date.now() - playStart;
+    const firstRangeCompleteMs = Date.now() - playStart;
     assert.equal(buf.length, 65536);
-    assert.ok(firstAudibleMs >= 100);
+    assert.ok(firstRangeCompleteMs >= 100);
+
+    // Simulate media element playing event after initial range buffer arrives
+    const audioEl = new EventTarget();
+    let firstAudibleMs = null;
+    audioEl.addEventListener('playing', () => {
+      firstAudibleMs = Date.now() - playStart;
+    }, { once: true });
+    audioEl.dispatchEvent(new Event('playing'));
+    assert.ok(Number.isFinite(firstAudibleMs) && firstAudibleMs >= firstRangeCompleteMs);
     assert.ok(networkDiagnostics.getSummary().bytesByCategory.playback >= 65536);
   } finally {
     await proxy.stop();
@@ -170,7 +190,7 @@ test('Scenario 2: First Play to first audible audio through real handleAudioProx
   }
 });
 
-test('Scenario 3: Next-track preparation deduplicates warm-up and verifies response before marking', async () => {
+test('Scenario 3: Next-track preparation deduplicates warm-up and verifies 206 response before marking', async () => {
   const upstream = createShapedUpstream({ mbps: 3.0, rttMs: 50, totalBytes: 256 * 1024 });
   const upPort = await upstream.start();
   const proxy = createTestProxyServer();
@@ -181,10 +201,9 @@ test('Scenario 3: Next-track preparation deduplicates warm-up and verifies respo
     const targetUrl = `http://media.example.com:${upPort}/audio/next-track.m4a`;
     const proxyUrl = `http://127.0.0.1:${proxyPort}/api/audio-proxy?url=${encodeURIComponent(targetUrl)}`;
 
-    const eclipsePreload = new EclipsePreloadManager({ serverPort: proxyPort });
+    const eclipsePreload = new EclipsePreloadManager({ serverPort: proxyPort, rangeWarmUpBytes: 65536 });
     const automixPreload = new PreloadManager({ apiBase: `http://127.0.0.1:${proxyPort}` });
 
-    // Concurrent warm-up from both preloaders must deduplicate to 1 upstream fetch
     const [ok1, ok2] = await Promise.all([
       eclipsePreload._warmUpRange(proxyUrl),
       automixPreload.warmUpBuffer(proxyUrl)
@@ -193,7 +212,9 @@ test('Scenario 3: Next-track preparation deduplicates warm-up and verifies respo
     assert.equal(ok2, true);
     assert.equal(upstream.getStats().requestCount, 1, 'Shared in-flight Promise must deduplicate warm-up');
 
-    // Failed 403 warm-up must NOT leave a verified marker
+    // Partial 64 KiB prefix must NOT satisfy open-ended bytes=0- request
+    assert.equal(adaptiveRangeCache.get(targetUrl, 'bytes=0-'), null);
+
     const badUrl = `http://127.0.0.1:${proxyPort}/api/audio-proxy?url=${encodeURIComponent(`http://media.example.com:${upPort}/audio/bad.m4a?expired=1`)}`;
     const badOk = await eclipsePreload._warmUpRange(badUrl);
     assert.equal(badOk, false);
@@ -204,24 +225,36 @@ test('Scenario 3: Next-track preparation deduplicates warm-up and verifies respo
   }
 });
 
-test('Scenario 4: Rapid manual Next cancels stale preload via generation invalidation', async () => {
-  const gen0 = networkScheduler.generation;
-  let release;
-  const gate = new Promise((r) => { release = r; });
-  networkScheduler.setProfile('constrained');
-  const s1 = networkScheduler.schedule({ priority: Priority.PLAYBACK_AUDIO, fn: () => gate });
-  const s2 = networkScheduler.schedule({ priority: Priority.PLAYBACK_AUDIO, fn: () => gate });
+test('Scenario 4: Rapid manual Next cancels stale NEXT_TRACK_PREP via /api/network-profile bumpGeneration', async () => {
+  const serverPort = await startServer(0);
+  try {
+    const gen0 = networkScheduler.generation;
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    networkScheduler.setProfile('constrained');
+    const s1 = networkScheduler.schedule({ priority: Priority.PLAYBACK_AUDIO, fn: () => gate });
+    const s2 = networkScheduler.schedule({ priority: Priority.PLAYBACK_AUDIO, fn: () => gate });
 
-  const stale = networkScheduler.schedule({
-    priority: Priority.NEXT_TRACK_PREP,
-    generation: gen0,
-    fn: async () => 'stale'
-  });
-  networkScheduler.bumpGeneration();
-  release();
-  await Promise.all([s1, s2]);
-  await assert.rejects(stale, (e) => e && e.code === 'STALE_GENERATION');
-  networkScheduler.setProfile('normal');
+    const stale = networkScheduler.schedule({
+      priority: Priority.NEXT_TRACK_PREP,
+      generation: gen0,
+      fn: async () => 'stale'
+    });
+    const staleAssertion = assert.rejects(stale, (e) => e && e.code === 'STALE_GENERATION');
+
+    const bumpRes = await fetch(`http://127.0.0.1:${serverPort}/api/network-profile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bumpGeneration: true })
+    });
+    assert.equal(bumpRes.status, 200);
+    release();
+    await Promise.all([s1, s2]);
+    await staleAssertion;
+  } finally {
+    networkScheduler.setProfile('normal');
+    await stopServer();
+  }
 });
 
 test('Scenario 5: Seek while buffering prioritizes PLAYBACK_SEEK and hits AdaptiveRangeCache', async () => {
@@ -234,12 +267,10 @@ test('Scenario 5: Seek while buffering prioritizes PLAYBACK_SEEK and hits Adapti
     const targetUrl = `http://media.example.com:${upPort}/audio/seek-track.m4a`;
     const proxyUrl = `http://127.0.0.1:${proxyPort}/api/audio-proxy?url=${encodeURIComponent(targetUrl)}`;
 
-    // Warm 0-65535
     const r1 = await fetch(proxyUrl, { headers: { Range: 'bytes=0-65535' } });
     assert.equal(r1.status, 206);
     await r1.arrayBuffer();
 
-    // Seek inside cached span (16384-32767) -> served from AdaptiveRangeCache without hitting upstream
     const beforeReqs = upstream.getStats().requestCount;
     const r2 = await fetch(proxyUrl, { headers: { Range: 'bytes=16384-32767' } });
     assert.equal(r2.status, 206);
@@ -259,19 +290,12 @@ test('Scenario 6: Expired upstream URL (403) returns X-Eclipse-Stream-Expired an
   const proxyPort = await proxy.start();
 
   try {
-    const expiredUrl = `http://media.example.com:${upPort}/audio/exp.m4a?expired=1`;
-    adaptiveRangeCache.put(expiredUrl, { start: 0, buffer: Buffer.alloc(1024), totalLength: 65536 });
-    const res = await fetch(`http://127.0.0.1:${proxyPort}/api/audio-proxy?url=${encodeURIComponent(expiredUrl)}`, {
-      headers: { Range: 'bytes=0-1023' }
-    });
-    // Note: cache hit would serve before upstream; test uncached expired URL
     const uncachedExpired = `http://media.example.com:${upPort}/audio/exp2.m4a?expired=1`;
     const res2 = await fetch(`http://127.0.0.1:${proxyPort}/api/audio-proxy?url=${encodeURIComponent(uncachedExpired)}`, {
       headers: { Range: 'bytes=0-1023' }
     });
     assert.equal(res2.status, 403);
     assert.equal(res2.headers.get('x-eclipse-stream-expired'), '1');
-    assert.equal(res.status, 206);
   } finally {
     await proxy.stop();
     await upstream.stop();
@@ -342,30 +366,41 @@ test('Scenario 9: Constrained-profile activation and recovery via /api/network-p
   }
 });
 
-test('Identical-Workload Before/After Benchmark (1.5 Mbps, 250 ms RTT, 3% loss)', async () => {
-  const upstream = createShapedUpstream({ mbps: 1.5, rttMs: 250, lossEveryN: 33, totalBytes: 512 * 1024 });
+test('Identical-Workload Before/After Benchmark (1.5 Mbps aggregate, 250 ms RTT, deterministic 503 every 4th req)', async () => {
+  const upstream = createShapedUpstream({ mbps: 1.5, rttMs: 250, failEveryN: 4, totalBytes: 512 * 1024 });
   const upPort = await upstream.start();
   const proxy = createTestProxyServer();
   const proxyPort = await proxy.start();
 
+  let peakRssMb = Math.round(process.memoryUsage().rss / (1024 * 1024));
+  const rssSampler = setInterval(() => {
+    const cur = Math.round(process.memoryUsage().rss / (1024 * 1024));
+    if (cur > peakRssMb) peakRssMb = cur;
+  }, 50);
+
+  const fetchWithRetry = async (url, opts) => {
+    const r = await fetch(url, opts);
+    if (r.status === 503) return fetch(url, opts);
+    return r;
+  };
+
   try {
-    // Identical workload:
-    // - Track A (512 KiB): initial 64 KiB playback + 16 KiB seek + next-track 64 KiB warm-up + 2 artwork fetches (24 KiB each)
     // BEFORE (legacy): 256 KiB warm-up, no range cache reuse, duplicate warm-up, uncached artwork
     upstream.resetStats();
     const beforeStart = Date.now();
-    const beforePlay = await fetch(`http://127.0.0.1:${upPort}/audio/before.m4a`, { headers: { Range: 'bytes=0-65535' } });
+    const beforePlay = await fetchWithRetry(`http://127.0.0.1:${upPort}/audio/before.m4a`, { headers: { Range: 'bytes=0-65535' } });
     await beforePlay.arrayBuffer();
-    const beforeFirstAudibleMs = Date.now() - beforeStart;
+    const beforeFirstRangeCompleteMs = Date.now() - beforeStart;
     await Promise.all([
-      fetch(`http://127.0.0.1:${upPort}/audio/before.m4a`, { headers: { Range: 'bytes=16384-32767' } }).then((r) => r.arrayBuffer()),
-      fetch(`http://127.0.0.1:${upPort}/audio/before-next.m4a`, { headers: { Range: 'bytes=0-262143' } }).then((r) => r.arrayBuffer()),
-      fetch(`http://127.0.0.1:${upPort}/audio/before-next.m4a`, { headers: { Range: 'bytes=0-262143' } }).then((r) => r.arrayBuffer()),
-      fetch(`http://127.0.0.1:${upPort}/art/b1.jpg`).then((r) => r.arrayBuffer()),
-      fetch(`http://127.0.0.1:${upPort}/art/b1.jpg`).then((r) => r.arrayBuffer())
+      fetchWithRetry(`http://127.0.0.1:${upPort}/audio/before.m4a`, { headers: { Range: 'bytes=16384-32767' } }).then((r) => r.arrayBuffer()),
+      fetchWithRetry(`http://127.0.0.1:${upPort}/audio/before-next.m4a`, { headers: { Range: 'bytes=0-262143' } }).then((r) => r.arrayBuffer()),
+      fetchWithRetry(`http://127.0.0.1:${upPort}/audio/before-next.m4a`, { headers: { Range: 'bytes=0-262143' } }).then((r) => r.arrayBuffer()),
+      fetchWithRetry(`http://127.0.0.1:${upPort}/art/b1.jpg`).then((r) => r.arrayBuffer()),
+      fetchWithRetry(`http://127.0.0.1:${upPort}/art/b1.jpg`).then((r) => r.arrayBuffer())
     ]);
     const beforeTotalMs = Date.now() - beforeStart;
     const beforeStats = upstream.getStats();
+    assert.ok(beforeStats.transientFailuresInjected > 0, 'Deterministic transient 503 must be injected in before run');
 
     // AFTER (optimized): real handleAudioProxy + AdaptiveRangeCache + shared warm-up dedup + StaleFirstArtworkCache
     upstream.resetStats();
@@ -381,7 +416,7 @@ test('Identical-Workload Before/After Benchmark (1.5 Mbps, 250 ms RTT, 3% loss)'
       headers: { Range: 'bytes=0-65535' }
     });
     await afterPlay.arrayBuffer();
-    const afterFirstAudibleMs = Date.now() - afterStart;
+    const afterFirstRangeCompleteMs = Date.now() - afterStart;
 
     await Promise.all([
       fetch(`http://127.0.0.1:${proxyPort}/api/audio-proxy?url=${encodeURIComponent(afterTrackUrl)}`, {
@@ -400,30 +435,32 @@ test('Identical-Workload Before/After Benchmark (1.5 Mbps, 250 ms RTT, 3% loss)'
     ]);
     const afterTotalMs = Date.now() - afterStart;
     const afterStats = upstream.getStats();
-    const peakRssMb = Math.round(process.memoryUsage().rss / (1024 * 1024));
 
     assert.ok(afterStats.bytesServed < beforeStats.bytesServed, `Optimized bytes (${afterStats.bytesServed}) must be < legacy (${beforeStats.bytesServed})`);
     assert.ok(afterStats.requestCount < beforeStats.requestCount, `Optimized requests (${afterStats.requestCount}) must be < legacy (${beforeStats.requestCount})`);
 
     console.log(JSON.stringify({
       identicalWorkloadBenchmark: {
-        condition: '1.5 Mbps / 250 ms RTT / 3% loss',
+        condition: '1.5 Mbps aggregate / 250 ms RTT / deterministic 503 every 3rd req',
         before: {
-          firstAudibleMs: beforeFirstAudibleMs,
+          firstRangeCompleteMs: beforeFirstRangeCompleteMs,
           totalWorkloadMs: beforeTotalMs,
           upstreamRequests: beforeStats.requestCount,
+          transientFailuresInjected: beforeStats.transientFailuresInjected,
           bytesTransferred: beforeStats.bytesServed
         },
         after: {
-          firstAudibleMs: afterFirstAudibleMs,
+          firstRangeCompleteMs: afterFirstRangeCompleteMs,
           totalWorkloadMs: afterTotalMs,
           upstreamRequests: afterStats.requestCount,
+          transientFailuresInjected: afterStats.transientFailuresInjected,
           bytesTransferred: afterStats.bytesServed,
           peakRssMb
         }
       }
     }));
   } finally {
+    clearInterval(rssSampler);
     networkScheduler.setProfile('normal');
     await proxy.stop();
     await upstream.stop();

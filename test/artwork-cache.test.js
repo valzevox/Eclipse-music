@@ -90,3 +90,51 @@ test('StaleFirstArtworkCache: deduplicates concurrent in-flight fetches per URL 
   assert.equal(totalCalls, 4, 'Duplicate URL must be deduplicated');
   assert.ok(maxActive <= 2, `Concurrency must be bounded to 2, got ${maxActive}`);
 });
+
+test('StaleFirstArtworkCache: stale artwork returns immediately while background refresh queues behind PLAYBACK_AUDIO', async () => {
+  const { NetworkPriorityScheduler, Priority } = require('../src/server/network-scheduler');
+  const scheduler = new NetworkPriorityScheduler({ profile: 'constrained', autoCacheEnabled: true });
+  const cache = new StaleFirstArtworkCache({ ttlMs: 50, maxConcurrent: 2 });
+  const url = 'https://example.com/art/queued.jpg';
+  const staleBuf = Buffer.alloc(600, 0x11);
+  const freshBuf = Buffer.alloc(600, 0x22);
+  cache.seedFromDisk(url, staleBuf, 'image/jpeg', Date.now() - 5000);
+
+  // Occupy constrained capacity (2 slots) with PLAYBACK_AUDIO
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const p1 = scheduler.schedule({ priority: Priority.PLAYBACK_AUDIO, fn: () => gate });
+  const p2 = scheduler.schedule({ priority: Priority.PLAYBACK_AUDIO, fn: () => gate });
+
+  const order = [];
+  let refreshPromise;
+  const res = await cache.getOrFetch(
+    url,
+    async () => {
+      order.push('art_refresh');
+      return { buffer: freshBuf, contentType: 'image/jpeg' };
+    },
+    {
+      scheduleRefresh: (refreshFn) => {
+        refreshPromise = scheduler.schedule({
+          priority: Priority.VISIBLE_ARTWORK_LYRICS,
+          fn: (signal) => refreshFn(signal)
+        });
+        return refreshPromise;
+      }
+    }
+  );
+
+  assert.equal(res.stale, true);
+  assert.deepEqual(res.buffer, staleBuf);
+  assert.deepEqual(order, [], 'Background refresh must wait behind active PLAYBACK_AUDIO');
+
+  const highPlay = scheduler.schedule({
+    priority: Priority.PLAYBACK_AUDIO,
+    fn: async () => { order.push('playback_audio'); }
+  });
+
+  release();
+  await Promise.all([p1, p2, highPlay, refreshPromise]);
+  assert.deepEqual(order, ['playback_audio', 'art_refresh']);
+});

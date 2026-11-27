@@ -92,7 +92,7 @@ class PreloadManager {
 
     const qFallback = encodeURIComponent(track.searchQuery || ((track.artist ? track.artist + ' - ' : '') + (track.title || '')));
     const tkn = this.token || (typeof window !== 'undefined' && window.electronAPI?.serverToken) || '';
-    const url = `${this.apiBase}/api/stream-info?id=${encodeURIComponent(trackId)}&url=${encodeURIComponent(track.url || '')}&platform=${encodeURIComponent(platform)}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&q=${qFallback}&quality=${encodeURIComponent(reqQuality)}&token=${encodeURIComponent(tkn)}&t=${encodeURIComponent(tkn)}`;
+    const url = `${this.apiBase}/api/stream-info?id=${encodeURIComponent(trackId)}&url=${encodeURIComponent(track.url || '')}&platform=${encodeURIComponent(platform)}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&q=${qFallback}&quality=${encodeURIComponent(reqQuality)}&prefetch=1&token=${encodeURIComponent(tkn)}&t=${encodeURIComponent(tkn)}`;
 
     try {
       const signal = this.abortController ? this.abortController.signal : undefined;
@@ -149,21 +149,51 @@ class PreloadManager {
       }
     }
     const signal = this.abortController ? this.abortController.signal : undefined;
+    const endByte = warmBytes - 1;
     const p = (async () => {
       for (let attempt = 0; attempt < 2; attempt++) {
         if (signal && signal.aborted) return false;
         try {
           const res = await fetch(streamUrl, {
-            headers: { 'Range': `bytes=0-${warmBytes - 1}`, 'X-Eclipse-Prefetch': '1' },
+            headers: { 'Range': `bytes=0-${endByte}`, 'X-Eclipse-Prefetch': '1' },
             signal
           });
-          if (!res || (!res.ok && res.status !== 206)) {
-            if (res && (res.status === 403 || res.status === 410)) return false;
+          if (!res || res.status !== 206) {
+            if (res && res.body && typeof res.body.cancel === 'function') {
+              res.body.cancel().catch(() => {});
+            }
+            if (res && (res.status === 403 || res.status === 410 || res.status === 200)) return false;
             continue;
           }
-          const buf = await res.arrayBuffer();
-          if (!buf || buf.byteLength === 0) continue;
-          state.verified.set(streamUrl, { ts: Date.now(), bytes: buf.byteLength });
+          const contentRange = res.headers && typeof res.headers.get === 'function' ? (res.headers.get('content-range') || '') : '';
+          const crMatch = /^bytes\s+0-(\d+)\/(\d+|\*)$/i.exec(contentRange.trim());
+          if (!crMatch || Number(crMatch[1]) > endByte) {
+            if (res.body && typeof res.body.cancel === 'function') {
+              res.body.cancel().catch(() => {});
+            }
+            return false;
+          }
+          let totalRead = 0;
+          if (res.body && typeof res.body.getReader === 'function') {
+            const reader = res.body.getReader();
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (value) {
+                totalRead += value.byteLength;
+                if (totalRead > warmBytes) {
+                  await reader.cancel().catch(() => {});
+                  return false;
+                }
+              }
+            }
+          } else {
+            const buf = await res.arrayBuffer();
+            totalRead = buf ? buf.byteLength : 0;
+            if (totalRead > warmBytes) return false;
+          }
+          if (totalRead === 0) continue;
+          state.verified.set(streamUrl, { ts: Date.now(), bytes: totalRead });
           if (state.verified.size > 64) state.verified.delete(state.verified.keys().next().value);
           return true;
         } catch (err) {

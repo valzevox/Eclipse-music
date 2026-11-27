@@ -2802,8 +2802,10 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
       if (!proc.killed) proc.kill('SIGKILL');
     }
   };
+  const reqAbortController = new AbortController();
   const deadlineTimer = setTimeout(() => {
     timedOut = true;
+    try { reqAbortController.abort(new Error('Stream resolution timed out')); } catch (_) {}
     stopActiveYtDlps();
     if (!res.writableEnded) {
       res.writeHead(504, { 'Content-Type': 'application/json' });
@@ -2813,7 +2815,10 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
   deadlineTimer.unref();
   res.once('close', () => {
     clearTimeout(deadlineTimer);
-    if (!res.writableEnded) stopActiveYtDlps();
+    if (!res.writableEnded) {
+      try { reqAbortController.abort(new Error('Client disconnected')); } catch (_) {}
+      stopActiveYtDlps();
+    }
   });
   const runYtDlp = (args, limit, extraOpts = {}) => {
     const remaining = deadlineAt - Date.now();
@@ -2968,13 +2973,22 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
       return res.end(JSON.stringify(data));
     };
 
+    const isPrefetchReq = Boolean(parsedUrl.query && parsedUrl.query.prefetch === '1');
+    const streamPriority = isPrefetchReq ? Priority.NEXT_TRACK_PREP : Priority.PLAYBACK_META;
+
     const resolveYtCandidateStream = async (candId) => {
       const vid = extractYtIdFromAny(candId);
       if (!vid) return null;
       let s = null;
       if (!forceYtDlp) {
         const directStart = Date.now();
-        try { s = await fetchDirectYoutubeStreamServer(vid, quality); } catch (_) {}
+        try {
+          s = await networkScheduler.schedule({
+            priority: streamPriority,
+            signal: reqAbortController.signal,
+            fn: () => fetchDirectYoutubeStreamServer(vid, quality)
+          });
+        } catch (_) {}
         stageTimings.directResolverMs += Date.now() - directStart;
         if (s) return s;
       }
@@ -2991,11 +3005,11 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
       let lastAttemptError = '';
       let stopAttempts = false;
       for (const attempt of attempts) {
-        if (s || stopAttempts) break;
+        if (s || stopAttempts || reqAbortController.signal.aborted) break;
         // Rapid track skipping makes YouTube intermittently answer with
         // "Requested format is not available" / "The page needs to be
         // reloaded." even for otherwise playable videos. Retry once.
-        for (let tryNo = 0; tryNo < 2 && !s && !stopAttempts; tryNo++) {
+        for (let tryNo = 0; tryNo < 2 && !s && !stopAttempts && !reqAbortController.signal.aborted; tryNo++) {
           let retryable = false;
           try {
             const args = [
@@ -3008,7 +3022,8 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
             ];
             const ytStart = Date.now();
             const raw = await networkScheduler.schedule({
-              priority: (parsedUrl.query && parsedUrl.query.prefetch === '1') ? Priority.NEXT_TRACK_PREP : Priority.PLAYBACK_META,
+              priority: streamPriority,
+              signal: reqAbortController.signal,
               fn: (signal) => {
                 if (signal && signal.aborted) return Promise.reject(new Error('aborted'));
                 const onAbort = () => stopActiveYtDlps();
@@ -3024,8 +3039,12 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
               // googlevideo 403s are often transient right after extraction
               // (edge propagation / rate limiting), so check a few times.
               const probeStart = Date.now();
-              for (let check = 0; check < 3 && !verified; check++) {
-                verified = await verifyStreamPlayable(lineUrl);
+              for (let check = 0; check < 3 && !verified && !reqAbortController.signal.aborted; check++) {
+                verified = await networkScheduler.schedule({
+                  priority: streamPriority,
+                  signal: reqAbortController.signal,
+                  fn: () => verifyStreamPlayable(lineUrl)
+                }).catch(() => false);
                 if (!verified) await new Promise((r) => setTimeout(r, 500 + check * 500));
               }
               stageTimings.probeMs += Date.now() - probeStart;
@@ -10863,15 +10882,20 @@ if (parsedUrl.pathname === '/api/ytm/intercept-cookie' && req.method === 'POST')
     const memResult = await networkScheduler.schedule({
       priority: Priority.VISIBLE_ARTWORK_LYRICS,
       key: `art:${key}`,
-      fn: () => artworkCache.getOrFetch(
+      fn: (outerSignal) => artworkCache.getOrFetch(
         target,
-        async (fetchUrl) => {
+        async (fetchUrl, refreshSignal) => {
+          const activeSignal = refreshSignal || outerSignal;
           let host = '';
           try { host = new URL(fetchUrl).hostname; } catch (_) {}
           if (host && (thumbHostFails.get(host) || 0) > Date.now()) return null;
           try {
+            const timeoutSig = AbortSignal.timeout(6000);
+            const reqSig = activeSignal && typeof AbortSignal.any === 'function'
+              ? AbortSignal.any([activeSignal, timeoutSig])
+              : timeoutSig;
             const r = await fetch(fetchUrl, {
-              signal: AbortSignal.timeout(6000),
+              signal: reqSig,
               headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36' }
             });
             if (!r.ok) throw new Error(String(r.status));
@@ -10886,7 +10910,12 @@ if (parsedUrl.pathname === '/api/ytm/intercept-cookie' && req.method === 'POST')
           }
         },
         {
-          validateImage: (buf) => Buffer.isBuffer(buf) && buf.length >= 500
+          validateImage: (buf) => Buffer.isBuffer(buf) && buf.length >= 500,
+          scheduleRefresh: (refreshFn) => networkScheduler.schedule({
+            priority: Priority.VISIBLE_ARTWORK_LYRICS,
+            key: `art-refresh:${key}`,
+            fn: (signal) => refreshFn(signal)
+          })
         }
       )
     });
@@ -11123,6 +11152,7 @@ if (parsedUrl.pathname === '/api/ytm/intercept-cookie' && req.method === 'POST')
         if (parsed.profile) networkScheduler.setProfile(parsed.profile);
         if (typeof parsed.autoCacheEnabled === 'boolean') networkScheduler.setAutoCacheEnabled(parsed.autoCacheEnabled);
         if (typeof parsed.playbackBuffering === 'boolean') networkScheduler.setPlaybackBuffering(parsed.playbackBuffering);
+        if (parsed.bumpGeneration) networkScheduler.bumpGeneration();
       } catch (_) {}
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify({ success: true, scheduler: networkScheduler.getStats() }));

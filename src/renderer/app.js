@@ -4755,7 +4755,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const qQuality = encodeURIComponent(curQuality);
       const qFallback = encodeURIComponent(nextTrack.searchQuery || ((nextTrack.artist ? nextTrack.artist + ' - ' : '') + (nextTrack.title || '')));
       const tokenParam = (window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '';
-      const fetchUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?id=${encodeURIComponent(nextTrack.id || '')}&url=${encodeURIComponent(nextTrack.url || '')}&platform=${encodeURIComponent(nextTrack.platform || 'ytmusic')}&title=${encodeURIComponent(nextTrack.title || '')}&artist=${encodeURIComponent(nextTrack.artist || '')}&duration=${encodeURIComponent(nextTrack.duration || 0)}&q=${qFallback}&quality=${qQuality}&token=${encodeURIComponent(tokenParam)}`;
+      const fetchUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?id=${encodeURIComponent(nextTrack.id || '')}&url=${encodeURIComponent(nextTrack.url || '')}&platform=${encodeURIComponent(nextTrack.platform || 'ytmusic')}&title=${encodeURIComponent(nextTrack.title || '')}&artist=${encodeURIComponent(nextTrack.artist || '')}&duration=${encodeURIComponent(nextTrack.duration || 0)}&q=${qFallback}&quality=${qQuality}&prefetch=1&token=${encodeURIComponent(tokenParam)}`;
       const res = await fetch(fetchUrl, { signal: controller.signal });
       const data = await res.json();
       if (myGen !== _nextPreloadGeneration || (nextTrackCoordinator && nextTrackCoordinator.generation !== coordGen) || controller.signal.aborted) return;
@@ -9065,6 +9065,13 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     if (syncState && syncState.active) return;
     if (state.queue.length === 0) return;
     abortAutoMixIfActive('skip');
+    if (state.serverPort) {
+      fetch(`http://127.0.0.1:${state.serverPort}/api/network-profile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bumpGeneration: true })
+      }).catch(() => {});
+    }
 
     if (!state._isNaturalEnding && state.myWaveActive && state.currentTrack) {
       const cur = (el.nativeAudio && typeof el.nativeAudio.currentTime === 'number') ? el.nativeAudio.currentTime : 0;

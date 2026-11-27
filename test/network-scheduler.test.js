@@ -74,3 +74,59 @@ test('NetworkPriorityScheduler: generation invalidation rejects stale queued NEX
   await Promise.all([s1, s2]);
   await assert.rejects(stalePrep, (err) => err && err.code === 'STALE_GENERATION');
 });
+
+test('NetworkPriorityScheduler: queued background download obeys profile switch to constrained before drain', async () => {
+  const scheduler = new NetworkPriorityScheduler({ profile: 'normal', autoCacheEnabled: true });
+  // normal maxConcurrent = 4; occupy all 4 slots
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const blockers = [
+    scheduler.schedule({ priority: Priority.PLAYBACK_AUDIO, fn: () => gate }),
+    scheduler.schedule({ priority: Priority.PLAYBACK_AUDIO, fn: () => gate }),
+    scheduler.schedule({ priority: Priority.PLAYBACK_AUDIO, fn: () => gate }),
+    scheduler.schedule({ priority: Priority.PLAYBACK_AUDIO, fn: () => gate })
+  ];
+
+  let bgRan = false;
+  const bgQueued = scheduler.schedule({
+    priority: Priority.BACKGROUND_DOWNLOAD,
+    explicitOptIn: false,
+    fn: async () => { bgRan = true; }
+  });
+
+  // Switch to constrained before queued background task drains
+  scheduler.setProfile('constrained');
+  release();
+  await Promise.all(blockers);
+  await sleep(20);
+  assert.equal(bgRan, false, 'Queued background download without explicitOptIn must not run after switching to constrained');
+  assert.equal(scheduler.getStats().queuedCount, 1);
+  // Clean up by switching back to normal
+  scheduler.setProfile('normal');
+  await bgQueued;
+});
+
+test('NetworkPriorityScheduler: playback buffering aborts active NEXT_TRACK_PREP and VISIBLE_ARTWORK_LYRICS', async () => {
+  const scheduler = new NetworkPriorityScheduler({ profile: 'normal', autoCacheEnabled: true });
+  let prepAborted = false;
+  let artAborted = false;
+
+  const prep = scheduler.schedule({
+    priority: Priority.NEXT_TRACK_PREP,
+    fn: (signal) => new Promise((resolve) => {
+      signal.addEventListener('abort', () => { prepAborted = true; resolve('aborted'); }, { once: true });
+    })
+  });
+  const art = scheduler.schedule({
+    priority: Priority.VISIBLE_ARTWORK_LYRICS,
+    fn: (signal) => new Promise((resolve) => {
+      signal.addEventListener('abort', () => { artAborted = true; resolve('aborted'); }, { once: true });
+    })
+  });
+
+  await sleep(10);
+  scheduler.setPlaybackBuffering(true);
+  await Promise.all([prep, art]);
+  assert.equal(prepAborted, true);
+  assert.equal(artAborted, true);
+});

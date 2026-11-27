@@ -245,7 +245,7 @@ class EclipsePreloadManager {
     const qFallback = ((track.artist ? track.artist + ' - ' : '') + (track.title || '')).trim();
     const token = this.getServerToken();
 
-    const fetchUrl = `http://127.0.0.1:${this.serverPort}/api/stream-info?id=${encodeURIComponent(cleanId)}&url=${encodeURIComponent(resolvedUrl)}&platform=${encodeURIComponent(track.platform || 'ytmusic')}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&q=${encodeURIComponent(qFallback)}&quality=${encodeURIComponent(curQuality)}&token=${encodeURIComponent(token)}`;
+    const fetchUrl = `http://127.0.0.1:${this.serverPort}/api/stream-info?id=${encodeURIComponent(cleanId)}&url=${encodeURIComponent(resolvedUrl)}&platform=${encodeURIComponent(track.platform || 'ytmusic')}&title=${encodeURIComponent(track.title || '')}&artist=${encodeURIComponent(track.artist || '')}&duration=${encodeURIComponent(track.duration || 0)}&q=${encodeURIComponent(qFallback)}&quality=${encodeURIComponent(curQuality)}&prefetch=1&token=${encodeURIComponent(token)}`;
 
     const res = await fetch(fetchUrl, { signal });
     if (!res.ok) return null;
@@ -286,13 +286,42 @@ class EclipsePreloadManager {
             headers: { 'Range': `bytes=0-${endByte}`, 'X-Eclipse-Prefetch': '1' },
             signal
           });
-          if (!res || (!res.ok && res.status !== 206)) {
-            if (res && (res.status === 403 || res.status === 410)) return false;
+          if (!res || res.status !== 206) {
+            if (res && res.body && typeof res.body.cancel === 'function') {
+              res.body.cancel().catch(() => {});
+            }
+            if (res && (res.status === 403 || res.status === 410 || res.status === 200)) return false;
             continue;
           }
-          const buf = await res.arrayBuffer();
-          if (!buf || buf.byteLength === 0) continue;
-          state.verified.set(url, { ts: Date.now(), bytes: buf.byteLength });
+          const contentRange = res.headers && typeof res.headers.get === 'function' ? (res.headers.get('content-range') || '') : '';
+          const crMatch = /^bytes\s+0-(\d+)\/(\d+|\*)$/i.exec(contentRange.trim());
+          if (!crMatch || Number(crMatch[1]) > endByte) {
+            if (res.body && typeof res.body.cancel === 'function') {
+              res.body.cancel().catch(() => {});
+            }
+            return false;
+          }
+          let totalRead = 0;
+          if (res.body && typeof res.body.getReader === 'function') {
+            const reader = res.body.getReader();
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (value) {
+                totalRead += value.byteLength;
+                if (totalRead > warmBytes) {
+                  await reader.cancel().catch(() => {});
+                  return false;
+                }
+              }
+            }
+          } else {
+            const buf = await res.arrayBuffer();
+            totalRead = buf ? buf.byteLength : 0;
+            if (totalRead > warmBytes) return false;
+          }
+          if (totalRead === 0) continue;
+          state.verified.set(url, { ts: Date.now(), bytes: totalRead });
           if (state.verified.size > 64) state.verified.delete(state.verified.keys().next().value);
           return true;
         } catch (err) {
