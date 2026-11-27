@@ -177,6 +177,13 @@ class ExternalPkceAuth {
             return;
           }
 
+          if (reqUrl.searchParams.getAll('code').length > 1 || reqUrl.searchParams.getAll('state').length > 1) {
+            res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end('<html><body><h3>Authentication failed: duplicate callback parameters.</h3></body></html>');
+            finishError('PKCE_DUPLICATE_PARAMS', 'Duplicate OAuth callback parameters');
+            return;
+          }
+
           const oauthError = reqUrl.searchParams.get('error');
           const returnedState = reqUrl.searchParams.get('state');
           const code = reqUrl.searchParams.get('code');

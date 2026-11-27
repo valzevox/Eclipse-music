@@ -164,7 +164,7 @@ test('12 & 13 & 14 & 15: BrowserPairingServer loopback, nonce validation, replay
         headers: Object.assign({
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(data),
-          'Origin': 'chrome-extension://abcdefghijklm'
+          'Origin': 'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
         }, headers)
       }, (res) => {
         let resBody = '';
@@ -232,7 +232,7 @@ test('16: BrowserPairingServer returns HTTP 400 when verification fails', async 
         headers: Object.assign({
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(data),
-          'Origin': 'chrome-extension://abcdefghijklm'
+          'Origin': 'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
         }, headers)
       }, (res) => {
         let resBody = '';

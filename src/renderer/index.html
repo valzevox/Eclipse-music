@@ -4307,13 +4307,18 @@
             <div class="pairing-field-row">
               <span class="pairing-field-label">Pairing Port:</span>
               <code id="ext-pairing-port" class="pairing-code">--</code>
+              <button type="button" id="btn-ext-copy-port" class="btn-outline-pill" style="padding: 2px 8px; font-size: 11px;">Copy Port</button>
             </div>
             <div class="pairing-field-row">
               <span class="pairing-field-label">Session Code:</span>
               <code id="ext-pairing-nonce" class="pairing-code pairing-code-truncate">--</code>
+              <button type="button" id="btn-ext-copy-nonce" class="btn-outline-pill" style="padding: 2px 8px; font-size: 11px;">Copy Nonce</button>
             </div>
-            <div class="pairing-waiting-text">
-              Waiting for extension (<span id="ext-pairing-countdown">120</span>s remaining)...
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px;">
+              <div class="pairing-waiting-text" style="margin: 0;">
+                Waiting for extension (<span id="ext-pairing-countdown">120</span>s remaining)...
+              </div>
+              <button type="button" id="btn-ext-copy-all" class="btn-outline-pill" style="padding: 2px 10px; font-size: 11px;">Copy All Details</button>
             </div>
           </div>
         </div>

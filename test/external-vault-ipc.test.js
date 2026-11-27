@@ -149,6 +149,31 @@ test('PKCE: rejects state mismatch on callback', async () => {
   assert.equal(pkce.isActive(), false);
 });
 
+test('PKCE: rejects duplicate code or state parameters on callback', async () => {
+  const pkce = new ExternalPkceAuth({
+    clientId: 'eclipse-test-client',
+    timeoutMs: 5000,
+    fetchImpl: async () => {
+      throw new Error('Token endpoint must not be called on duplicate params');
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      pkce.authenticate({
+        onAuthUrl: async (authUrl) => {
+          const parsed = new URL(authUrl);
+          const redirectUri = parsed.searchParams.get('redirect_uri');
+          const state = parsed.searchParams.get('state');
+          const cbRes = await httpGet(`${redirectUri}?code=a&code=b&state=${encodeURIComponent(state)}`);
+          assert.equal(cbRes.status, 400);
+        }
+      }),
+    (err) => err && err.code === 'PKCE_DUPLICATE_PARAMS'
+  );
+  assert.equal(pkce.isActive(), false);
+});
+
 test('PKCE: cancel() aborts active flow and closes loopback server', async () => {
   const pkce = new ExternalPkceAuth({
     clientId: 'eclipse-test-client',
@@ -189,6 +214,7 @@ test('ExternalSessionVerifier: covers all 8 ExternalSessionStatus outcomes', asy
     'SIGNED_OUT',
     'EXPIRED',
     'INVALID_COOKIE',
+    'UNVERIFIED_WEB_SESSION',
     'PERMISSION_DENIED',
     'NETWORK_UNAVAILABLE',
     'TEMP_REFUSAL',
@@ -329,26 +355,20 @@ test('ExternalSessionVerifier: rejects HTTP 200 with invalid schema or expired t
   assert.equal(badSchemaRes.connected, false);
   assert.ok(!JSON.stringify(badSchemaRes).includes(secretToken));
 
-  // HTTP 200 cookie web-token response with expired accessTokenExpirationTimestampMs
-  const expiredCookieTokenVerifier = new ExternalSessionVerifier({
+  // Valid-looking sp_dc cookie must NEVER produce VALID / connected: true (strictly UNVERIFIED_WEB_SESSION)
+  const cookieVerifier = new ExternalSessionVerifier({
     nowFn: () => now,
-    fetchImpl: async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        isAnonymous: false,
-        accessToken: secretToken,
-        accessTokenExpirationTimestampMs: now - 5000
-      })
-    })
+    fetchImpl: async () => {
+      throw new Error('Must not call /get_access_token for sp_dc');
+    }
   });
-  const expiredCookieRes = await expiredCookieTokenVerifier.verify({
+  const cookieRes = await cookieVerifier.verify({
     authType: 'cookie',
     cookies: [{ name: 'sp_dc', value: secretCookie, domain: 'open.spotify.com', path: '/', secure: true }]
   });
-  assert.equal(expiredCookieRes.status, ExternalSessionStatus.EXPIRED);
-  assert.equal(expiredCookieRes.connected, false);
-  const serialized = JSON.stringify(expiredCookieRes);
+  assert.equal(cookieRes.status, ExternalSessionStatus.UNVERIFIED_WEB_SESSION);
+  assert.equal(cookieRes.connected, false);
+  const serialized = JSON.stringify(cookieRes);
   assert.ok(!serialized.includes(secretCookie));
   assert.ok(!serialized.includes(secretToken));
 });
@@ -513,15 +533,15 @@ test('ExternalSessionService: generation-token prevents stale async op from over
 
   try {
     const stalePkcePromise = service.startPkceLogin();
-    // Newer login completes while stale PKCE is still pending
+    // Newer unverified web session completes while stale PKCE is still pending
     const newerStatus = await service.importFromCookies(
       [{ name: 'sp_dc', value: 'newer-cookie', domain: 'open.spotify.com', path: '/', secure: true }],
       'extension_pairing'
     );
-    assert.equal(newerStatus.connected, true);
-    assert.equal(newerStatus.displayName, 'Newer User');
+    assert.equal(newerStatus.connected, false);
+    assert.equal(newerStatus.webSessionStatus, 'spotify_web_session_unverified');
 
-    // Now resolve the stale PKCE op; it must NOT overwrite Newer User
+    // Now resolve the stale PKCE op; it must NOT overwrite newer generation
     resolveSlowPkce({
       authType: 'pkce',
       accessToken: 'stale-pkce-token',
@@ -531,9 +551,9 @@ test('ExternalSessionService: generation-token prevents stale async op from over
     await stalePkcePromise;
 
     const finalStatus = service.getStatus();
-    assert.equal(finalStatus.connected, true);
-    assert.equal(finalStatus.displayName, 'Newer User');
-    assert.equal(finalStatus.connectionMethod, 'extension_pairing');
+    assert.equal(finalStatus.connected, false);
+    assert.equal(finalStatus.webSessionStatus, 'spotify_web_session_unverified');
+    assert.equal(finalStatus.connectionMethod, null);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

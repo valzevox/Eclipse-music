@@ -2180,6 +2180,7 @@ ipcMain.on('window-minimize', () => {
           authType: typeof s.authType === 'string' ? s.authType : null,
           lastVerifiedAt: Number.isFinite(s.lastVerifiedAt) ? s.lastVerifiedAt : null,
           sessionStatus: typeof s.sessionStatus === 'string' ? s.sessionStatus : 'SIGNED_OUT',
+          webSessionStatus: typeof s.webSessionStatus === 'string' ? s.webSessionStatus : null,
           persisted: Boolean(s.persisted),
           storageWarning: typeof s.storageWarning === 'string' ? s.storageWarning : null
         };
@@ -2204,6 +2205,7 @@ ipcMain.on('window-minimize', () => {
           emitExternalSessionResult({
             operationId: activeExternalOpId,
             success: safeStatus.connected,
+            webSessionUnverified: safeStatus.webSessionStatus === 'spotify_web_session_unverified',
             method: safeStatus.connectionMethod === 'pkce'
               ? 'pkce'
               : (safeStatus.connectionMethod === 'extension_pairing' ? 'bridge' : safeStatus.connectionMethod),
@@ -2238,7 +2240,8 @@ ipcMain.on('window-minimize', () => {
           return {
             success: true,
             port: sessionInfo && sessionInfo.port ? sessionInfo.port : null,
-            pairingCode: sessionInfo && sessionInfo.pairingCode ? sessionInfo.pairingCode : null,
+            nonce: sessionInfo && sessionInfo.nonce ? sessionInfo.nonce : null,
+            pairingCode: sessionInfo && sessionInfo.nonce ? sessionInfo.nonce : null,
             timeoutSeconds: sessionInfo && sessionInfo.timeoutSeconds ? sessionInfo.timeoutSeconds : 120
           };
         } catch (err) {
@@ -2284,7 +2287,15 @@ ipcMain.on('window-minimize', () => {
               parentWindow: mainWindow
             })
           );
-          return { success: status.connected, status };
+          const webSessionUnverified = status.webSessionStatus === 'spotify_web_session_unverified';
+          return {
+            success: false,
+            webSessionUnverified,
+            status,
+            error: webSessionUnverified
+              ? 'Local web session captured (unverified). Use Official OAuth PKCE to connect your external account.'
+              : 'External login window did not complete.'
+          };
         } catch (err) {
           const msg = err && err.message ? err.message : 'External login window failed';
           const code = err && err.code ? err.code : null;

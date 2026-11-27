@@ -30841,6 +30841,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const pairingPort = document.getElementById('ext-pairing-port');
     const pairingNonce = document.getElementById('ext-pairing-nonce');
     const pairingCountdown = document.getElementById('ext-pairing-countdown');
+    const btnCopyPort = document.getElementById('btn-ext-copy-port');
+    const btnCopyNonce = document.getElementById('btn-ext-copy-nonce');
+    const btnCopyAll = document.getElementById('btn-ext-copy-all');
     const btnOpenLoginWindow = document.getElementById('btn-ext-open-login-window');
 
     const btnReconnect = document.getElementById('btn-ext-reconnect');
@@ -31059,8 +31062,9 @@ document.addEventListener('DOMContentLoaded', () => {
           const res = await api.externalSessionStartPairing({ operationId: opId });
           if (this.isStaleOp(opId)) return;
           if (res && res.success) {
+            const resolvedNonce = res.nonce || res.pairingCode || '';
             if (pairingPort) pairingPort.textContent = res.port ? String(res.port) : '--';
-            if (pairingNonce) pairingNonce.textContent = res.pairingCode ? String(res.pairingCode) : 'active';
+            if (pairingNonce) pairingNonce.textContent = resolvedNonce ? String(resolvedNonce) : '--';
             this.startCountdown(res.timeoutSeconds || 120);
           } else {
             this.activeOp = null;
@@ -31125,8 +31129,11 @@ document.addEventListener('DOMContentLoaded', () => {
           const res = await api.externalSessionOpenLoginWindow({ operationId: opId });
           if (this.isStaleOp(opId)) return;
           this.activeOp = null;
-          if (res && res.success) {
-            this.applyState('connected');
+          if (res && res.webSessionUnverified) {
+            this.applyState('unpaired', {
+              bridgeStatus: 'unverified local web session',
+              error: res.error || 'Local web session captured (unverified). Use Official OAuth PKCE to connect your external account.'
+            });
           } else if (res && res.canceled) {
             this.applyState('unpaired');
           } else {
@@ -31177,7 +31184,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (payload.success) {
           controller.applyState('connected', {
             pkceStatus: payload.method === 'pkce' ? 'connected' : controller.pkceStatus,
-            bridgeStatus: payload.method === 'bridge' ? 'connected' : controller.bridgeStatus
+            bridgeStatus: payload.webSessionUnverified ? 'unverified local web session' : controller.bridgeStatus
+          });
+        } else if (payload.webSessionUnverified) {
+          controller.applyState('unpaired', {
+            bridgeStatus: 'unverified local web session',
+            error: 'Local web session captured (unverified). Use Official OAuth PKCE to connect your external account.'
           });
         } else if (payload.canceled) {
           controller.applyState('unpaired');
@@ -31199,6 +31211,23 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnCancelPkce) btnCancelPkce.addEventListener('click', () => controller.cancelActiveOp());
     if (btnStartPairing) btnStartPairing.addEventListener('click', () => controller.startPairing());
     if (btnCancelPairing) btnCancelPairing.addEventListener('click', () => controller.cancelActiveOp());
+    const copyWithFeedback = (btn, text) => {
+      if (!text || text === '--' || !navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') return;
+      navigator.clipboard.writeText(text).then(() => {
+        const orig = btn.textContent;
+        btn.textContent = 'Copied';
+        setTimeout(() => { btn.textContent = orig; }, 1200);
+      }).catch(() => {});
+    };
+    if (btnCopyPort) btnCopyPort.addEventListener('click', () => copyWithFeedback(btnCopyPort, pairingPort ? pairingPort.textContent.trim() : ''));
+    if (btnCopyNonce) btnCopyNonce.addEventListener('click', () => copyWithFeedback(btnCopyNonce, pairingNonce ? pairingNonce.textContent.trim() : ''));
+    if (btnCopyAll) btnCopyAll.addEventListener('click', () => {
+      const p = pairingPort ? pairingPort.textContent.trim() : '';
+      const n = pairingNonce ? pairingNonce.textContent.trim() : '';
+      if (p && p !== '--' && n && n !== '--') {
+        copyWithFeedback(btnCopyAll, `Port: ${p}\nNonce: ${n}`);
+      }
+    });
     if (btnRefreshProfiles) btnRefreshProfiles.addEventListener('click', () => controller.refreshProfiles());
     if (btnOpenLoginWindow) btnOpenLoginWindow.addEventListener('click', () => controller.openLoginWindow());
     if (btnDisconnect) btnDisconnect.addEventListener('click', () => controller.disconnect());

@@ -18,6 +18,7 @@ function createDefaultState() {
     authType: null,
     lastVerifiedAt: null,
     sessionStatus: ExternalSessionStatus.SIGNED_OUT,
+    webSessionStatus: null,
     persisted: false,
     storageWarning: null
   };
@@ -67,6 +68,7 @@ class ExternalSessionService {
       authType: nextState.authType || null,
       lastVerifiedAt: Number.isFinite(nextState.lastVerifiedAt) ? nextState.lastVerifiedAt : null,
       sessionStatus: nextState.sessionStatus || ExternalSessionStatus.SIGNED_OUT,
+      webSessionStatus: nextState.webSessionStatus || null,
       persisted: Boolean(nextState.persisted),
       storageWarning: nextState.storageWarning || null
     };
@@ -97,7 +99,10 @@ class ExternalSessionService {
       });
     }
 
-    if (!loaded.data) {
+    if (!loaded.data || loaded.data.authType !== 'pkce') {
+      if (loaded.data && loaded.data.authType !== 'pkce') {
+        this.vault.clear();
+      }
       return this._setState(createDefaultState());
     }
 
@@ -146,12 +151,15 @@ class ExternalSessionService {
           throw new Error('Pairing session superseded');
         }
         const status = await this.importFromCookies(cookieRecords, 'extension_pairing', gen);
-        if (!status.connected) {
+        if (!status.connected && status.webSessionStatus !== 'spotify_web_session_unverified') {
           const err = new Error(status.sessionStatus || BrowserLoginFailure.SESSION_REJECTED);
           err.reason = status.sessionStatus || BrowserLoginFailure.SESSION_REJECTED;
           throw err;
         }
-        return { account: status };
+        return {
+          account: status,
+          webSessionUnverified: status.webSessionStatus === 'spotify_web_session_unverified'
+        };
       }
     });
 
@@ -244,6 +252,25 @@ class ExternalSessionService {
     const verification = await this.verifier.verify(credentials);
     if (gen !== this._generation) {
       return this.getStatus();
+    }
+
+    if (credentials.authType !== 'pkce') {
+      if (verification.status === ExternalSessionStatus.UNVERIFIED_WEB_SESSION) {
+        return this._setState({
+          ...this._state,
+          connected: Boolean(this._state.connected && this._state.authType === 'pkce'),
+          webSessionStatus: 'spotify_web_session_unverified',
+          sessionStatus: this._state.connected && this._state.authType === 'pkce'
+            ? this._state.sessionStatus
+            : ExternalSessionStatus.UNVERIFIED_WEB_SESSION
+        });
+      }
+      return this._setState({
+        ...createDefaultState(),
+        connectionMethod: credentials.connectionMethod || null,
+        authType: credentials.authType || null,
+        sessionStatus: verification.status
+      });
     }
 
     if (verification.status !== ExternalSessionStatus.VALID) {

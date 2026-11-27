@@ -195,6 +195,46 @@ test('BrowserPairingServer: exact Host + Origin validation in production vs dev'
     prodServer.close();
   }
 
+  // Packaged build with empty allowedExtensionIds allows valid [a-p]{32} Chrome extension IDs with exact nonce,
+  // while rejecting Origin: null, missing Origin, and non-[a-p]{32} extension IDs
+  const packagedUnpackedServer = new BrowserPairingServer({
+    target: BrowserLoginTarget.EXTERNAL_WEB,
+    isPackaged: true,
+    allowedExtensionIds: []
+  });
+  const pkgInfo = await packagedUnpackedServer.start();
+  try {
+    for (const badOrigin of [
+      'null',
+      undefined,
+      'chrome-extension://zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz',
+      'chrome-extension://shortid'
+    ]) {
+      const headers = { Host: `127.0.0.1:${pkgInfo.port}`, 'Content-Type': 'application/json' };
+      if (badOrigin !== undefined) headers.Origin = badOrigin;
+      const res = await sendRawHttpRequest({ port: pkgInfo.port, headers, body: '{}' });
+      assert.equal(res.status, 403, `Expected 403 for origin=${String(badOrigin)}`);
+    }
+
+    const okRes = await sendRawHttpRequest({
+      port: pkgInfo.port,
+      headers: {
+        Host: `127.0.0.1:${pkgInfo.port}`,
+        Origin: `chrome-extension://${devOnlyId}`,
+        'Content-Type': 'application/json',
+        'X-Eclipse-Nonce': pkgInfo.nonce
+      },
+      body: JSON.stringify({
+        target: BrowserLoginTarget.EXTERNAL_WEB,
+        cookies: [{ name: 'sp_dc', value: 'valid-sp-dc', domain: 'open.spotify.com', path: '/', secure: true }]
+      })
+    });
+    assert.equal(okRes.status, 200);
+    assert.equal(okRes.json.success, true);
+  } finally {
+    packagedUnpackedServer.close();
+  }
+
   // Dev mode allows dev extension IDs and null origin only when !isPackaged
   const devServer = new BrowserPairingServer({
     target: BrowserLoginTarget.EXTERNAL_WEB,

@@ -7,6 +7,7 @@ const ExternalSessionStatus = Object.freeze({
   SIGNED_OUT: 'SIGNED_OUT',
   EXPIRED: 'EXPIRED',
   INVALID_COOKIE: 'INVALID_COOKIE',
+  UNVERIFIED_WEB_SESSION: 'UNVERIFIED_WEB_SESSION',
   PERMISSION_DENIED: 'PERMISSION_DENIED',
   NETWORK_UNAVAILABLE: 'NETWORK_UNAVAILABLE',
   TEMP_REFUSAL: 'TEMP_REFUSAL',
@@ -142,7 +143,6 @@ class ExternalSessionVerifier {
   }
 
   async verifyCookieSession(credentials) {
-    let validatedCookie;
     try {
       const cookieList = Array.isArray(credentials.cookies)
         ? credentials.cookies
@@ -155,7 +155,7 @@ class ExternalSessionVerifier {
             httpOnly: true,
             hostOnly: true
           }];
-      validatedCookie = validateExternalSessionCookies(cookieList, {
+      validateExternalSessionCookies(cookieList, {
         nowSeconds: Math.floor(this.nowFn() / 1000)
       });
     } catch (err) {
@@ -164,77 +164,10 @@ class ExternalSessionVerifier {
       });
     }
 
-    let res;
-    try {
-      res = await this.fetchImpl(this.webTokenUrl, {
-        method: 'GET',
-        headers: {
-          Cookie: `sp_dc=${validatedCookie.value}`,
-          Accept: 'application/json',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        },
-        signal: AbortSignal.timeout(12000)
-      });
-    } catch (_) {
-      return buildResult(ExternalSessionStatus.NETWORK_UNAVAILABLE, {
-        reason: 'Network unavailable while verifying cookie session'
-      });
-    }
-
-    if (res.status === 401) {
-      return buildResult(ExternalSessionStatus.INVALID_COOKIE, { reason: 'Session cookie rejected (401)' });
-    }
-    if (res.status === 403) {
-      return buildResult(ExternalSessionStatus.PERMISSION_DENIED, { reason: 'Access denied (403)' });
-    }
-    if (res.status === 429 || res.status >= 500) {
-      return buildResult(ExternalSessionStatus.TEMP_REFUSAL, { reason: `Upstream temporary refusal (${res.status})` });
-    }
-    if (!res.ok) {
-      return buildResult(ExternalSessionStatus.SIGNED_OUT, { reason: `Unexpected HTTP status (${res.status})` });
-    }
-
-    let tokenPayload;
-    try {
-      tokenPayload = await res.json();
-    } catch (_) {
-      return buildResult(ExternalSessionStatus.INVALID_COOKIE, { reason: 'Invalid JSON token response' });
-    }
-
-    if (!tokenPayload || typeof tokenPayload !== 'object') {
-      return buildResult(ExternalSessionStatus.INVALID_COOKIE, { reason: 'Malformed token payload' });
-    }
-
-    if (tokenPayload.isAnonymous === true) {
-      return buildResult(ExternalSessionStatus.SIGNED_OUT, { reason: 'Anonymous session is not signed in' });
-    }
-
-    if (typeof tokenPayload.accessToken !== 'string' || !tokenPayload.accessToken.trim()) {
-      return buildResult(ExternalSessionStatus.SIGNED_OUT, { reason: 'Missing access token in session response' });
-    }
-
-    const expiresAt = Number(tokenPayload.accessTokenExpirationTimestampMs);
-    if (!Number.isFinite(expiresAt) || expiresAt <= this.nowFn()) {
-      return buildResult(ExternalSessionStatus.EXPIRED, {
-        expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
-        reason: 'Session token is expired'
-      });
-    }
-
-    const profileCheck = await this.verifyAccessToken({
-      accessToken: tokenPayload.accessToken,
-      expiresAt
-    });
-
-    if (profileCheck.status !== ExternalSessionStatus.VALID) {
-      return profileCheck;
-    }
-
-    return buildResult(ExternalSessionStatus.VALID, {
-      accountId: profileCheck.accountId,
-      displayName: profileCheck.displayName,
-      avatarUrl: profileCheck.avatarUrl,
-      expiresAt
+    // sp_dc cookie bridge is strictly an unverified local web session;
+    // Official OAuth PKCE + /v1/me is the only trusted account authentication.
+    return buildResult(ExternalSessionStatus.UNVERIFIED_WEB_SESSION, {
+      reason: 'Unverified local web session (Official OAuth PKCE required for account authentication)'
     });
   }
 }

@@ -488,9 +488,8 @@ test('LoginWindow + ExternalSessionService: verifies before persisting and never
           return { status: ExternalSessionStatus.INVALID_COOKIE };
         }
         return {
-          status: ExternalSessionStatus.VALID,
-          displayName: 'Eclipse Listener',
-          avatarUrl: 'https://example.com/avatar.png'
+          status: ExternalSessionStatus.UNVERIFIED_WEB_SESSION,
+          connected: false
         };
       }
     },
@@ -510,9 +509,10 @@ test('LoginWindow + ExternalSessionService: verifies before persisting and never
 
     const accepted = await service.openLoginWindow({ cookieValue: 'secret-sp-dc-value' });
     assert.equal(verifyCalls, 2);
-    assert.equal(accepted.connected, true);
-    assert.equal(accepted.connectionMethod, 'login_window');
-    assert.equal(accepted.displayName, 'Eclipse Listener');
+    assert.equal(accepted.connected, false);
+    assert.equal(accepted.webSessionStatus, 'spotify_web_session_unverified');
+    assert.equal(accepted.sessionStatus, ExternalSessionStatus.UNVERIFIED_WEB_SESSION);
+    assert.equal(vault.load().data, null);
     assert.equal(JSON.stringify(accepted).includes('secret-sp-dc-value'), false);
     assert.equal(JSON.stringify(service.getStatus()).includes('secret-sp-dc-value'), false);
   } finally {

@@ -7,8 +7,9 @@ const { BrowserCookieRecord } = require('./browser-cookie-record');
 const { BrowserLoginTarget, resolveTargetHost } = require('./browser-login-targets');
 
 const MAX_BODY_BYTES = 512 * 1024;
-const CHROME_EXT_ORIGIN_RE = /^chrome-extension:\/\/([a-z0-9]+)$/i;
-const MOZ_EXT_ORIGIN_RE = /^moz-extension:\/\/([a-z0-9-]+)$/i;
+const CHROME_EXT_ORIGIN_RE = /^chrome-extension:\/\/([a-p]{32})$/i;
+const MOZ_EXT_ORIGIN_RE = /^moz-extension:\/\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+const HEX_NONCE_RE = /^[0-9a-f]{64}$/i;
 
 function constantTimeEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
@@ -117,9 +118,6 @@ class BrowserPairingServer {
     if (!match) return false;
 
     const extId = match[1].toLowerCase();
-    if (this.isPackaged) {
-      return this.allowedExtensionIds.includes(extId);
-    }
     if (this.allowedExtensionIds.length > 0) {
       return this.allowedExtensionIds.includes(extId);
     }
@@ -222,9 +220,11 @@ class BrowserPairingServer {
       try {
         const body = Buffer.concat(chunks).toString('utf8');
         const payload = JSON.parse(body || '{}');
-        const headerNonce = req.headers['x-eclipse-nonce'] || payload.nonce;
+        const headerNonce = typeof req.headers['x-eclipse-nonce'] === 'string'
+          ? req.headers['x-eclipse-nonce'].trim()
+          : '';
 
-        if (!constantTimeEqual(headerNonce, this.nonce)) {
+        if (!HEX_NONCE_RE.test(headerNonce) || !constantTimeEqual(headerNonce, this.nonce)) {
           this.redeemAttempts += 1;
           if (this.redeemAttempts >= this.maxRedeemAttempts) {
             this.locked = true;
@@ -241,8 +241,6 @@ class BrowserPairingServer {
         if (this.target !== BrowserLoginTarget.YOUTUBE && payload.target !== this.target) {
           return this.sendJson(res, 400, { success: false, error: BrowserLoginFailure.INVALID_DATA }, origin);
         }
-
-        this.consumed = true;
 
         const rawCookies = payload.cookies;
         if (!Array.isArray(rawCookies) || rawCookies.length === 0) {
@@ -263,6 +261,12 @@ class BrowserPairingServer {
             hostOnly: !!c.hostOnly
           }));
         }
+
+        if (cookieRecords.length === 0) {
+          return this.sendJson(res, 400, { success: false, error: BrowserLoginFailure.COOKIE_FORMAT_INVALID }, origin);
+        }
+
+        this.consumed = true;
 
         if (typeof this.onCookiesReceived === 'function') {
           try {
