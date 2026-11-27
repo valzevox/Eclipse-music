@@ -132,10 +132,15 @@ class PreloadManager {
   }
 
   warmUpBuffer(streamUrl) {
-    if (!streamUrl || typeof streamUrl !== 'string' || streamUrl.includes('.m3u8')) return;
-    const warmed = (globalThis.__eclipseWarmedUrls = globalThis.__eclipseWarmedUrls || new Map());
-    const prevTs = warmed.get(streamUrl);
-    if (prevTs && Date.now() - prevTs < 30 * 60 * 1000) return;
+    if (!streamUrl || typeof streamUrl !== 'string' || streamUrl.includes('.m3u8')) return Promise.resolve(false);
+    const state = (globalThis.__eclipseWarmedState = globalThis.__eclipseWarmedState || {
+      inflight: new Map(),
+      verified: new Map()
+    });
+    const prev = state.verified.get(streamUrl);
+    if (prev && Date.now() - prev.ts < 30 * 60 * 1000) return Promise.resolve(true);
+    if (state.inflight.has(streamUrl)) return state.inflight.get(streamUrl);
+
     let warmBytes = 262144;
     if (typeof navigator !== 'undefined' && navigator.connection) {
       const conn = navigator.connection;
@@ -143,16 +148,35 @@ class PreloadManager {
         warmBytes = 65536;
       }
     }
-    try {
-      warmed.set(streamUrl, Date.now());
-      if (warmed.size > 64) warmed.delete(warmed.keys().next().value);
-      fetch(streamUrl, {
-        headers: { 'Range': `bytes=0-${warmBytes - 1}`, 'X-Eclipse-Prefetch': '1' },
-        signal: this.abortController ? this.abortController.signal : undefined
-      }).catch(() => { warmed.delete(streamUrl); });
-    } catch (_) {
-      warmed.delete(streamUrl);
-    }
+    const signal = this.abortController ? this.abortController.signal : undefined;
+    const p = (async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (signal && signal.aborted) return false;
+        try {
+          const res = await fetch(streamUrl, {
+            headers: { 'Range': `bytes=0-${warmBytes - 1}`, 'X-Eclipse-Prefetch': '1' },
+            signal
+          });
+          if (!res || (!res.ok && res.status !== 206)) {
+            if (res && (res.status === 403 || res.status === 410)) return false;
+            continue;
+          }
+          const buf = await res.arrayBuffer();
+          if (!buf || buf.byteLength === 0) continue;
+          state.verified.set(streamUrl, { ts: Date.now(), bytes: buf.byteLength });
+          if (state.verified.size > 64) state.verified.delete(state.verified.keys().next().value);
+          return true;
+        } catch (err) {
+          if (err && err.name === 'AbortError') return false;
+        }
+      }
+      return false;
+    })().finally(() => {
+      state.inflight.delete(streamUrl);
+    });
+
+    state.inflight.set(streamUrl, p);
+    return p;
   }
 
   async fetchSponsorSegments(track) {

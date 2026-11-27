@@ -29,17 +29,24 @@ class StaleFirstArtworkCache {
     }
   }
 
-  _set(url, buffer, contentType) {
+  _set(url, buffer, contentType, timestamp = Date.now()) {
     if (!Buffer.isBuffer(buffer) || buffer.length === 0 || buffer.length > this.maxItemBytes) return false;
     const prev = this.cache.get(url);
     if (prev) {
       this.totalBytes = Math.max(0, this.totalBytes - prev.buffer.length);
       this.cache.delete(url);
     }
-    this.cache.set(url, { buffer, contentType: contentType || 'image/jpeg', timestamp: Date.now() });
+    this.cache.set(url, { buffer, contentType: contentType || 'image/jpeg', timestamp });
     this.totalBytes += buffer.length;
     this._evictIfNeeded();
     return true;
+  }
+
+  seedFromDisk(url, buffer, contentType, mtimeMs) {
+    if (!url || !Buffer.isBuffer(buffer) || buffer.length === 0) return false;
+    if (this.cache.has(url)) return true;
+    const ts = Number.isFinite(mtimeMs) && mtimeMs > 0 ? mtimeMs : 0;
+    return this._set(url, buffer, contentType, ts);
   }
 
   _withConcurrency(fn) {

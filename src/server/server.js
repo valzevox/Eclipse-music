@@ -38,7 +38,7 @@ const { NetworkDiagnostics } = require('./network-diagnostics');
 const { AdaptiveRangeCache, parseRangeHeader, extractUpstreamExpiryMs } = require('./range-cache');
 const { StaleFirstArtworkCache } = require('./artwork-cache');
 
-const networkScheduler = new NetworkPriorityScheduler({ profile: 'normal', autoCacheEnabled: false });
+const networkScheduler = new NetworkPriorityScheduler({ profile: 'normal', autoCacheEnabled: true });
 const networkDiagnostics = new NetworkDiagnostics();
 const adaptiveRangeCache = new AdaptiveRangeCache({ maxTotalBytes: 32 * 1024 * 1024, maxEntries: 64 });
 const artworkCache = new StaleFirstArtworkCache({ maxConcurrent: 4 });
@@ -2023,41 +2023,55 @@ async function downloadTrackToDisk(trackUrl, trackId, platform, meta = {}) {
   let cmd;
   try { cmd = ytDlpCommand(args); } catch (e) { downloadingSet.delete(cleanId); try { logger.error('Download command error: ' + (meta.title || trackId), e); } catch (_) {} return; }
 
-  bgYtDlp(() => new Promise((done) => {
-    const proc = spawn(cmd.bin, cmd.args, { windowsHide: true });
-    let downloadTimer = null;
-    if (DOWNLOAD_TIMEOUT_MS > 0) {
-      downloadTimer = setTimeout(() => {
-        try { proc.kill('SIGKILL'); } catch (e) {}
-      }, DOWNLOAD_TIMEOUT_MS);
-    }
-    let downloadStderr = '';
-    if (proc.stdout) proc.stdout.resume();
-    if (proc.stderr) proc.stderr.on('data', (d) => { downloadStderr += d.toString(); });
-    proc.on('close', async (code) => {
-      if (downloadTimer) clearTimeout(downloadTimer);
-      downloadingSet.delete(cleanId);
-      if (code !== 0 && downloadStderr) console.error('download failed:', downloadStderr.slice(0, 500));
-      if (code === 0) {
-        try {
-          const files = await fs.promises.readdir(CACHE_DIR);
-          const tempFile = files.map(f => path.join(CACHE_DIR, f)).find(f => f.startsWith(tempBase + '.') && !f.endsWith('.part'));
-          if (tempFile) {
-            const stat = await fs.promises.stat(tempFile);
-            if (stat.size > 60000) {
-              const ext = path.extname(tempFile);
-              const outputPath = path.join(CACHE_DIR, `${cleanId}${ext}`);
-              await fs.promises.rename(tempFile, outputPath);
-              saveTrackMetadata(cleanId, {
-                id: trackId,
-                title: meta.title || '',
-                artist: meta.artist || '',
-                duration: meta.duration || 0,
-                thumbnail: meta.thumbnail || '',
-                platform: platform || 'youtube',
-                fileSize: stat.size
-              });
-            } else {
+  return networkScheduler.schedule({
+    priority: Priority.BACKGROUND_DOWNLOAD,
+    key: `bg:${cleanId}`,
+    explicitOptIn: Boolean(meta && meta.explicitOptIn),
+    fn: (signal) => bgYtDlp(() => new Promise((done) => {
+      if (signal && signal.aborted) {
+        downloadingSet.delete(cleanId);
+        return done();
+      }
+      const proc = spawn(cmd.bin, cmd.args, { windowsHide: true });
+      const onAbort = () => {
+        try { proc.kill('SIGKILL'); } catch (_) {}
+      };
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
+      let downloadTimer = null;
+      if (DOWNLOAD_TIMEOUT_MS > 0) {
+        downloadTimer = setTimeout(() => {
+          try { proc.kill('SIGKILL'); } catch (e) {}
+        }, DOWNLOAD_TIMEOUT_MS);
+      }
+      let downloadStderr = '';
+      if (proc.stdout) proc.stdout.resume();
+      if (proc.stderr) proc.stderr.on('data', (d) => { downloadStderr += d.toString(); });
+      proc.on('close', async (code) => {
+        if (signal) signal.removeEventListener('abort', onAbort);
+        if (downloadTimer) clearTimeout(downloadTimer);
+        downloadingSet.delete(cleanId);
+        if (code !== 0 && downloadStderr) console.error('download failed:', downloadStderr.slice(0, 500));
+        if (code === 0) {
+          try {
+            const files = await fs.promises.readdir(CACHE_DIR);
+            const tempFile = files.map(f => path.join(CACHE_DIR, f)).find(f => f.startsWith(tempBase + '.') && !f.endsWith('.part'));
+            if (tempFile) {
+              const stat = await fs.promises.stat(tempFile);
+              if (stat.size > 60000) {
+                const ext = path.extname(tempFile);
+                const outputPath = path.join(CACHE_DIR, `${cleanId}${ext}`);
+                await fs.promises.rename(tempFile, outputPath);
+                networkDiagnostics.addBytes('backgroundDownload', stat.size);
+                saveTrackMetadata(cleanId, {
+                  id: trackId,
+                  title: meta.title || '',
+                  artist: meta.artist || '',
+                  duration: meta.duration || 0,
+                  thumbnail: meta.thumbnail || '',
+                  platform: platform || 'youtube',
+                  fileSize: stat.size
+                });
+              } else {
               try { await fs.promises.unlink(tempFile); } catch (e) {}
             }
           }
@@ -2076,12 +2090,14 @@ async function downloadTrackToDisk(trackUrl, trackId, platform, meta = {}) {
       done();
     });
     proc.on('error', (err) => {
+      if (signal) signal.removeEventListener('abort', onAbort);
       if (downloadTimer) clearTimeout(downloadTimer);
       downloadingSet.delete(cleanId);
       try { logger.error('Download spawn error: ' + (meta.title || trackId), err); } catch (_) {}
       done();
     });
-  })).catch(() => { downloadingSet.delete(cleanId); });
+  }))
+  }).catch(() => { downloadingSet.delete(cleanId); });
 }
 
 async function prefetchTrack(trackUrl, trackId, platform) {
@@ -2866,12 +2882,14 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
   }
 
   const streamInfoStartMs = Date.now();
+  const stageTimings = { cacheLookupMs: 0, directResolverMs: 0, ytDlpFallbackMs: 0, probeMs: 0 };
   const cacheKey = (cleanId || trackUrl || queryQ || `${artist}_${title}`).toLowerCase() + '_' + quality;
   if (!forShare && !forceYtDlp && cacheKey && (streamUrlCache.has(cacheKey) || (cleanId && streamUrlCache.has(cleanId + '_' + quality)))) {
     const cached = streamUrlCache.get(cacheKey) || (cleanId ? streamUrlCache.get(cleanId + '_' + quality) : null);
     const notExpired = cached && (cached.expiresAt ? Date.now() < cached.expiresAt : (Date.now() - cached.timestamp < 7200000));
     if (notExpired) {
-      networkDiagnostics.recordStreamInfo({ hit: true, durationMs: Date.now() - streamInfoStartMs });
+      stageTimings.cacheLookupMs = Date.now() - streamInfoStartMs;
+      networkDiagnostics.recordStreamInfo({ hit: true, durationMs: stageTimings.cacheLookupMs, stage: stageTimings });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       if (cleanId && networkScheduler.canRunBackgroundDownload()) {
         setTimeout(() => downloadTrackToDisk(trackUrl, cleanId, platform, meta), 45000);
@@ -2879,6 +2897,7 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
       return res.end(JSON.stringify(cached.data));
     }
   }
+  stageTimings.cacheLookupMs = Date.now() - streamInfoStartMs;
 
   if (!forceYtDlp && streamInfoInflight.has(cacheKey)) {
     const inflightUrl = await streamInfoInflight.get(cacheKey).catch(() => null);
@@ -2941,7 +2960,7 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
       if (resolvedId) data.resolvedId = resolvedId;
       if (cacheKey) streamUrlCache.set(cacheKey, { timestamp: Date.now(), expiresAt, data });
       if (finalId && finalId !== cacheKey) streamUrlCache.set(finalId, { timestamp: Date.now(), expiresAt, data });
-      networkDiagnostics.recordStreamInfo({ hit: false, durationMs: Date.now() - streamInfoStartMs });
+      networkDiagnostics.recordStreamInfo({ hit: false, durationMs: Date.now() - streamInfoStartMs, stage: stageTimings });
       if (finalId && networkScheduler.canRunBackgroundDownload()) {
         setTimeout(() => downloadTrackToDisk(trackUrl || `https://www.youtube.com/watch?v=${finalId}`, finalId, 'youtube', meta), 45000);
       }
@@ -2954,7 +2973,9 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
       if (!vid) return null;
       let s = null;
       if (!forceYtDlp) {
+        const directStart = Date.now();
         try { s = await fetchDirectYoutubeStreamServer(vid, quality); } catch (_) {}
+        stageTimings.directResolverMs += Date.now() - directStart;
         if (s) return s;
       }
       const vUrl = `https://www.youtube.com/watch?v=${vid}`;
@@ -2985,16 +3006,29 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
               '-f', (forShare ? audioFormat : ytDlpQualityFormat),
               '--', vUrl
             ];
-            const raw = await runYtDlp(args, 18000, { noCookies: !attempt.cookies, quiet: true });
+            const ytStart = Date.now();
+            const raw = await networkScheduler.schedule({
+              priority: (parsedUrl.query && parsedUrl.query.prefetch === '1') ? Priority.NEXT_TRACK_PREP : Priority.PLAYBACK_META,
+              fn: (signal) => {
+                if (signal && signal.aborted) return Promise.reject(new Error('aborted'));
+                const onAbort = () => stopActiveYtDlps();
+                if (signal) signal.addEventListener('abort', onAbort, { once: true });
+                return runYtDlp(args, 18000, { noCookies: !attempt.cookies, quiet: true })
+                  .finally(() => { if (signal) signal.removeEventListener('abort', onAbort); });
+              }
+            });
+            stageTimings.ytDlpFallbackMs += Date.now() - ytStart;
             const lines = raw.trim().split('\n').map(l => l.trim()).filter(l => l.startsWith('http'));
             for (const lineUrl of lines) {
               let verified = false;
               // googlevideo 403s are often transient right after extraction
               // (edge propagation / rate limiting), so check a few times.
+              const probeStart = Date.now();
               for (let check = 0; check < 3 && !verified; check++) {
                 verified = await verifyStreamPlayable(lineUrl);
                 if (!verified) await new Promise((r) => setTimeout(r, 500 + check * 500));
               }
+              stageTimings.probeMs += Date.now() - probeStart;
               // If yt-dlp produced a googlevideo URL, prefer trying it over
               // skipping the track; the media element can still recover.
               if (!verified && /googlevideo\.com/i.test(lineUrl)) verified = true;
@@ -3306,7 +3340,7 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
   const expiresAt = extractUpstreamExpiryMs(streamUrl) || (Date.now() + 7200000);
   if (cacheKey) streamUrlCache.set(cacheKey, { timestamp: Date.now(), expiresAt, data });
   if (cleanId && cleanId !== cacheKey) streamUrlCache.set(cleanId, { timestamp: Date.now(), expiresAt, data });
-  networkDiagnostics.recordStreamInfo({ hit: false, durationMs: Date.now() - streamInfoStartMs });
+  networkDiagnostics.recordStreamInfo({ hit: false, durationMs: Date.now() - streamInfoStartMs, stage: stageTimings });
   if (cleanId && networkScheduler.canRunBackgroundDownload()) {
     setTimeout(() => downloadTrackToDisk(trackUrl, cleanId, platform, meta), 45000);
   }
@@ -3986,6 +4020,13 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
     // Check generalized seek-aware range cache (supports any contained finite range or complete tail)
     const rangeHdr = forward['range'] || '';
     const proxyStartMs = Date.now();
+    const reqCategory = req.headers['x-eclipse-prefetch'] ? 'prefetch' : 'playback';
+    const parsedReqRangeForPriority = parseRangeHeader(rangeHdr);
+    const isSeekReq = Boolean(parsedReqRangeForPriority && parsedReqRangeForPriority.start > 0);
+    const proxyPriority = reqCategory === 'prefetch'
+      ? Priority.SPECULATIVE_PRELOAD
+      : (isSeekReq ? Priority.PLAYBACK_SEEK : Priority.PLAYBACK_AUDIO);
+
     if (rangeHdr && req.method === 'GET') {
       const cachedRange = adaptiveRangeCache.get(targetUrl, rangeHdr);
       if (cachedRange) {
@@ -3994,7 +4035,7 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
           upstreamStatus: 206,
           ttfbMs: Date.now() - proxyStartMs,
           bytes: cachedRange.buffer.length,
-          category: 'playback'
+          category: reqCategory
         });
         res.writeHead(206, {
           'Content-Type': cachedRange.contentType || 'audio/mp4',
@@ -4032,120 +4073,169 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
       requestOptions.family = 4;
     }
 
-    const proxyReq = client.request(targetUrl, requestOptions, (proxyRes) => {
-      if (res.writableEnded) {
-        proxyRes.destroy();
-        return;
-      }
-      if ([301, 302, 303, 307, 308].includes(proxyRes.statusCode) && proxyRes.headers.location && redirectsLeft > 0) {
-        proxyRes.resume();
-        const nextUrl = new URL(proxyRes.headers.location, targetUrl).toString();
-        return handleAudioProxy(req, res, nextUrl, redirectsLeft - 1, initialUrl, options);
-      }
-      if (proxyRes.statusCode >= 400) {
-        evictStreamCache(initialUrl);
-        evictStreamCache(targetUrl);
-        adaptiveRangeCache.evictUrl(targetUrl);
-        networkDiagnostics.recordProxyRequest({
-          cacheHit: false,
-          upstreamStatus: proxyRes.statusCode,
-          ttfbMs: Date.now() - proxyStartMs,
-          bytes: 0,
-          category: req.headers['x-eclipse-prefetch'] ? 'prefetch' : 'playback'
-        });
-        proxyRes.resume();
-        const isExpired = proxyRes.statusCode === 403 || proxyRes.statusCode === 410;
-        res.writeHead(isExpired ? 403 : 502, {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Expose-Headers': 'X-Eclipse-Stream-Expired',
-          ...(isExpired ? { 'X-Eclipse-Stream-Expired': '1' } : {})
-        });
-        return res.end(isExpired ? 'Upstream stream expired' : 'Upstream error');
-      }
-      const outHeaders = Object.assign({}, proxyRes.headers);
-      delete outHeaders['access-control-allow-origin'];
-      delete outHeaders['Access-Control-Allow-Origin'];
-      delete outHeaders['access-control-allow-credentials'];
-      delete outHeaders['x-frame-options'];
-      outHeaders['Access-Control-Allow-Origin'] = '*';
-      outHeaders['Access-Control-Allow-Headers'] = '*';
-      outHeaders['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range, Accept-Ranges';
+    return networkScheduler.schedule({
+      priority: proxyPriority,
+      fn: (signal) => new Promise((resolveProxy) => {
+        let settled = false;
+        const finishProxy = () => {
+          if (!settled) {
+            settled = true;
+            resolveProxy();
+          }
+        };
+        if (signal && signal.aborted) {
+          if (!res.headersSent) {
+            res.writeHead(499, { 'Access-Control-Allow-Origin': '*' });
+            res.end('Aborted');
+          }
+          return finishProxy();
+        }
 
-      res.writeHead(proxyRes.statusCode || 200, outHeaders);
+        const proxyReq = client.request(targetUrl, requestOptions, (proxyRes) => {
+          if (res.writableEnded) {
+            proxyRes.destroy();
+            return finishProxy();
+          }
+          if ([301, 302, 303, 307, 308].includes(proxyRes.statusCode) && proxyRes.headers.location && redirectsLeft > 0) {
+            proxyRes.resume();
+            const nextUrl = new URL(proxyRes.headers.location, targetUrl).toString();
+            finishProxy();
+            return handleAudioProxy(req, res, nextUrl, redirectsLeft - 1, initialUrl, options);
+          }
+          if (proxyRes.statusCode >= 400) {
+            evictStreamCache(initialUrl);
+            evictStreamCache(targetUrl);
+            adaptiveRangeCache.evictUrl(targetUrl);
+            networkDiagnostics.recordProxyRequest({
+              cacheHit: false,
+              upstreamStatus: proxyRes.statusCode,
+              ttfbMs: Date.now() - proxyStartMs,
+              bytes: 0,
+              category: reqCategory
+            });
+            proxyRes.resume();
+            const isExpired = proxyRes.statusCode === 403 || proxyRes.statusCode === 410;
+            res.writeHead(isExpired ? 403 : 502, {
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Expose-Headers': 'X-Eclipse-Stream-Expired',
+              ...(isExpired ? { 'X-Eclipse-Stream-Expired': '1' } : {})
+            });
+            res.end(isExpired ? 'Upstream stream expired' : 'Upstream error');
+            return finishProxy();
+          }
+          const outHeaders = Object.assign({}, proxyRes.headers);
+          delete outHeaders['access-control-allow-origin'];
+          delete outHeaders['Access-Control-Allow-Origin'];
+          delete outHeaders['access-control-allow-credentials'];
+          delete outHeaders['x-frame-options'];
+          outHeaders['Access-Control-Allow-Origin'] = '*';
+          outHeaders['Access-Control-Allow-Headers'] = '*';
+          outHeaders['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range, Accept-Ranges';
 
-      const ttfbMs = Date.now() - proxyStartMs;
-      const parsedReqRange = parseRangeHeader(rangeHdr);
-      const isCacheableRange = proxyRes.statusCode === 206 && parsedReqRange && !parsedReqRange.openEnded && (parsedReqRange.end - parsedReqRange.start + 1) <= 1024 * 1024;
-      if (isCacheableRange) {
-        const chunks = [];
-        const cType = proxyRes.headers['content-type'] || 'audio/mp4';
-        const cRange = proxyRes.headers['content-range'] || '';
-        const totalLen = cRange.includes('/') ? cRange.split('/')[1] : '*';
-        const rangeMatch = /^bytes\s+(\d+)-(\d+)\//i.exec(cRange);
-        const spanStart = rangeMatch ? Number(rangeMatch[1]) : parsedReqRange.start;
-        proxyRes.on('data', c => {
-          chunks.push(c);
-          res.write(c);
-        });
-        proxyRes.on('end', () => {
-          const buf = Buffer.concat(chunks);
-          adaptiveRangeCache.put(targetUrl, {
-            start: spanStart,
-            buffer: buf,
-            contentType: cType,
-            totalLength: totalLen
+          res.writeHead(proxyRes.statusCode || 200, outHeaders);
+
+          const ttfbMs = Date.now() - proxyStartMs;
+          const parsedReqRange = parseRangeHeader(rangeHdr);
+          const isCacheableRange = proxyRes.statusCode === 206 && parsedReqRange && !parsedReqRange.openEnded && (parsedReqRange.end - parsedReqRange.start + 1) <= 1024 * 1024;
+          if (isCacheableRange) {
+            const chunks = [];
+            const cType = proxyRes.headers['content-type'] || 'audio/mp4';
+            const cRange = proxyRes.headers['content-range'] || '';
+            const totalLen = cRange.includes('/') ? cRange.split('/')[1] : '*';
+            const rangeMatch = /^bytes\s+(\d+)-(\d+)\//i.exec(cRange);
+            const spanStart = rangeMatch ? Number(rangeMatch[1]) : parsedReqRange.start;
+            proxyRes.on('data', c => {
+              chunks.push(c);
+              res.write(c);
+            });
+            proxyRes.on('end', () => {
+              const buf = Buffer.concat(chunks);
+              adaptiveRangeCache.put(targetUrl, {
+                start: spanStart,
+                buffer: buf,
+                contentType: cType,
+                totalLength: totalLen
+              });
+              networkDiagnostics.recordProxyRequest({
+                cacheHit: false,
+                upstreamStatus: proxyRes.statusCode,
+                ttfbMs,
+                bytes: buf.length,
+                category: reqCategory
+              });
+              res.end();
+              finishProxy();
+            });
+            proxyRes.on('aborted', () => {
+              evictStreamCache(initialUrl);
+              evictStreamCache(targetUrl);
+              finishProxy();
+            });
+            proxyRes.on('error', () => {
+              evictStreamCache(initialUrl);
+              evictStreamCache(targetUrl);
+              try { res.destroy(); } catch (e) {}
+              finishProxy();
+            });
+            return;
+          }
+
+          let streamedBytes = 0;
+          proxyRes.on('data', (c) => {
+            streamedBytes += c.length;
           });
-          networkDiagnostics.recordProxyRequest({
-            cacheHit: false,
-            upstreamStatus: proxyRes.statusCode,
-            ttfbMs,
-            bytes: buf.length,
-            category: req.headers['x-eclipse-prefetch'] ? 'prefetch' : 'playback'
+          proxyRes.on('end', () => {
+            networkDiagnostics.recordProxyRequest({
+              cacheHit: false,
+              upstreamStatus: proxyRes.statusCode,
+              ttfbMs,
+              bytes: streamedBytes,
+              category: reqCategory
+            });
+            finishProxy();
           });
-          res.end();
+          proxyRes.on('aborted', () => {
+            evictStreamCache(initialUrl);
+            evictStreamCache(targetUrl);
+            finishProxy();
+          });
+          proxyRes.on('error', () => {
+            evictStreamCache(initialUrl);
+            evictStreamCache(targetUrl);
+            try { res.destroy(); } catch (e) {}
+            finishProxy();
+          });
+          proxyRes.pipe(res);
         });
-        proxyRes.on('aborted', () => {
+
+        const onAbort = () => {
+          try { proxyReq.destroy(new Error('Scheduler aborted')); } catch (_) {}
+          finishProxy();
+        };
+        if (signal) signal.addEventListener('abort', onAbort, { once: true });
+
+        proxyReq.setTimeout(30000, () => {
+          evictStreamCache(initialUrl);
+          proxyReq.destroy(new Error('Proxy timeout'));
+        });
+
+        proxyReq.on('error', () => {
+          if (signal) signal.removeEventListener('abort', onAbort);
           evictStreamCache(initialUrl);
           evictStreamCache(targetUrl);
+          if (!res.headersSent) {
+            res.writeHead(502, { 'Access-Control-Allow-Origin': '*' });
+            res.end('Proxy error');
+          } else {
+            try { res.destroy(); } catch (err) {}
+          }
+          finishProxy();
         });
-        proxyRes.on('error', () => {
-          evictStreamCache(initialUrl);
-          evictStreamCache(targetUrl);
-          try { res.destroy(); } catch (e) {}
-        });
-        return;
-      }
 
-      proxyRes.on('aborted', () => {
-        evictStreamCache(initialUrl);
-        evictStreamCache(targetUrl);
-      });
-      proxyRes.on('error', () => {
-        evictStreamCache(initialUrl);
-        evictStreamCache(targetUrl);
-        try { res.destroy(); } catch (e) {}
-      });
-      proxyRes.pipe(res);
+        req.on('error', () => { try { proxyReq.destroy(); } catch (e) {} finishProxy(); });
+        req.pipe(proxyReq);
+      })
     });
-
-    proxyReq.setTimeout(30000, () => {
-      evictStreamCache(initialUrl);
-      proxyReq.destroy(new Error('Proxy timeout'));
-    });
-
-    proxyReq.on('error', () => {
-      evictStreamCache(initialUrl);
-      evictStreamCache(targetUrl);
-      if (!res.headersSent) {
-        res.writeHead(502, { 'Access-Control-Allow-Origin': '*' });
-        res.end('Proxy error');
-      } else {
-        try { res.destroy(); } catch (err) {}
-      }
-    });
-
-    req.on('error', () => { try { proxyReq.destroy(); } catch (e) {} });
-    req.pipe(proxyReq);
   } catch (e) {
     logger.log('error', '[handleAudioProxy] exception: ' + (e && e.stack || e));
     evictStreamCache(initialUrl);
@@ -10757,40 +10847,49 @@ if (parsedUrl.pathname === '/api/ytm/intercept-cookie' && req.method === 'POST')
     let buffer = null;
     let contentType = null;
 
-    const memResult = await artworkCache.getOrFetch(
-      target,
-      async (fetchUrl) => {
-        try {
-          if (fs.existsSync(cachePath)) {
-            const diskBuf = await fs.promises.readFile(cachePath);
-            if (diskBuf && diskBuf.length >= 500) {
-              return { buffer: diskBuf, contentType: imageContentType(diskBuf) };
-            }
+    // Seed memory from disk with actual file mtimeMs so stale disk files trigger real network refresh
+    if (!artworkCache.cache.has(target)) {
+      try {
+        const st = await fs.promises.stat(cachePath);
+        if (st && st.size >= 500) {
+          const diskBuf = await fs.promises.readFile(cachePath);
+          if (diskBuf && diskBuf.length >= 500) {
+            artworkCache.seedFromDisk(target, diskBuf, imageContentType(diskBuf), st.mtimeMs);
           }
-        } catch (_) {}
-        let host = '';
-        try { host = new URL(fetchUrl).hostname; } catch (_) {}
-        if (host && (thumbHostFails.get(host) || 0) > Date.now()) return null;
-        try {
-          const r = await fetch(fetchUrl, {
-            signal: AbortSignal.timeout(6000),
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36' }
-          });
-          if (!r.ok) throw new Error(String(r.status));
-          const data = Buffer.from(await r.arrayBuffer());
-          if (data.length < 500) throw new Error('empty image');
-          fs.promises.writeFile(cachePath, data).catch(() => {});
-          networkDiagnostics.addBytes('artwork', data.length);
-          return { buffer: data, contentType: imageContentType(data) };
-        } catch (_) {
-          if (host) thumbHostFails.set(host, Date.now() + 600000);
-          return null;
         }
-      },
-      {
-        validateImage: (buf) => Buffer.isBuffer(buf) && buf.length >= 500
-      }
-    );
+      } catch (_) {}
+    }
+
+    const memResult = await networkScheduler.schedule({
+      priority: Priority.VISIBLE_ARTWORK_LYRICS,
+      key: `art:${key}`,
+      fn: () => artworkCache.getOrFetch(
+        target,
+        async (fetchUrl) => {
+          let host = '';
+          try { host = new URL(fetchUrl).hostname; } catch (_) {}
+          if (host && (thumbHostFails.get(host) || 0) > Date.now()) return null;
+          try {
+            const r = await fetch(fetchUrl, {
+              signal: AbortSignal.timeout(6000),
+              headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36' }
+            });
+            if (!r.ok) throw new Error(String(r.status));
+            const data = Buffer.from(await r.arrayBuffer());
+            if (data.length < 500) throw new Error('empty image');
+            fs.promises.writeFile(cachePath, data).catch(() => {});
+            networkDiagnostics.addBytes('artwork', data.length);
+            return { buffer: data, contentType: imageContentType(data) };
+          } catch (_) {
+            if (host) thumbHostFails.set(host, Date.now() + 600000);
+            return null;
+          }
+        },
+        {
+          validateImage: (buf) => Buffer.isBuffer(buf) && buf.length >= 500
+        }
+      )
+    });
 
     if (memResult && memResult.buffer) {
       buffer = memResult.buffer;
@@ -11134,7 +11233,10 @@ if (parsedUrl.pathname === '/api/ytm/intercept-cookie' && req.method === 'POST')
     const source = parsedUrl.query.source || 'lrclib';
     const duration = parseFloat(parsedUrl.query.duration) || 0;
     const videoId = parsedUrl.query.videoId || parsedUrl.query.vid || null;
-    return handleLyrics(req, res, title, artist, allowOnline, source, duration, videoId);
+    return networkScheduler.schedule({
+      priority: Priority.VISIBLE_ARTWORK_LYRICS,
+      fn: () => handleLyrics(req, res, title, artist, allowOnline, source, duration, videoId)
+    });
   }
 
   res.writeHead(404);
@@ -11367,7 +11469,7 @@ async function handleInterceptCookie(req, res, deps = {}) {
   
 function stopServer() { return new Promise((resolve) => { if (!server || !server.listening) return resolve(); server.close(() => resolve()); }); }
 
-module.exports = { stopServer, matchAndResolveTrack, handleLyrics, handleAudioProxy, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchSyncLrc, parseKaraokeToWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc, cleanSearchResults, handleInterceptCookie, handleConfirmCandidate, validateBackendSapisidCredential, pendingCandidateSessions };
+module.exports = { stopServer, matchAndResolveTrack, handleLyrics, handleAudioProxy, startServer, PORT, getServerToken, fetchLyricsDirect, fetchLrcLib, fetchYoutubeLyrics, fetchGeniusLyrics, fetchLyricsOnDemand, fetchNetEaseWords, fetchSyncLrc, parseKaraokeToWords, fetchKugouLyrics, fetchMusixmatchLyrics, fetchNeteaseLyrics, fetchZingMp3Lyrics, fetchSoundCloudSearch, ytmusicSearch, parseYrc, cleanSearchResults, handleInterceptCookie, handleConfirmCandidate, validateBackendSapisidCredential, pendingCandidateSessions, networkScheduler, networkDiagnostics, adaptiveRangeCache, artworkCache };
 
 if (require.main === module) {
   startServer();

@@ -76,10 +76,9 @@ class NetworkPriorityScheduler {
     if (this.playbackBuffering === next) return;
     this.playbackBuffering = next;
     if (next) {
-      for (const [id, task] of this._active.entries()) {
+      for (const [, task] of this._active.entries()) {
         if (task.priority >= Priority.SPECULATIVE_PRELOAD && task.abortController) {
           try { task.abortController.abort(new Error('preempted_by_playback_buffering')); } catch (_) {}
-          this._active.delete(id);
         }
       }
     } else {
@@ -111,10 +110,15 @@ class NetworkPriorityScheduler {
     key = null,
     generation = this.generation,
     explicitOptIn = false,
+    signal = null,
     fn
   }) {
     if (typeof fn !== 'function') {
       return Promise.reject(new Error('Scheduler task requires fn'));
+    }
+
+    if (signal && signal.aborted) {
+      return Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError', code: 'ABORT_ERR' }));
     }
 
     if (priority === Priority.BACKGROUND_DOWNLOAD && !this.canRunBackgroundDownload({ explicitOptIn })) {
@@ -126,15 +130,30 @@ class NetworkPriorityScheduler {
     }
 
     const promise = new Promise((resolve, reject) => {
+      const abortController = new AbortController();
+      let onExternalAbort = null;
+      if (signal) {
+        onExternalAbort = () => {
+          try { abortController.abort(signal.reason || new Error('aborted')); } catch (_) {}
+        };
+        signal.addEventListener('abort', onExternalAbort, { once: true });
+      }
+
+      const cleanupSignal = () => {
+        if (signal && onExternalAbort) {
+          signal.removeEventListener('abort', onExternalAbort);
+        }
+      };
+
       const entry = {
         id: ++this._seq,
         priority,
         key,
         generation,
         fn,
-        resolve,
-        reject,
-        abortController: new AbortController()
+        resolve: (v) => { cleanupSignal(); resolve(v); },
+        reject: (e) => { cleanupSignal(); reject(e); },
+        abortController
       };
 
       if (this._queue.length >= this.maxQueueSize) {

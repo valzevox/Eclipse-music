@@ -141,7 +141,7 @@ class NetworkDiagnostics {
       return 'stream_extraction';
     }
     if (this.audioProxy.avgTtfbMs > 800) {
-      return 'dns_tls_ttfb';
+      return 'upstream_ttfb';
     }
     if (this.audioProxy.waitingCount >= 2 || this.audioProxy.waitingTotalMs > 2000) {
       return 'audio_transfer';

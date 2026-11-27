@@ -208,6 +208,52 @@ function stripYoutubeTopic(artist) {
 
 document.addEventListener('DOMContentLoaded', async () => {
   try { localStorage.removeItem('eclipse_stats'); } catch (e) {}
+  const detectNetworkProfile = () => {
+    try {
+      if (localStorage.getItem('eclipse_perf_mode') === '1') return 'constrained';
+    } catch (_) {}
+    const conn = (typeof navigator !== 'undefined' && navigator.connection) ? navigator.connection : null;
+    if (!conn) return 'normal';
+    if (conn.saveData === true) return 'constrained';
+    const eff = String(conn.effectiveType || '').toLowerCase();
+    if (eff === 'slow-2g' || eff === '2g' || eff === '3g') return 'constrained';
+    if (Number.isFinite(conn.downlink) && conn.downlink > 0 && conn.downlink < 2.5) return 'constrained';
+    if (Number.isFinite(conn.rtt) && conn.rtt >= 300) return 'constrained';
+    if (Number.isFinite(conn.downlink) && conn.downlink >= 15 && (!Number.isFinite(conn.rtt) || conn.rtt < 100)) return 'fast';
+    return 'normal';
+  };
+  const syncNetworkProfileToServer = () => {
+    const port = (typeof state !== 'undefined' && state && state.serverPort) || (window.electronAPI && window.electronAPI.serverPort);
+    if (!port) return;
+    let autoCacheEnabled = true;
+    try {
+      if (localStorage.getItem('eclipse_auto_cache') === '0') autoCacheEnabled = false;
+    } catch (_) {}
+    const profile = detectNetworkProfile();
+    fetch(`http://127.0.0.1:${port}/api/network-profile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile, autoCacheEnabled })
+    }).catch(() => {});
+  };
+  setTimeout(() => {
+    syncNetworkProfileToServer();
+    const port = (typeof state !== 'undefined' && state && state.serverPort) || (window.electronAPI && window.electronAPI.serverPort);
+    if (port) {
+      const startupMs = (typeof performance !== 'undefined' && performance.now) ? Math.round(performance.now()) : 0;
+      fetch(`http://127.0.0.1:${port}/api/network-diagnostics`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ startupToUiMs: startupMs })
+      }).catch(() => {});
+    }
+  }, 800);
+  if (typeof navigator !== 'undefined' && navigator.connection && typeof navigator.connection.addEventListener === 'function') {
+    navigator.connection.addEventListener('change', syncNetworkProfileToServer);
+  }
+  if (typeof window !== 'undefined') {
+    window.addEventListener('online', syncNetworkProfileToServer);
+  }
   var lyricsScrollRaf = 0;
   var gradientRaf = 0;
   var cacheRafId = 0;

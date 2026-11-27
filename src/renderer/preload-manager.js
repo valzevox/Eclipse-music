@@ -265,22 +265,47 @@ class EclipsePreloadManager {
   }
 
   async _warmUpRange(url, signal) {
-    if (!url || typeof url !== 'string' || url.includes('.m3u8')) return;
-    const warmed = (globalThis.__eclipseWarmedUrls = globalThis.__eclipseWarmedUrls || new Map());
-    const prevTs = warmed.get(url);
-    if (prevTs && Date.now() - prevTs < this.cacheTtlMs) return;
-    try {
-      const warmBytes = this._getAdaptiveWarmUpBytes();
-      const endByte = warmBytes - 1;
-      warmed.set(url, Date.now());
-      if (warmed.size > 64) warmed.delete(warmed.keys().next().value);
-      await fetch(url, {
-        headers: { 'Range': `bytes=0-${endByte}`, 'X-Eclipse-Prefetch': '1' },
-        signal
-      });
-    } catch (_) {
-      warmed.delete(url);
+    if (!url || typeof url !== 'string' || url.includes('.m3u8')) return false;
+    const state = (globalThis.__eclipseWarmedState = globalThis.__eclipseWarmedState || {
+      inflight: new Map(),
+      verified: new Map()
+    });
+    const prev = state.verified.get(url);
+    if (prev && Date.now() - prev.ts < this.cacheTtlMs) return true;
+    if (state.inflight.has(url)) {
+      return state.inflight.get(url);
     }
+
+    const warmBytes = this._getAdaptiveWarmUpBytes();
+    const endByte = warmBytes - 1;
+    const p = (async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (signal && signal.aborted) return false;
+        try {
+          const res = await fetch(url, {
+            headers: { 'Range': `bytes=0-${endByte}`, 'X-Eclipse-Prefetch': '1' },
+            signal
+          });
+          if (!res || (!res.ok && res.status !== 206)) {
+            if (res && (res.status === 403 || res.status === 410)) return false;
+            continue;
+          }
+          const buf = await res.arrayBuffer();
+          if (!buf || buf.byteLength === 0) continue;
+          state.verified.set(url, { ts: Date.now(), bytes: buf.byteLength });
+          if (state.verified.size > 64) state.verified.delete(state.verified.keys().next().value);
+          return true;
+        } catch (err) {
+          if (err && err.name === 'AbortError') return false;
+        }
+      }
+      return false;
+    })().finally(() => {
+      state.inflight.delete(url);
+    });
+
+    state.inflight.set(url, p);
+    return p;
   }
 }
 
