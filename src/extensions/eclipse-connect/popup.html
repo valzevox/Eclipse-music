@@ -5,7 +5,7 @@
   <title>Eclipse Connect</title>
   <style>
     body {
-      width: 280px;
+      width: 296px;
       margin: 0;
       padding: 16px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
@@ -28,7 +28,7 @@
       color: #94a3b8;
       font-size: 12px;
       line-height: 1.4;
-      margin-bottom: 16px;
+      margin-bottom: 14px;
     }
     .input-group {
       margin-bottom: 12px;
@@ -41,7 +41,7 @@
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
-    input {
+    input, select {
       width: 100%;
       box-sizing: border-box;
       background: #1e1b2e;
@@ -52,8 +52,19 @@
       font-size: 12px;
       outline: none;
     }
-    input:focus {
+    input:focus, select:focus {
       border-color: #a855f7;
+    }
+    .notice {
+      display: none;
+      margin-bottom: 12px;
+      padding: 8px 10px;
+      background: rgba(168, 85, 247, 0.1);
+      border: 1px solid rgba(168, 85, 247, 0.3);
+      border-radius: 6px;
+      color: #cbd5e1;
+      font-size: 11px;
+      line-height: 1.4;
     }
     .btn {
       width: 100%;
@@ -73,6 +84,25 @@
       background: #475569;
       cursor: not-allowed;
     }
+    .btn-secondary {
+      width: 100%;
+      background: #2e2a44;
+      color: #f0f0f5;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 6px;
+      padding: 8px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      margin-top: 6px;
+    }
+    .btn-secondary:hover {
+      background: #3b3656;
+    }
+    .action-row {
+      display: none;
+      margin-top: 10px;
+    }
     .status {
       margin-top: 12px;
       font-size: 12px;
@@ -89,20 +119,38 @@
     <div class="title">Eclipse Connect</div>
   </div>
   <div class="desc">
-    Pair your current browser's YouTube Music session with the Eclipse desktop app.
+    Pair your current browser session with the Eclipse desktop app.
   </div>
 
   <div class="input-group">
-    <label>Pairing Port</label>
+    <label for="service">Service</label>
+    <select id="service">
+      <option value="ytm">YouTube Music</option>
+      <option value="external_web">External Web Session (Experimental Bridge)</option>
+    </select>
+  </div>
+
+  <div class="notice" id="cookie-notice">
+    Eclipse Connect will request one-time permission to read your active External Web Session cookie and send it only to your local Eclipse desktop app. Cookies are never stored or logged.
+  </div>
+
+  <div class="input-group">
+    <label for="port">Pairing Port</label>
     <input type="number" id="port" placeholder="e.g. 54321">
   </div>
 
   <div class="input-group">
-    <label>One-Time Nonce</label>
+    <label for="nonce">One-Time Nonce</label>
     <input type="text" id="nonce" placeholder="Paste 64-character nonce">
   </div>
 
   <button class="btn" id="btn-pair">Connect to Eclipse</button>
+
+  <div class="action-row" id="missing-session-actions">
+    <button class="btn-secondary" id="btn-open-login" type="button">Open Login Page</button>
+    <button class="btn-secondary" id="btn-scan-again" type="button">Scan Again</button>
+  </div>
+
   <div class="status" id="status"></div>
   <div id="diag-container" style="display:none; margin-top:10px; background:#181622; border:1px solid rgba(255,255,255,0.1); border-radius:6px; padding:8px;">
     <div style="font-size:11px; color:#f87171; font-weight:600; margin-bottom:4px;">Diagnostic Info</div>

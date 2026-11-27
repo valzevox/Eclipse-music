@@ -139,6 +139,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('browser-login:pairing-result', sub);
     return () => ipcRenderer.removeListener('browser-login:pairing-result', sub);
   },
+  externalSessionStartPkce: (opts) => ipcRenderer.invoke('external-session:start-pkce', opts),
+  externalSessionStartPairing: (opts) => ipcRenderer.invoke('external-session:start-pairing', opts),
+  externalSessionCancelPairing: () => ipcRenderer.invoke('external-session:cancel-pairing'),
+  externalSessionGetStatus: () => ipcRenderer.invoke('external-session:get-status'),
+  externalSessionLogout: () => ipcRenderer.invoke('external-session:logout'),
+  externalSessionOpenLoginWindow: (opts) => ipcRenderer.invoke('external-session:open-login-window', opts),
+  externalSessionGetProfiles: () => ipcRenderer.invoke('external-session:get-profiles'),
+  onExternalSessionResult: (cb) => {
+    const sub = (e, d) => cb(d);
+    ipcRenderer.on('external-session:pairing-result', sub);
+    return () => ipcRenderer.removeListener('external-session:pairing-result', sub);
+  },
   googleImportLibrary: (opts) => ipcRenderer.invoke('google-import-library', opts),
   cancelLibrarySync: (requestId) => ipcRenderer.invoke('cancel-library-sync', requestId),
   fetchYouTubeAlbumTracks: (albumId, opts) => ipcRenderer.invoke('fetch-youtube-album-tracks', albumId, opts),

@@ -2,11 +2,42 @@
 
 const http = require('http');
 const crypto = require('crypto');
-const { BrowserLoginFailure, BrowserLoginException } = require('./browser-login-errors');
+const { BrowserLoginFailure } = require('./browser-login-errors');
 const { BrowserCookieRecord } = require('./browser-cookie-record');
+const { BrowserLoginTarget, resolveTargetHost } = require('./browser-login-targets');
+
+const MAX_BODY_BYTES = 512 * 1024;
+const CHROME_EXT_ORIGIN_RE = /^chrome-extension:\/\/([a-z0-9]+)$/i;
+const MOZ_EXT_ORIGIN_RE = /^moz-extension:\/\/([a-z0-9-]+)$/i;
+
+function constantTimeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
 
 class BrowserPairingServer {
-  constructor({ onCookiesReceived, timeoutMs = 120000 }) {
+  constructor({
+    target = BrowserLoginTarget.YOUTUBE,
+    onCookiesReceived,
+    timeoutMs = 120000,
+    allowedExtensionIds = [],
+    isPackaged = false,
+    allowNullOriginInDev = true,
+    maxRedeemAttempts = 5,
+    rateLimitWindowMs = 60000,
+    rateLimitMax = 20
+  } = {}) {
+    resolveTargetHost(target);
+    Object.defineProperty(this, 'target', {
+      value: target,
+      writable: false,
+      enumerable: true,
+      configurable: false
+    });
+
     this.server = null;
     this.port = null;
     this.nonce = null;
@@ -16,6 +47,19 @@ class BrowserPairingServer {
     this.timer = null;
     this.onCookiesReceived = onCookiesReceived;
     this.active = false;
+
+    this.allowedExtensionIds = Array.isArray(allowedExtensionIds)
+      ? allowedExtensionIds.map(id => String(id).trim().toLowerCase()).filter(Boolean)
+      : [];
+    this.isPackaged = !!isPackaged;
+    this.allowNullOriginInDev = allowNullOriginInDev !== false;
+    this.maxRedeemAttempts = Number.isFinite(maxRedeemAttempts) && maxRedeemAttempts > 0 ? maxRedeemAttempts : 5;
+    this.rateLimitWindowMs = Number.isFinite(rateLimitWindowMs) && rateLimitWindowMs > 0 ? rateLimitWindowMs : 60000;
+    this.rateLimitMax = Number.isFinite(rateLimitMax) && rateLimitMax > 0 ? rateLimitMax : 20;
+
+    this.redeemAttempts = 0;
+    this.locked = false;
+    this.rateLimitMap = new Map();
   }
 
   start() {
@@ -23,13 +67,15 @@ class BrowserPairingServer {
       this.nonce = crypto.randomBytes(32).toString('hex');
       this.expiresAt = Date.now() + this.timeoutMs;
       this.consumed = false;
+      this.redeemAttempts = 0;
+      this.locked = false;
+      this.rateLimitMap.clear();
       this.active = true;
 
       this.server = http.createServer((req, res) => {
         this.handleRequest(req, res);
       });
 
-      // Strict loopback binding on ephemeral port
       this.server.listen(0, '127.0.0.1', () => {
         const addr = this.server.address();
         this.port = addr.port;
@@ -41,7 +87,8 @@ class BrowserPairingServer {
         resolve({
           port: this.port,
           nonce: this.nonce,
-          expiresAt: this.expiresAt
+          expiresAt: this.expiresAt,
+          target: this.target
         });
       });
 
@@ -52,28 +99,78 @@ class BrowserPairingServer {
     });
   }
 
-  handleRequest(req, res) {
-    const remote = req.socket.remoteAddress;
-    // Strict loopback enforcement: only IPv4 127.0.0.1 or IPv6 ::1
-    if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ success: false, error: 'Forbidden: loopback only' }));
+  isValidHostHeader(hostHeader) {
+    if (!hostHeader || typeof hostHeader !== 'string' || !this.port) return false;
+    const normalized = hostHeader.trim().toLowerCase();
+    return normalized === `127.0.0.1:${this.port}` || normalized === `localhost:${this.port}`;
+  }
+
+  isValidOrigin(origin) {
+    if (!origin || typeof origin !== 'string') return false;
+    if (origin === 'null') {
+      return !this.isPackaged && this.allowNullOriginInDev;
     }
 
-    // CORS: strictly validate extension origins, no wildcard
-    const origin = req.headers.origin || '';
-    const isExtensionOrigin = /^chrome-extension:\/\/[a-z0-9]+$/i.test(origin) ||
-                              /^moz-extension:\/\/[a-z0-9-]+$/i.test(origin) ||
-                              origin === 'null';
+    const chromeMatch = CHROME_EXT_ORIGIN_RE.exec(origin);
+    const mozMatch = MOZ_EXT_ORIGIN_RE.exec(origin);
+    const match = chromeMatch || mozMatch;
+    if (!match) return false;
 
-    // Allow Preflight
+    const extId = match[1].toLowerCase();
+    if (this.isPackaged) {
+      return this.allowedExtensionIds.includes(extId);
+    }
+    if (this.allowedExtensionIds.length > 0) {
+      return this.allowedExtensionIds.includes(extId);
+    }
+    return true;
+  }
+
+  checkRateLimit(remoteIp) {
+    const now = Date.now();
+    const entry = this.rateLimitMap.get(remoteIp);
+    if (!entry || now >= entry.resetAt) {
+      this.rateLimitMap.set(remoteIp, { count: 1, resetAt: now + this.rateLimitWindowMs });
+      return true;
+    }
+    if (entry.count >= this.rateLimitMax) {
+      return false;
+    }
+    entry.count += 1;
+    return true;
+  }
+
+  sendJson(res, statusCode, payload, origin = null) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (origin) {
+      headers['Access-Control-Allow-Origin'] = origin;
+      headers['Vary'] = 'Origin';
+    }
+    res.writeHead(statusCode, headers);
+    res.end(JSON.stringify(payload));
+  }
+
+  handleRequest(req, res) {
+    const remote = req.socket.remoteAddress;
+    if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
+      return this.sendJson(res, 403, { success: false, error: 'Forbidden: loopback only' });
+    }
+
+    if (!this.isValidHostHeader(req.headers.host)) {
+      return this.sendJson(res, 403, { success: false, error: 'Forbidden: invalid host' });
+    }
+
+    const origin = req.headers.origin;
+    const originValid = this.isValidOrigin(origin);
+
     if (req.method === 'OPTIONS') {
-      if (isExtensionOrigin) {
+      if (originValid) {
         res.writeHead(204, {
           'Access-Control-Allow-Origin': origin,
           'Access-Control-Allow-Methods': 'POST, OPTIONS',
           'Access-Control-Allow-Headers': 'Content-Type, X-Eclipse-Nonce',
-          'Access-Control-Max-Age': '300'
+          'Access-Control-Max-Age': '300',
+          'Vary': 'Origin'
         });
       } else {
         res.writeHead(403);
@@ -81,60 +178,75 @@ class BrowserPairingServer {
       return res.end();
     }
 
+    if (!originValid) {
+      return this.sendJson(res, 403, { success: false, error: BrowserLoginFailure.ORIGIN_REJECTED });
+    }
+
+    if (!this.checkRateLimit(remote)) {
+      return this.sendJson(res, 429, { success: false, error: 'Too many requests' }, origin);
+    }
+
     if (req.method !== 'POST' || req.url !== '/api/extension/pair') {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ success: false, error: 'Not found' }));
+      return this.sendJson(res, 404, { success: false, error: 'Not found' }, origin);
     }
 
-    // Check expiry
+    if (this.locked) {
+      return this.sendJson(res, 429, { success: false, error: 'Pairing locked due to too many failed attempts' }, origin);
+    }
+
     if (Date.now() > this.expiresAt) {
-      res.writeHead(400, {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': origin
-      });
-      return res.end(JSON.stringify({ success: false, error: BrowserLoginFailure.PAIRING_EXPIRED }));
+      return this.sendJson(res, 400, { success: false, error: BrowserLoginFailure.PAIRING_EXPIRED }, origin);
     }
 
-    // Check replay
     if (this.consumed) {
-      res.writeHead(400, {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': origin
-      });
-      return res.end(JSON.stringify({ success: false, error: BrowserLoginFailure.PAIRING_REPLAYED }));
+      return this.sendJson(res, 400, { success: false, error: BrowserLoginFailure.PAIRING_REPLAYED }, origin);
     }
 
-    let body = '';
+    const chunks = [];
+    let totalBytes = 0;
+    let aborted = false;
+
     req.on('data', chunk => {
-      body += chunk;
-      if (body.length > 512 * 1024) { // max 512KB for cookies
+      if (aborted) return;
+      totalBytes += chunk.length;
+      if (totalBytes > MAX_BODY_BYTES) {
+        aborted = true;
         req.socket.destroy();
+        return;
       }
+      chunks.push(chunk);
     });
 
     req.on('end', async () => {
+      if (aborted) return;
       try {
+        const body = Buffer.concat(chunks).toString('utf8');
         const payload = JSON.parse(body || '{}');
         const headerNonce = req.headers['x-eclipse-nonce'] || payload.nonce;
 
-        if (!headerNonce || headerNonce !== this.nonce) {
-          res.writeHead(401, {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': origin
-          });
-          return res.end(JSON.stringify({ success: false, error: 'Invalid pairing nonce' }));
+        if (!constantTimeEqual(headerNonce, this.nonce)) {
+          this.redeemAttempts += 1;
+          if (this.redeemAttempts >= this.maxRedeemAttempts) {
+            this.locked = true;
+            this.sendJson(res, 429, { success: false, error: 'Pairing locked due to too many failed attempts' }, origin);
+            setTimeout(() => this.close(BrowserLoginFailure.PAIRING_CANCELLED), 50);
+            return;
+          }
+          return this.sendJson(res, 401, { success: false, error: 'Invalid pairing nonce' }, origin);
         }
 
-        // Consume nonce immediately
+        if (payload.target !== undefined && payload.target !== this.target) {
+          return this.sendJson(res, 400, { success: false, error: BrowserLoginFailure.INVALID_DATA }, origin);
+        }
+        if (this.target !== BrowserLoginTarget.YOUTUBE && payload.target !== this.target) {
+          return this.sendJson(res, 400, { success: false, error: BrowserLoginFailure.INVALID_DATA }, origin);
+        }
+
         this.consumed = true;
 
         const rawCookies = payload.cookies;
         if (!Array.isArray(rawCookies) || rawCookies.length === 0) {
-          res.writeHead(400, {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': origin
-          });
-          return res.end(JSON.stringify({ success: false, error: BrowserLoginFailure.NO_YOUTUBE_COOKIES }));
+          return this.sendJson(res, 400, { success: false, error: BrowserLoginFailure.NO_YOUTUBE_COOKIES }, origin);
         }
 
         const cookieRecords = [];
@@ -145,52 +257,33 @@ class BrowserPairingServer {
             value: c.value,
             domain: c.domain,
             path: c.path || '/',
-            secure: c.secure !== false,
+            secure: typeof c.secure === 'boolean' ? c.secure : (this.target === BrowserLoginTarget.YOUTUBE),
             httpOnly: !!c.httpOnly,
-            expiry: c.expirationDate || c.expiry,
+            expiry: c.expirationDate !== undefined ? c.expirationDate : c.expiry,
             hostOnly: !!c.hostOnly
           }));
         }
 
-        // Verify with callback first before returning HTTP 200 (fail-closed)
         if (typeof this.onCookiesReceived === 'function') {
           try {
             const authResult = await this.onCookiesReceived(cookieRecords);
-            res.writeHead(200, {
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': origin
-            });
-            res.end(JSON.stringify({ success: true, account: authResult && authResult.account }));
-
-            // Auto close server upon successful verification
+            this.sendJson(res, 200, { success: true, account: authResult && authResult.account }, origin);
             setTimeout(() => this.close(), 1000);
           } catch (verifyErr) {
-            res.writeHead(400, {
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': origin
-            });
-            res.end(JSON.stringify({
+            this.sendJson(res, 400, {
               success: false,
               error: verifyErr && verifyErr.message ? verifyErr.message : BrowserLoginFailure.SESSION_REJECTED,
               reason: verifyErr && verifyErr.reason ? verifyErr.reason : BrowserLoginFailure.SESSION_REJECTED,
               details: verifyErr && verifyErr.details ? verifyErr.details : null
-            }));
+            }, origin);
             setTimeout(() => this.close(BrowserLoginFailure.SESSION_REJECTED), 1000);
           }
         } else {
-          res.writeHead(200, {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': origin
-          });
-          res.end(JSON.stringify({ success: true }));
+          this.sendJson(res, 200, { success: true }, origin);
           setTimeout(() => this.close(), 1000);
         }
-      } catch (err) {
-        res.writeHead(400, {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': origin
-        });
-        res.end(JSON.stringify({ success: false, error: BrowserLoginFailure.COOKIE_FORMAT_INVALID }));
+      } catch (_) {
+        this.sendJson(res, 400, { success: false, error: BrowserLoginFailure.COOKIE_FORMAT_INVALID }, origin);
       }
     });
   }

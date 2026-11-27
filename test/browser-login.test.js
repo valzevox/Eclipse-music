@@ -412,7 +412,7 @@ test('20: Extension ZIP generation and packaging contents verification', () => {
 
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../src/extensions/eclipse-connect/manifest.json'), 'utf8'));
   assert.equal(manifest.manifest_version, 3, 'Must be Manifest V3');
-  assert.ok(manifest.permissions.includes('cookies'), 'Manifest must have cookies permission');
+  assert.ok(Array.isArray(manifest.optional_permissions) && manifest.optional_permissions.includes('cookies'), 'Manifest must have cookies in optional_permissions');
 });
 
 test('21: Browser manager IPC validation and browser resolution logic via BrowserExtensionManager', async () => {

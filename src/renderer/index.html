@@ -1730,7 +1730,10 @@
                   </span>
                   <span class="setting-name">Spotify</span>
                 </div>
-                <button class="btn-pill-primary" id="btn-open-spotify-import" type="button">Import</button>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <button class="btn-outline-pill" id="btn-open-external-session" type="button">External Session</button>
+                  <button class="btn-pill-primary" id="btn-open-spotify-import" type="button">Import</button>
+                </div>
               </div>
             </div>
 
@@ -4213,6 +4216,136 @@
   <script src="eclipse-analytics.js"></script>
   <script src="frame-governor.js"></script>
   <script src="integration-bridge.js"></script>
+  <!-- External Session Connection Center -->
+  <div id="external-session-dialog" class="modal-backdrop hidden">
+    <div class="dialog-card browser-login-dialog-card" style="max-width: 560px;">
+      <div class="dialog-header">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--md-sys-color-primary);"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <h3 style="margin: 0;">External Session Connection Center</h3>
+        </div>
+        <button class="btn-icon-pill" id="btn-close-external-session" type="button" title="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <!-- Dual Status Badges: Official PKCE vs Experimental Bridge + State Machine -->
+      <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px;">
+        <span class="pairing-badge" id="ext-badge-pkce" title="Official OAuth PKCE Status">Official PKCE: Unpaired</span>
+        <span class="pairing-badge" id="ext-badge-bridge" title="Experimental Bridge Status">Experimental Bridge: Not Installed</span>
+        <span class="pairing-badge" id="ext-state-badge" data-state="unpaired">State: unpaired</span>
+      </div>
+
+      <!-- Consent & Privacy Disclosure -->
+      <div id="ext-consent-box" class="pairing-card" style="margin-bottom: 12px; padding: 12px 14px;">
+        <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">Consent &amp; Privacy Disclosure</div>
+        <ul style="margin: 0 0 10px 16px; padding: 0; font-size: 12px; opacity: 0.85; line-height: 1.45;">
+          <li><strong>Data accessed:</strong> Read-only external session profile and playlist metadata.</li>
+          <li><strong>Purpose:</strong> Syncing your external library and playback context into Eclipse.</li>
+          <li><strong>Encrypted local retention:</strong> Credentials are sealed in the OS-backed encrypted vault and never stored in renderer storage.</li>
+          <li><strong>Always-available Disconnect:</strong> You can revoke and wipe the local session at any time.</li>
+        </ul>
+        <label class="pairing-checkbox-label" style="margin: 0;">
+          <input type="checkbox" id="chk-external-consent" class="pairing-checkbox">
+          <span>I understand and consent to connecting an external session</span>
+        </label>
+      </div>
+
+      <!-- Connection Method Tabs -->
+      <div class="sp-modes" id="external-session-modes">
+        <button type="button" class="active" data-mode="pkce" id="tab-ext-pkce">Official OAuth PKCE</button>
+        <button type="button" data-mode="bridge" id="tab-ext-bridge">Eclipse Connect [Experimental]</button>
+        <button type="button" data-mode="window" id="tab-ext-window">Isolated Window [Fallback]</button>
+      </div>
+
+      <!-- Method 1: Official OAuth PKCE via System Browser -->
+      <div class="browser-login-pane sp-pane" id="pane-ext-pkce" data-mode="pkce">
+        <div class="pairing-card">
+          <div class="pairing-header">
+            <div class="pairing-title-group">
+              <span class="pairing-label">Official OAuth PKCE via System Browser</span>
+              <span class="pairing-sublabel">Recommended — works on Firefox &amp; all system browsers</span>
+            </div>
+            <span class="pairing-badge">Recommended</span>
+          </div>
+          <p class="stage-desc" style="margin: 8px 0 12px;">Opens your default system browser to authorize securely using S256 PKCE without sharing browser cookies.</p>
+          <div class="pairing-actions">
+            <button type="button" id="btn-ext-start-pkce" class="btn-pill-primary" disabled>Connect via System Browser</button>
+            <button type="button" id="btn-ext-cancel-pkce" class="btn-outline-pill hidden">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Method 2: Eclipse Connect Extension [Experimental Bridge] -->
+      <div class="browser-login-pane sp-pane hidden" id="pane-ext-bridge" data-mode="bridge">
+        <div class="pairing-card">
+          <div class="pairing-header">
+            <div class="pairing-title-group">
+              <span class="pairing-label">Eclipse Connect Extension [Experimental Bridge]</span>
+              <span class="pairing-sublabel">Local loopback pairing with browser extension</span>
+            </div>
+          </div>
+          <div id="ext-browser-matrix" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 10px 0; font-size: 12px;">
+            <div class="extension-path-box" style="margin: 0; padding: 6px 8px;">Chrome: <span data-browser-status="chrome">Experimental / Not verified</span></div>
+            <div class="extension-path-box" style="margin: 0; padding: 6px 8px;">Edge: <span data-browser-status="edge">Experimental / Not verified</span></div>
+            <div class="extension-path-box" style="margin: 0; padding: 6px 8px;">Brave: <span data-browser-status="brave">Experimental / Not verified</span></div>
+            <div class="extension-path-box" style="margin: 0; padding: 6px 8px;">Opera: <span data-browser-status="opera">Experimental / Not verified</span></div>
+            <div class="extension-path-box" style="margin: 0; padding: 6px 8px; grid-column: span 2;">Coc Coc: <span data-browser-status="coccoc">Experimental / Not verified</span></div>
+          </div>
+          <div class="browser-pane-header" style="margin-top: 8px;">
+            <span class="browser-pane-title">Detected Profiles</span>
+            <button type="button" id="btn-ext-refresh-profiles" class="btn-outline-pill">Refresh</button>
+          </div>
+          <div id="ext-profiles-list" class="browser-profiles-list" style="margin-bottom: 10px;">
+            <div class="browser-profiles-empty">Click Refresh to scan local browser profiles.</div>
+          </div>
+          <div class="pairing-actions">
+            <button type="button" id="btn-ext-start-pairing" class="btn-pill-primary" disabled>Start Experimental Pairing</button>
+            <button type="button" id="btn-ext-cancel-pairing" class="btn-outline-pill hidden">Cancel Pairing</button>
+          </div>
+          <div id="ext-pairing-info" class="pairing-info-box hidden" style="margin-top: 10px;">
+            <div class="pairing-field-row">
+              <span class="pairing-field-label">Pairing Port:</span>
+              <code id="ext-pairing-port" class="pairing-code">--</code>
+            </div>
+            <div class="pairing-field-row">
+              <span class="pairing-field-label">Session Code:</span>
+              <code id="ext-pairing-nonce" class="pairing-code pairing-code-truncate">--</code>
+            </div>
+            <div class="pairing-waiting-text">
+              Waiting for extension (<span id="ext-pairing-countdown">120</span>s remaining)...
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Method 3: Isolated Login Window [Experimental Fallback] -->
+      <div class="browser-login-pane sp-pane hidden" id="pane-ext-window" data-mode="window">
+        <div class="pairing-card">
+          <div class="pairing-header">
+            <div class="pairing-title-group">
+              <span class="pairing-label">Isolated Login Window [Experimental Fallback]</span>
+              <span class="pairing-sublabel">Sandboxed in-app session window when browser methods fail</span>
+            </div>
+          </div>
+          <p class="stage-desc" style="margin: 8px 0 12px;">Opens an isolated session partition inside Eclipse. Use only if Official PKCE and Experimental Bridge are unavailable.</p>
+          <div class="pairing-actions">
+            <button type="button" id="btn-ext-open-login-window" class="btn-pill-primary" disabled>Open Isolated Login Window</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- State Machine Controls: Reconnect / Disconnect / Manual Fallback -->
+      <div id="ext-session-controls" style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; justify-content: flex-end;">
+        <button type="button" id="btn-ext-manual-fallback" class="btn-outline-pill hidden">Manual Fallback</button>
+        <button type="button" id="btn-ext-reconnect" class="btn-outline-pill hidden">Reconnect</button>
+        <button type="button" id="btn-ext-disconnect" class="btn-outline-pill hidden">Disconnect</button>
+      </div>
+
+      <div id="ext-session-error" class="browser-login-error-box hidden"></div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 
     

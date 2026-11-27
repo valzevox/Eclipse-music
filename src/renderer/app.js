@@ -30799,3 +30799,418 @@ document.addEventListener('DOMContentLoaded', () => {
       autoSyncYtmLibraryOnLogin(null, { trigger: 'background' }).catch(() => {});
     }
   }, 60 * 60 * 1000);
+
+  // Authoritative External Session Connection Center Controller
+  (function initExternalSessionController() {
+    const VALID_STATES = new Set([
+      'not_installed',
+      'unpaired',
+      'pairing',
+      'connected',
+      'expired',
+      'error',
+      'reconnect',
+      'disconnect',
+      'manual_fallback'
+    ]);
+
+    const dialog = document.getElementById('external-session-dialog');
+    const btnOpen = document.getElementById('btn-open-external-session');
+    const btnClose = document.getElementById('btn-close-external-session');
+    const chkConsent = document.getElementById('chk-external-consent');
+
+    const badgePkce = document.getElementById('ext-badge-pkce');
+    const badgeBridge = document.getElementById('ext-badge-bridge');
+    const badgeState = document.getElementById('ext-state-badge');
+    const errorBox = document.getElementById('ext-session-error');
+
+    const tabPkce = document.getElementById('tab-ext-pkce');
+    const tabBridge = document.getElementById('tab-ext-bridge');
+    const tabWindow = document.getElementById('tab-ext-window');
+    const panePkce = document.getElementById('pane-ext-pkce');
+    const paneBridge = document.getElementById('pane-ext-bridge');
+    const paneWindow = document.getElementById('pane-ext-window');
+
+    const btnStartPkce = document.getElementById('btn-ext-start-pkce');
+    const btnCancelPkce = document.getElementById('btn-ext-cancel-pkce');
+    const btnStartPairing = document.getElementById('btn-ext-start-pairing');
+    const btnCancelPairing = document.getElementById('btn-ext-cancel-pairing');
+    const btnRefreshProfiles = document.getElementById('btn-ext-refresh-profiles');
+    const profilesList = document.getElementById('ext-profiles-list');
+    const pairingInfo = document.getElementById('ext-pairing-info');
+    const pairingPort = document.getElementById('ext-pairing-port');
+    const pairingNonce = document.getElementById('ext-pairing-nonce');
+    const pairingCountdown = document.getElementById('ext-pairing-countdown');
+    const btnOpenLoginWindow = document.getElementById('btn-ext-open-login-window');
+
+    const btnReconnect = document.getElementById('btn-ext-reconnect');
+    const btnDisconnect = document.getElementById('btn-ext-disconnect');
+    const btnManualFallback = document.getElementById('btn-ext-manual-fallback');
+
+    if (!dialog) return;
+
+    function getApi() {
+      return window.eclipseAPI || window.electronAPI || null;
+    }
+
+    const controller = {
+      state: 'unpaired',
+      pkceStatus: 'unpaired',
+      bridgeStatus: 'not_installed',
+      activeOp: null,
+      currentOperationId: 0,
+      countdownTimer: null,
+      unsubscribeResult: null,
+
+      nextOperationId() {
+        this.currentOperationId += 1;
+        return this.currentOperationId;
+      },
+
+      isStaleOp(opId) {
+        return typeof opId === 'number' && opId !== this.currentOperationId;
+      },
+
+      hasConsent() {
+        return !!(chkConsent && chkConsent.checked);
+      },
+
+      setError(msg) {
+        if (!errorBox) return;
+        if (!msg) {
+          errorBox.textContent = '';
+          errorBox.classList.add('hidden');
+        } else {
+          errorBox.textContent = String(msg);
+          errorBox.classList.remove('hidden');
+        }
+      },
+
+      stopCountdown() {
+        if (this.countdownTimer) {
+          clearInterval(this.countdownTimer);
+          this.countdownTimer = null;
+        }
+      },
+
+      startCountdown(seconds) {
+        this.stopCountdown();
+        let remaining = Math.max(1, Number(seconds) || 120);
+        if (pairingCountdown) pairingCountdown.textContent = String(remaining);
+        this.countdownTimer = setInterval(() => {
+          remaining -= 1;
+          if (pairingCountdown) pairingCountdown.textContent = String(Math.max(0, remaining));
+          if (remaining <= 0) {
+            this.stopCountdown();
+            if (this.state === 'pairing') {
+              this.activeOp = null;
+              this.applyState('error', { error: 'Pairing timed out. Try Official OAuth PKCE or Manual Fallback.' });
+            }
+          }
+        }, 1000);
+      },
+
+      switchTab(mode) {
+        const tabs = [
+          [tabPkce, panePkce, 'pkce'],
+          [tabBridge, paneBridge, 'bridge'],
+          [tabWindow, paneWindow, 'window']
+        ];
+        tabs.forEach(([tab, pane, key]) => {
+          const active = key === mode;
+          if (tab) tab.classList.toggle('active', active);
+          if (pane) pane.classList.toggle('hidden', !active);
+        });
+      },
+
+      applyState(nextState, meta = {}) {
+        const normalized = VALID_STATES.has(nextState) ? nextState : 'error';
+        this.state = normalized;
+
+        if (meta.pkceStatus) this.pkceStatus = meta.pkceStatus;
+        if (meta.bridgeStatus) this.bridgeStatus = meta.bridgeStatus;
+
+        if (badgeState) {
+          badgeState.textContent = `State: ${normalized}`;
+          badgeState.dataset.state = normalized;
+        }
+        if (badgePkce) {
+          badgePkce.textContent = `Official PKCE: ${this.pkceStatus}`;
+        }
+        if (badgeBridge) {
+          badgeBridge.textContent = `Experimental Bridge: ${this.bridgeStatus}`;
+        }
+
+        const consented = this.hasConsent();
+        const busy = this.activeOp !== null || normalized === 'pairing';
+
+        if (btnStartPkce) btnStartPkce.disabled = !consented || busy;
+        if (btnStartPairing) btnStartPairing.disabled = !consented || busy;
+        if (btnOpenLoginWindow) btnOpenLoginWindow.disabled = !consented || busy;
+
+        if (btnCancelPkce) btnCancelPkce.classList.toggle('hidden', this.activeOp !== 'pkce');
+        if (btnCancelPairing) btnCancelPairing.classList.toggle('hidden', this.activeOp !== 'pairing');
+        if (pairingInfo) pairingInfo.classList.toggle('hidden', this.activeOp !== 'pairing');
+
+        if (btnDisconnect) {
+          btnDisconnect.classList.toggle('hidden', normalized !== 'connected' && normalized !== 'expired');
+        }
+        if (btnReconnect) {
+          btnReconnect.classList.toggle('hidden', normalized !== 'expired' && normalized !== 'error' && normalized !== 'reconnect');
+        }
+        if (btnManualFallback) {
+          btnManualFallback.classList.toggle('hidden', normalized !== 'error' && normalized !== 'not_installed' && normalized !== 'manual_fallback');
+        }
+
+        if (meta.error) {
+          this.setError(meta.error);
+        } else if (normalized === 'connected' || normalized === 'unpaired' || normalized === 'disconnect') {
+          this.setError('');
+        }
+      },
+
+      async syncStatus() {
+        const api = getApi();
+        if (!api || typeof api.externalSessionGetStatus !== 'function') {
+          this.applyState('not_installed', {
+            pkceStatus: 'unavailable',
+            bridgeStatus: 'not_installed'
+          });
+          return;
+        }
+        const opId = this.nextOperationId();
+        try {
+          const res = await api.externalSessionGetStatus();
+          if (this.isStaleOp(opId)) return;
+          const state = (res && VALID_STATES.has(res.state)) ? res.state : (res && res.connected ? 'connected' : 'unpaired');
+          this.applyState(state, {
+            pkceStatus: (res && res.pkceStatus) || (state === 'connected' && res.method === 'pkce' ? 'connected' : 'ready'),
+            bridgeStatus: (res && res.bridgeStatus) || 'experimental / not verified',
+            error: res && res.error ? res.error : ''
+          });
+        } catch (err) {
+          if (this.isStaleOp(opId)) return;
+          this.applyState('error', { error: (err && err.message) || 'Failed to query external session status' });
+        }
+      },
+
+      async startPkce() {
+        if (this.activeOp || !this.hasConsent()) return;
+        const api = getApi();
+        if (!api || typeof api.externalSessionStartPkce !== 'function') {
+          this.applyState('error', { error: 'Official PKCE IPC is unavailable in this runtime.' });
+          return;
+        }
+        const opId = this.nextOperationId();
+        this.activeOp = 'pkce';
+        this.setError('');
+        this.applyState('pairing', { pkceStatus: 'authorizing' });
+        try {
+          const res = await api.externalSessionStartPkce({ operationId: opId });
+          if (this.isStaleOp(opId)) return;
+          this.activeOp = null;
+          if (res && res.canceled) {
+            this.applyState('unpaired', { pkceStatus: 'unpaired' });
+          } else if (res && res.success) {
+            this.applyState('connected', { pkceStatus: 'connected' });
+          } else {
+            this.applyState('error', {
+              pkceStatus: 'error',
+              error: (res && res.error) || 'Official PKCE authorization failed.'
+            });
+          }
+        } catch (err) {
+          if (this.isStaleOp(opId)) return;
+          this.activeOp = null;
+          this.applyState('error', {
+            pkceStatus: 'error',
+            error: (err && err.message) || 'Official PKCE authorization failed.'
+          });
+        }
+      },
+
+      async cancelActiveOp() {
+        const prevOp = this.activeOp;
+        this.nextOperationId();
+        this.activeOp = null;
+        this.stopCountdown();
+        const api = getApi();
+        if (api && typeof api.externalSessionCancelPairing === 'function') {
+          try { await api.externalSessionCancelPairing(); } catch (_) {}
+        }
+        this.applyState('unpaired', {
+          pkceStatus: prevOp === 'pkce' ? 'unpaired' : this.pkceStatus,
+          bridgeStatus: prevOp === 'pairing' ? 'unpaired' : this.bridgeStatus
+        });
+      },
+
+      async startPairing() {
+        if (this.activeOp || !this.hasConsent()) return;
+        const api = getApi();
+        if (!api || typeof api.externalSessionStartPairing !== 'function') {
+          this.applyState('not_installed', { bridgeStatus: 'not_installed', error: 'Experimental Bridge IPC is unavailable.' });
+          return;
+        }
+        const opId = this.nextOperationId();
+        this.activeOp = 'pairing';
+        this.setError('');
+        this.applyState('pairing', { bridgeStatus: 'pairing' });
+        try {
+          const res = await api.externalSessionStartPairing({ operationId: opId });
+          if (this.isStaleOp(opId)) return;
+          if (res && res.success) {
+            if (pairingPort) pairingPort.textContent = res.port ? String(res.port) : '--';
+            if (pairingNonce) pairingNonce.textContent = res.pairingCode ? String(res.pairingCode) : 'active';
+            this.startCountdown(res.timeoutSeconds || 120);
+          } else {
+            this.activeOp = null;
+            this.applyState('error', {
+              bridgeStatus: 'error',
+              error: (res && res.error) || 'Failed to start experimental pairing.'
+            });
+          }
+        } catch (err) {
+          if (this.isStaleOp(opId)) return;
+          this.activeOp = null;
+          this.applyState('error', {
+            bridgeStatus: 'error',
+            error: (err && err.message) || 'Failed to start experimental pairing.'
+          });
+        }
+      },
+
+      async refreshProfiles() {
+        const api = getApi();
+        if (!profilesList) return;
+        if (!api || typeof api.externalSessionGetProfiles !== 'function') {
+          profilesList.innerHTML = '<div class="browser-profiles-empty">Profile discovery unavailable.</div>';
+          return;
+        }
+        const opId = this.nextOperationId();
+        profilesList.innerHTML = '<div class="browser-profiles-empty">Scanning local browser profiles...</div>';
+        try {
+          const res = await api.externalSessionGetProfiles();
+          if (this.isStaleOp(opId)) return;
+          const items = (res && Array.isArray(res.profiles)) ? res.profiles : [];
+          if (!items.length) {
+            profilesList.innerHTML = '<div class="browser-profiles-empty">No external browser profiles detected.</div>';
+            return;
+          }
+          profilesList.innerHTML = '';
+          items.forEach((p) => {
+            const row = document.createElement('div');
+            row.className = 'extension-path-box';
+            row.style.margin = '4px 0';
+            row.textContent = `${p.browser || 'Browser'} — ${p.label || p.profileId || 'Profile'} (${p.status || 'Experimental / Not verified'})`;
+            profilesList.appendChild(row);
+          });
+        } catch (_) {
+          if (this.isStaleOp(opId)) return;
+          profilesList.innerHTML = '<div class="browser-profiles-empty">Failed to scan browser profiles.</div>';
+        }
+      },
+
+      async openLoginWindow() {
+        if (this.activeOp || !this.hasConsent()) return;
+        const api = getApi();
+        if (!api || typeof api.externalSessionOpenLoginWindow !== 'function') {
+          this.applyState('manual_fallback', { error: 'Isolated Login Window is not available in this build.' });
+          return;
+        }
+        const opId = this.nextOperationId();
+        this.activeOp = 'window';
+        this.setError('');
+        this.applyState('manual_fallback');
+        try {
+          const res = await api.externalSessionOpenLoginWindow({ operationId: opId });
+          if (this.isStaleOp(opId)) return;
+          this.activeOp = null;
+          if (res && res.success) {
+            this.applyState('connected');
+          } else if (res && res.canceled) {
+            this.applyState('unpaired');
+          } else {
+            this.applyState('error', { error: (res && res.error) || 'Isolated login window did not complete.' });
+          }
+        } catch (err) {
+          if (this.isStaleOp(opId)) return;
+          this.activeOp = null;
+          this.applyState('error', { error: (err && err.message) || 'Isolated login window failed.' });
+        }
+      },
+
+      async disconnect() {
+        this.nextOperationId();
+        this.activeOp = null;
+        this.stopCountdown();
+        const api = getApi();
+        this.applyState('disconnect');
+        if (api && typeof api.externalSessionLogout === 'function') {
+          try { await api.externalSessionLogout(); } catch (_) {}
+        }
+        this.applyState('unpaired', { pkceStatus: 'unpaired', bridgeStatus: 'unpaired' });
+      },
+
+      open() {
+        dialog.classList.remove('hidden');
+        dialog.classList.add('visible');
+        this.switchTab('pkce');
+        this.syncStatus();
+      },
+
+      close() {
+        dialog.classList.remove('visible');
+        dialog.classList.add('hidden');
+        if (this.activeOp) {
+          this.cancelActiveOp();
+        }
+      }
+    };
+
+    const api = getApi();
+    if (api && typeof api.onExternalSessionResult === 'function') {
+      controller.unsubscribeResult = api.onExternalSessionResult((payload) => {
+        if (!payload || typeof payload !== 'object') return;
+        if (payload.operationId !== undefined && controller.isStaleOp(payload.operationId)) return;
+        controller.activeOp = null;
+        controller.stopCountdown();
+        if (payload.success) {
+          controller.applyState('connected', {
+            pkceStatus: payload.method === 'pkce' ? 'connected' : controller.pkceStatus,
+            bridgeStatus: payload.method === 'bridge' ? 'connected' : controller.bridgeStatus
+          });
+        } else if (payload.canceled) {
+          controller.applyState('unpaired');
+        } else {
+          controller.applyState(payload.state || 'error', {
+            error: payload.error || 'External session connection failed.'
+          });
+        }
+      });
+    }
+
+    if (btnOpen) btnOpen.addEventListener('click', () => controller.open());
+    if (btnClose) btnClose.addEventListener('click', () => controller.close());
+    if (chkConsent) chkConsent.addEventListener('change', () => controller.applyState(controller.state));
+    if (tabPkce) tabPkce.addEventListener('click', () => controller.switchTab('pkce'));
+    if (tabBridge) tabBridge.addEventListener('click', () => controller.switchTab('bridge'));
+    if (tabWindow) tabWindow.addEventListener('click', () => controller.switchTab('window'));
+    if (btnStartPkce) btnStartPkce.addEventListener('click', () => controller.startPkce());
+    if (btnCancelPkce) btnCancelPkce.addEventListener('click', () => controller.cancelActiveOp());
+    if (btnStartPairing) btnStartPairing.addEventListener('click', () => controller.startPairing());
+    if (btnCancelPairing) btnCancelPairing.addEventListener('click', () => controller.cancelActiveOp());
+    if (btnRefreshProfiles) btnRefreshProfiles.addEventListener('click', () => controller.refreshProfiles());
+    if (btnOpenLoginWindow) btnOpenLoginWindow.addEventListener('click', () => controller.openLoginWindow());
+    if (btnDisconnect) btnDisconnect.addEventListener('click', () => controller.disconnect());
+    if (btnReconnect) btnReconnect.addEventListener('click', () => {
+      controller.applyState('reconnect');
+      controller.switchTab('pkce');
+    });
+    if (btnManualFallback) btnManualFallback.addEventListener('click', () => {
+      controller.applyState('manual_fallback');
+      controller.switchTab('window');
+    });
+
+    window.ExternalSessionController = controller;
+    controller.syncStatus();
+  })();

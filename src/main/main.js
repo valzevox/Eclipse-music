@@ -51,6 +51,7 @@ const { getTempCookieManager } = require('../shared/temp-cookie-manager');
 const { BrowserLoginService } = require('./browser-login/browser-login-service');
 const { createBrowserExtensionManager } = require('./browser-login/browser-extension-manager');
 const { BrowserLoginTarget } = require('./browser-login/browser-login-targets');
+const { ExternalSessionService } = require('./browser-login/external-session-service');
 const mainTempCookieMgr = getTempCookieManager(DATA_DIR);
 try {
   mainTempCookieMgr.sweepStaleCookieJars();
@@ -2157,6 +2158,158 @@ ipcMain.on('window-minimize', () => {
 
       ipcMain.handle('browser-login:reveal-exported-extension', async () => {
         return browserExtensionManager.revealExportedExtension();
+      });
+
+      function isValidMainWindowIpcSender(event) {
+        if (!event || !mainWindow || mainWindow.isDestroyed()) return false;
+        const wc = mainWindow.webContents;
+        if (!wc || wc.isDestroyed()) return false;
+        if (event.sender !== wc) return false;
+        const frame = event.senderFrame;
+        if (!frame || frame !== wc.mainFrame) return false;
+        return true;
+      }
+
+      function sanitizeExternalSessionStatus(status) {
+        const s = status && typeof status === 'object' ? status : {};
+        return {
+          connected: Boolean(s.connected),
+          displayName: typeof s.displayName === 'string' ? s.displayName : null,
+          avatarUrl: typeof s.avatarUrl === 'string' ? s.avatarUrl : null,
+          connectionMethod: typeof s.connectionMethod === 'string' ? s.connectionMethod : null,
+          authType: typeof s.authType === 'string' ? s.authType : null,
+          lastVerifiedAt: Number.isFinite(s.lastVerifiedAt) ? s.lastVerifiedAt : null,
+          sessionStatus: typeof s.sessionStatus === 'string' ? s.sessionStatus : 'SIGNED_OUT',
+          persisted: Boolean(s.persisted),
+          storageWarning: typeof s.storageWarning === 'string' ? s.storageWarning : null
+        };
+      }
+
+      function emitExternalSessionResult(payload) {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        const wc = mainWindow.webContents;
+        if (!wc || wc.isDestroyed()) return;
+        wc.send('external-session:pairing-result', payload);
+      }
+
+      const externalVaultPath = path.join(app.getPath('userData'), 'external-session.vault.json');
+      let activeExternalOpId = null;
+      const externalSessionService = new ExternalSessionService({
+        isPackaged: app.isPackaged,
+        vaultPath: externalVaultPath,
+        safeStorage,
+        openExternal: (targetUrl) => shell.openExternal(targetUrl),
+        onStateChange: (status) => {
+          const safeStatus = sanitizeExternalSessionStatus(status);
+          emitExternalSessionResult({
+            operationId: activeExternalOpId,
+            success: safeStatus.connected,
+            method: safeStatus.connectionMethod === 'pkce'
+              ? 'pkce'
+              : (safeStatus.connectionMethod === 'extension_pairing' ? 'bridge' : safeStatus.connectionMethod),
+            status: safeStatus
+          });
+        }
+      });
+      externalSessionService.initialize().catch(() => {});
+
+      ipcMain.handle('external-session:start-pkce', async (event, opts = {}) => {
+        if (!isValidMainWindowIpcSender(event)) {
+          return { success: false, error: 'Unauthorized IPC sender' };
+        }
+        activeExternalOpId = opts && opts.operationId !== undefined ? opts.operationId : null;
+        try {
+          const status = sanitizeExternalSessionStatus(await externalSessionService.startPkceLogin(opts || {}));
+          return { success: status.connected, status };
+        } catch (err) {
+          const msg = err && err.message ? err.message : 'PKCE authorization failed';
+          const canceled = Boolean(err && (err.code === 'PKCE_CANCELLED' || /cancel/i.test(msg)));
+          return { success: false, canceled, error: msg };
+        }
+      });
+
+      ipcMain.handle('external-session:start-pairing', async (event, opts = {}) => {
+        if (!isValidMainWindowIpcSender(event)) {
+          return { success: false, error: 'Unauthorized IPC sender' };
+        }
+        activeExternalOpId = opts && opts.operationId !== undefined ? opts.operationId : null;
+        try {
+          const sessionInfo = await externalSessionService.startPairingSession(opts || {});
+          return {
+            success: true,
+            port: sessionInfo && sessionInfo.port ? sessionInfo.port : null,
+            pairingCode: sessionInfo && sessionInfo.pairingCode ? sessionInfo.pairingCode : null,
+            timeoutSeconds: sessionInfo && sessionInfo.timeoutSeconds ? sessionInfo.timeoutSeconds : 120
+          };
+        } catch (err) {
+          return { success: false, error: err && err.message ? err.message : 'Failed to start pairing session' };
+        }
+      });
+
+      ipcMain.handle('external-session:cancel-pairing', async (event) => {
+        if (!isValidMainWindowIpcSender(event)) {
+          return { success: false, error: 'Unauthorized IPC sender' };
+        }
+        activeExternalOpId = null;
+        const status = sanitizeExternalSessionStatus(externalSessionService.cancelActiveAuth());
+        return { success: true, status };
+      });
+
+      ipcMain.handle('external-session:get-status', async (event) => {
+        if (!isValidMainWindowIpcSender(event)) {
+          return { success: false, error: 'Unauthorized IPC sender' };
+        }
+        const status = sanitizeExternalSessionStatus(externalSessionService.getStatus());
+        return { success: true, ...status, status };
+      });
+
+      ipcMain.handle('external-session:logout', async (event) => {
+        if (!isValidMainWindowIpcSender(event)) {
+          return { success: false, error: 'Unauthorized IPC sender' };
+        }
+        activeExternalOpId = null;
+        const status = sanitizeExternalSessionStatus(externalSessionService.logout());
+        return { success: true, status };
+      });
+
+      ipcMain.handle('external-session:open-login-window', async (event, opts = {}) => {
+        if (!isValidMainWindowIpcSender(event)) {
+          return { success: false, error: 'Unauthorized IPC sender' };
+        }
+        activeExternalOpId = opts && opts.operationId !== undefined ? opts.operationId : null;
+        try {
+          const status = sanitizeExternalSessionStatus(
+            await externalSessionService.openLoginWindow({
+              ...(opts && typeof opts === 'object' ? opts : {}),
+              parentWindow: mainWindow
+            })
+          );
+          return { success: status.connected, status };
+        } catch (err) {
+          const msg = err && err.message ? err.message : 'External login window failed';
+          const code = err && err.code ? err.code : null;
+          const canceled = Boolean(
+            err && (
+              code === 'LOGIN_WINDOW_CLOSED' ||
+              code === 'LOGIN_WINDOW_CANCELLED' ||
+              code === 'APP_EXIT' ||
+              /cancel|closed/i.test(msg)
+            )
+          );
+          return { success: false, canceled, code, error: msg };
+        }
+      });
+
+      ipcMain.handle('external-session:get-profiles', async (event) => {
+        if (!isValidMainWindowIpcSender(event)) {
+          return { success: false, error: 'Unauthorized IPC sender', profiles: [] };
+        }
+        try {
+          const profiles = await externalSessionService.getProfiles();
+          return { success: true, profiles: Array.isArray(profiles) ? profiles : [] };
+        } catch (err) {
+          return { success: false, error: err && err.message ? err.message : 'Failed to discover profiles', profiles: [] };
+        }
       });
 
       ipcMain.handle('google-auth-status', async () => {

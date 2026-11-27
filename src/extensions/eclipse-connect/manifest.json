@@ -2,12 +2,13 @@
   "manifest_version": 3,
   "name": "Eclipse Connect",
   "version": "1.0.0",
-  "description": "Secure one-time YouTube Music session connector for Eclipse Music Player",
-  "permissions": [
+  "description": "Secure one-time session connector for Eclipse Music Player",
+  "optional_permissions": [
     "cookies"
   ],
   "optional_host_permissions": [
-    "http://127.0.0.1/*"
+    "http://127.0.0.1/*",
+    "https://open.spotify.com/*"
   ],
   "host_permissions": [
     "*://*.youtube.com/*",
