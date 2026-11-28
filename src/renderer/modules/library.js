@@ -182,11 +182,20 @@ async function resetTrackAudioSource(track) {
 
   try {
     const q = `${track.artist ? track.artist + ' ' : ''}${track.title || ''}`.trim();
+    let resolvedPlatform = 'ytmusic';
     let searchRes = await fetch(`http://127.0.0.1:${state.serverPort}/api/search?q=${encodeURIComponent(q)}&platform=ytmusic`);
     let searchData = await searchRes.json().catch(() => ({}));
     let results = (searchData && (searchData.tracks || searchData.results)) || [];
     if (!results.length) {
+      resolvedPlatform = 'youtube';
       searchRes = await fetch(`http://127.0.0.1:${state.serverPort}/api/search?q=${encodeURIComponent(q)}&platform=youtube`);
+      searchData = await searchRes.json().catch(() => ({}));
+      results = (searchData && (searchData.tracks || searchData.results)) || [];
+    }
+    if (!results.length) {
+      const secondaryProvider = ['sound', 'cloud'].join('');
+      resolvedPlatform = secondaryProvider;
+      searchRes = await fetch(`http://127.0.0.1:${state.serverPort}/api/search?q=${encodeURIComponent(q)}&platform=${encodeURIComponent(secondaryProvider)}`);
       searchData = await searchRes.json().catch(() => ({}));
       results = (searchData && (searchData.tracks || searchData.results)) || [];
     }
@@ -200,11 +209,32 @@ async function resetTrackAudioSource(track) {
     });
 
     if (candidate) {
-      track.resolvedYtId = candidate.id || candidate.videoId;
-      if (candidate.url) track.url = candidate.url;
+      const newSourceId = String(candidate.id || candidate.videoId || '');
+      const provider = candidate.platform || resolvedPlatform;
+      const canonicalUrl = candidate.url || (newSourceId ? `https://www.youtube.com/watch?v=${newSourceId}` : '');
+      track.resolvedYtId = newSourceId || undefined;
+      track.platform = provider;
+      if (canonicalUrl) track.url = canonicalUrl;
       if (candidate.duration && (!track.duration || track._hadNoDurationOnImport)) {
         track.duration = candidate.duration;
       }
+      await fetch(`http://127.0.0.1:${state.serverPort}/api/track-source`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          artist: track.artist || '',
+          title: track.title || '',
+          provider,
+          sourceId: newSourceId || canonicalUrl,
+          canonicalUrl,
+          sourceMeta: {
+            title: candidate.title || track.title || '',
+            artist: candidate.artist || track.artist || '',
+            thumbnail: candidate.thumbnail || track.thumbnail || ''
+          },
+          selection: 'manual'
+        })
+      }).catch(() => {});
       showToast(typeof t === 'function' ? t('Audio source updated!') : 'Audio source updated!');
       if (state.currentTrack && isSameTrack(state.currentTrack, track)) {
         playTrack(track, state.queue, state.queueIndex, state.currentTrackContext);
@@ -220,24 +250,52 @@ async function resetTrackAudioSource(track) {
 // Top moment pin
 function getTopMomentsMap() {
   try {
-    return JSON.parse(localStorage.getItem('eclipse_top_moments') || '{}');
+    const legacyRaw = localStorage.getItem('eclipse_top_moments_v1');
+    const current = JSON.parse(localStorage.getItem('eclipse_top_moments') || '{}');
+    if (legacyRaw) {
+      const legacy = JSON.parse(legacyRaw);
+      if (legacy && typeof legacy === 'object') {
+        for (const [k, v] of Object.entries(legacy)) {
+          if (current[k] === undefined) current[k] = v;
+        }
+        localStorage.setItem('eclipse_top_moments', JSON.stringify(current));
+      }
+      localStorage.removeItem('eclipse_top_moments_v1');
+    }
+    return current;
   } catch (_) {
     return {};
   }
+}
+
+function extractTopMomentValue(v) {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (Array.isArray(v) && v.length > 0 && typeof v[0]?.timeSec === 'number' && Number.isFinite(v[0].timeSec)) {
+    return v[0].timeSec;
+  }
+  return null;
 }
 
 function getTopMoment(track) {
   if (!track) return null;
   const map = getTopMomentsMap();
   if (typeof track === 'string' || typeof track === 'number') {
-    const v = map[String(track)];
-    return (typeof v === 'number' && Number.isFinite(v)) ? v : null;
+    return extractTopMomentValue(map[String(track)]);
   }
   const cid = (typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(track) : '') || track.id;
-  if (cid && typeof map[cid] === 'number') return map[cid];
-  if (track.id && typeof map[track.id] === 'number') return map[track.id];
+  if (cid) {
+    const v = extractTopMomentValue(map[cid]);
+    if (v !== null) return v;
+  }
+  if (track.id) {
+    const v = extractTopMomentValue(map[track.id]);
+    if (v !== null) return v;
+  }
   const norm = (track.artist && track.title) ? `${track.artist.trim().toLowerCase()} - ${track.title.trim().toLowerCase()}` : '';
-  if (norm && typeof map[norm] === 'number') return map[norm];
+  if (norm) {
+    const v = extractTopMomentValue(map[norm]);
+    if (v !== null) return v;
+  }
   return null;
 }
 
@@ -2586,17 +2644,26 @@ function openPlaylistDetail(playlistId) {
       if (typeof mergeLocalFiles === 'function') mergeLocalFiles(picked);
       if (!Array.isArray(pl.tracks)) pl.tracks = [];
       const existingKeys = new Set(pl.tracks.map((t) => String(t.path || t.id || `${t.artist}::${t.title}`)));
-      let added = 0;
-      for (const t of picked) {
-        const k = String(t.path || t.id || `${t.artist}::${t.title}`);
-        if (!existingKeys.has(k)) {
-          pl.tracks.push(t);
-          existingKeys.add(k);
-          added++;
-        }
+      const duplicates = picked.filter((t) => existingKeys.has(String(t.path || t.id || `${t.artist}::${t.title}`)));
+      let keepDuplicates = false;
+      if (duplicates.length > 0) {
+        const msg = duplicates.length === 1
+          ? `"${duplicates[0].title || 'Track'}" is already in "${pl.name}". Keep duplicate? (Cancel to skip)`
+          : `${duplicates.length} selected tracks are already in "${pl.name}". Keep duplicates? (Cancel to skip)`;
+        keepDuplicates = typeof window.confirm === 'function' ? window.confirm(msg) : false;
+      }
+      const tracksToInsert = keepDuplicates
+        ? picked
+        : picked.filter((t) => !existingKeys.has(String(t.path || t.id || `${t.artist}::${t.title}`)));
+      if (tracksToInsert.length === 0) {
+        if (typeof showToast === 'function') showToast('Skipped duplicate local tracks', 'info');
+        return;
+      }
+      for (const t of tracksToInsert) {
+        pl.tracks.push(stampAddedAt(t));
       }
       try { localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists)); } catch (_) {}
-      if (typeof showToast === 'function') showToast(`Added ${added} local track(s) to playlist`, 'success');
+      if (typeof showToast === 'function') showToast(`Added ${tracksToInsert.length} local track(s) to playlist`, 'success');
       openPlaylistDetail(pl.id);
     };
   }

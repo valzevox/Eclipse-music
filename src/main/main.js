@@ -73,7 +73,15 @@ process.on('unhandledRejection', (reason) => {
   } catch (_) {}
 });
 
-const enabledFeatures = [];
+function safeSend(win, channel, ...args) {
+  try {
+    if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+      win.webContents.send(channel, ...args);
+    }
+  } catch (_) {}
+}
+
+const enabledFeatures = ['MemoryPurgeInBackground'];
 if (process.platform === 'linux') {
   enabledFeatures.push('WaylandWindowDecorations', 'UseOzonePlatform', 'WaylandFractionalScaleV1', 'MediaSessionService', 'HardwareMediaKeyHandling');
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
@@ -104,18 +112,19 @@ app.commandLine.appendSwitch('disable-background-networking');
 app.commandLine.appendSwitch('disable-domain-reliability');
 app.commandLine.appendSwitch('disable-sync');
 app.commandLine.appendSwitch('disable-speech-api');
-app.commandLine.appendSwitch('js-flags', '--max-old-space-size=384');
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=512 --expose-gc');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
 app.commandLine.appendSwitch('disk-cache-size', '52428800');
 app.commandLine.appendSwitch('media-cache-size', '52428800');
 
-setInterval(() => {
+function performAppMemoryTrim() {
   try {
-    session.defaultSession.clearCache().catch(() => {});
     if (global.gc) global.gc();
   } catch (_) {}
-}, 180000);
+}
+
+setInterval(performAppMemoryTrim, 180000);
 app.on('ready', () => {
   const cleanUA = (app.userAgentFallback || '').replace(/\s*Electron\/[^\s]+/gi, '').replace(/\s*(?:riff|eclipse)\/[^\s]+/gi, '');
   if (cleanUA) app.userAgentFallback = cleanUA;
@@ -538,7 +547,7 @@ function runGUI() {
         if (!mainWindow || mainWindow.isDestroyed()) return;
         const result = detail && !detail.skipped ? detail : null;
         mainWindow.setBackgroundColor('#000000');
-        mainWindow.webContents.once('did-finish-load', () => { if (result) mainWindow.webContents.send('welcome-result', result); });
+        mainWindow.webContents.once('did-finish-load', () => { if (result) safeSend(mainWindow, 'welcome-result', result); });
         mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
         require('./updater').initUpdater(() => mainWindow, {
           beforeExit: () => { isQuitting = true; }
@@ -565,10 +574,8 @@ function runGUI() {
     });
 
     mainWindow.on('minimize', () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('window-visibility', false);
-        if (global.gc) global.gc();
-      }
+      safeSend(mainWindow, 'window-visibility', false);
+      if (global.gc) global.gc();
     });
 
     mainWindow.on('blur', () => {
@@ -576,21 +583,15 @@ function runGUI() {
     });
 
     mainWindow.on('restore', () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('window-visibility', true);
-      }
+      safeSend(mainWindow, 'window-visibility', true);
     });
 
     mainWindow.on('hide', () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('window-visibility', false);
-      }
+      safeSend(mainWindow, 'window-visibility', false);
     });
 
     mainWindow.on('show', () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('window-visibility', true);
-      }
+      safeSend(mainWindow, 'window-visibility', true);
     });
     mainWindow.on('resize', persistWindowState);
     mainWindow.on('move', persistWindowState);
@@ -624,10 +625,89 @@ function runGUI() {
   ipcMain.removeHandler('rescan-local-metadata');
 
   
-const thumbarIconPrev = path.join(__dirname, '../../assets/thumbar', 'previous.png');
-const thumbarIconPlay = path.join(__dirname, '../../assets/thumbar', 'play.png');
-const thumbarIconPause = path.join(__dirname, '../../assets/thumbar', 'pause.png');
-const thumbarIconNext = path.join(__dirname, '../../assets/thumbar', 'next.png');
+const thumbarIconCache = new Map();
+function createThumbarIcon(type) {
+  if (thumbarIconCache.has(type)) return thumbarIconCache.get(type);
+  const W = 32, H = 32;
+  const raw = Buffer.alloc((W * 4 + 1) * H, 0);
+  const setPx = (x, y, a = 255) => {
+    const ix = Math.round(x), iy = Math.round(y);
+    if (ix < 0 || ix >= W || iy < 0 || iy >= H) return;
+    const off = iy * (W * 4 + 1) + 1 + ix * 4;
+    raw[off] = 255; raw[off + 1] = 255; raw[off + 2] = 255;
+    raw[off + 3] = Math.max(raw[off + 3], Math.min(255, Math.round(a)));
+  };
+  const fillRect = (x0, y0, w, h) => {
+    for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) setPx(x, y, 255);
+  };
+  const fillTri = (x1, y1, x2, y2, x3, y3) => {
+    const minX = Math.floor(Math.min(x1, x2, x3)), maxX = Math.ceil(Math.max(x1, x2, x3));
+    const minY = Math.floor(Math.min(y1, y2, y3)), maxY = Math.ceil(Math.max(y1, y2, y3));
+    const edge = (ax, ay, bx, by, px, py) => (px - ax) * (by - ay) - (py - ay) * (bx - ax);
+    const area = edge(x1, y1, x2, y2, x3, y3);
+    const sign = area < 0 ? -1 : 1;
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        const w0 = edge(x2, y2, x3, y3, x + 0.5, y + 0.5) * sign;
+        const w1 = edge(x3, y3, x1, y1, x + 0.5, y + 0.5) * sign;
+        const w2 = edge(x1, y1, x2, y2, x + 0.5, y + 0.5) * sign;
+        if (w0 >= 0 && w1 >= 0 && w2 >= 0) setPx(x, y, 255);
+      }
+    }
+  };
+
+  if (type === 'play') {
+    fillTri(9, 6, 25, 16, 9, 26);
+  } else if (type === 'pause') {
+    fillRect(8, 6, 5, 20);
+    fillRect(19, 6, 5, 20);
+  } else if (type === 'prev') {
+    fillRect(6, 7, 3, 18);
+    fillTri(24, 7, 10, 16, 24, 25);
+  } else if (type === 'next') {
+    fillTri(8, 7, 22, 16, 8, 25);
+    fillRect(23, 7, 3, 18);
+  } else if (type === 'seek-back') {
+    fillTri(16, 8, 5, 16, 16, 24);
+    fillTri(27, 8, 16, 16, 27, 24);
+  } else if (type === 'seek-forward') {
+    fillTri(5, 8, 16, 16, 5, 24);
+    fillTri(16, 8, 27, 16, 16, 24);
+  }
+
+  const crcTable = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+      t[n] = c >>> 0;
+    }
+    return t;
+  })();
+  const crc32 = (buf) => {
+    let c = 0xffffffff;
+    for (let i = 0; i < buf.length; i++) c = crcTable[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (typeStr, dataBuf) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(dataBuf.length, 0);
+    const tp = Buffer.from(typeStr, 'ascii');
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(Buffer.concat([tp, dataBuf])), 0);
+    return Buffer.concat([len, tp, dataBuf, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4);
+  ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+  const png = Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0))
+  ]);
+  const img = nativeImage.createFromBuffer(png);
+  thumbarIconCache.set(type, img);
+  return img;
+}
 
 function updateThumbarButtons(isPlaying) {
   if (process.platform !== 'win32' || !mainWindow || mainWindow.isDestroyed()) return;
@@ -635,23 +715,37 @@ function updateThumbarButtons(isPlaying) {
     mainWindow.setThumbarButtons([
       {
         tooltip: 'Previous track',
-        icon: thumbarIconPrev,
+        icon: createThumbarIcon('prev'),
         click() {
-          mainWindow.webContents.send('media-command', 'prev');
+          safeSend(mainWindow, 'media-command', 'prev');
+        }
+      },
+      {
+        tooltip: 'Seek -5s',
+        icon: createThumbarIcon('seek-back'),
+        click() {
+          safeSend(mainWindow, 'media-command', 'seek-back');
         }
       },
       {
         tooltip: isPlaying ? 'Pause' : 'Play',
-        icon: isPlaying ? thumbarIconPause : thumbarIconPlay,
+        icon: createThumbarIcon(isPlaying ? 'pause' : 'play'),
         click() {
-          mainWindow.webContents.send('media-command', isPlaying ? 'pause' : 'play');
+          safeSend(mainWindow, 'media-command', isPlaying ? 'pause' : 'play');
+        }
+      },
+      {
+        tooltip: 'Seek +5s',
+        icon: createThumbarIcon('seek-forward'),
+        click() {
+          safeSend(mainWindow, 'media-command', 'seek-forward');
         }
       },
       {
         tooltip: 'Next track',
-        icon: thumbarIconNext,
+        icon: createThumbarIcon('next'),
         click() {
-          mainWindow.webContents.send('media-command', 'next');
+          safeSend(mainWindow, 'media-command', 'next');
         }
       }
     ]);
@@ -761,9 +855,7 @@ function createFloatingLyricsWindow() {
   floatingLyricsWindow.on('closed', () => {
     if (saveTimer) clearTimeout(saveTimer);
     floatingLyricsWindow = null;
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('floating-lyrics-state', false);
-    }
+    safeSend(mainWindow, 'floating-lyrics-state', false);
   });
 }
 
@@ -779,21 +871,15 @@ ipcMain.handle('toggle-floating-lyrics', () => {
 });
 
 ipcMain.on('floating-lyrics-ready', () => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('floating-lyrics-request-sync');
-  }
+  safeSend(mainWindow, 'floating-lyrics-request-sync');
 });
 
 ipcMain.on('floating-lyrics-update', (event, data) => {
-  if (floatingLyricsWindow && !floatingLyricsWindow.isDestroyed()) {
-    floatingLyricsWindow.webContents.send('floating-lyrics-data', data);
-  }
+  safeSend(floatingLyricsWindow, 'floating-lyrics-data', data);
 });
 
 ipcMain.on('floating-command', (event, cmd) => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('media-command', cmd);
-  }
+  safeSend(mainWindow, 'media-command', cmd);
 });
 
 ipcMain.on('close-floating-lyrics', () => {
@@ -1521,7 +1607,7 @@ ipcMain.on('window-minimize', () => {
       let mediaKeysActive = false;
       const sendMedia = (cmd) => {
         if (process.env.RIFF_DEBUG === '1') console.log('[media] globalShortcut', cmd);
-        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('media-command', cmd);
+        safeSend(mainWindow, 'media-command', cmd);
       };
       function unregisterMediaKeys() {
         for (const k of Object.keys(MEDIA_KEYS)) {
@@ -2061,8 +2147,8 @@ ipcMain.on('window-minimize', () => {
                 try { if (fs.existsSync(YT_LOGOUT_FLAG)) fs.unlinkSync(YT_LOGOUT_FLAG); } catch (_) {}
                 if (sender && !sender.isDestroyed()) {
                   sender.send('browser-login:pairing-result', { success: true, account: authResult.account });
-                } else if (mainWindow && !mainWindow.isDestroyed()) {
-                  mainWindow.webContents.send('browser-login:pairing-result', { success: true, account: authResult.account });
+                } else {
+                  safeSend(mainWindow, 'browser-login:pairing-result', { success: true, account: authResult.account });
                 }
               } catch (_) {}
             },
@@ -2070,8 +2156,8 @@ ipcMain.on('window-minimize', () => {
               try {
                 if (sender && !sender.isDestroyed()) {
                   sender.send('browser-login:pairing-result', { success: false, error: err.message, reason: err.reason, details: err.details || null });
-                } else if (mainWindow && !mainWindow.isDestroyed()) {
-                  mainWindow.webContents.send('browser-login:pairing-result', { success: false, error: err.message, reason: err.reason, details: err.details || null });
+                } else {
+                  safeSend(mainWindow, 'browser-login:pairing-result', { success: false, error: err.message, reason: err.reason, details: err.details || null });
                 }
               } catch (_) {}
             }
@@ -2383,6 +2469,20 @@ ipcMain.on('window-minimize', () => {
             ytmAccount: null,
             googleDataOAuth: { hasRefreshToken: false }
           };
+        }
+      });
+
+      ipcMain.handle('google-account-info', async () => {
+        if (!serverPort) return null;
+        try {
+          const res = await fetch(`http://127.0.0.1:${serverPort}/api/youtube-account-info`, {
+            signal: AbortSignal.timeout(5000)
+          });
+          if (!res.ok) return null;
+          const data = await res.json();
+          return (data && data.user) ? data.user : null;
+        } catch (_) {
+          return null;
         }
       });
 
@@ -2773,9 +2873,7 @@ ipcMain.on('window-minimize', () => {
             {
               label: 'Play/Pause',
               click: () => {
-                if (mainWindow && !mainWindow.isDestroyed()) {
-                  mainWindow.webContents.send('media-command', 'toggle');
-                }
+                safeSend(mainWindow, 'media-command', 'toggle');
               }
             },
             { type: 'separator' },
@@ -2891,13 +2989,13 @@ ipcMain.on('window-minimize', () => {
         createWindow();
         try {
           globalShortcut.register('MediaPlayPause', () => {
-            mainWindow?.webContents.send('media-control', 'play-pause');
+            safeSend(mainWindow, 'media-control', 'play-pause');
           });
           globalShortcut.register('MediaNextTrack', () => {
-            mainWindow?.webContents.send('media-control', 'next');
+            safeSend(mainWindow, 'media-control', 'next');
           });
           globalShortcut.register('MediaPreviousTrack', () => {
-            mainWindow?.webContents.send('media-control', 'prev');
+            safeSend(mainWindow, 'media-control', 'prev');
           });
         } catch (e) {}
         if (tutorialDone()) require('./updater').initUpdater(() => mainWindow, {

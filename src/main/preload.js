@@ -126,6 +126,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   googleImportCookieText: (cookieText) => ipcRenderer.invoke('google-import-cookie-text', cookieText),
   googleLogout: () => ipcRenderer.invoke('google-logout'),
   googleAuthStatus: () => ipcRenderer.invoke('google-auth-status'),
+  googleAccountInfo: () => ipcRenderer.invoke('google-account-info'),
   browserLoginGetProfiles: () => ipcRenderer.invoke('browser-login:get-profiles'),
   browserLoginStartPairing: () => ipcRenderer.invoke('browser-login:start-pairing'),
   browserLoginCancelPairing: () => ipcRenderer.invoke('browser-login:cancel-pairing'),

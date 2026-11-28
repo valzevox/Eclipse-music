@@ -2,7 +2,35 @@
 // Part of Eclipse Music Player — MIT License
 
 (function () {
-  const STORAGE_KEY = 'eclipse_top_moments_v1';
+  const STORAGE_KEY = 'eclipse_top_moments';
+  const LEGACY_STORAGE_KEY = 'eclipse_top_moments_v1';
+  let migrated = false;
+
+  function migrateLegacy(store) {
+    if (migrated || !store) return;
+    migrated = true;
+    try {
+      const legacyRaw = store.getItem(LEGACY_STORAGE_KEY);
+      if (!legacyRaw) return;
+      const legacy = JSON.parse(legacyRaw);
+      if (legacy && typeof legacy === 'object') {
+        const currentRaw = store.getItem(STORAGE_KEY);
+        const current = currentRaw ? JSON.parse(currentRaw) : {};
+        const merged = (current && typeof current === 'object') ? { ...current } : {};
+        for (const [k, v] of Object.entries(legacy)) {
+          if (merged[k] === undefined) {
+            merged[k] = v;
+          } else if (typeof merged[k] === 'number' && Array.isArray(v)) {
+            const pinSec = merged[k];
+            const hasPin = v.some((m) => m && Math.abs(Number(m.timeSec) - pinSec) < 0.2);
+            merged[k] = hasPin ? v : [{ id: `tm_pin_${Date.now()}`, timeSec: pinSec, label: 'Top Moment' }, ...v];
+          }
+        }
+        store.setItem(STORAGE_KEY, JSON.stringify(merged));
+      }
+      store.removeItem(LEGACY_STORAGE_KEY);
+    } catch (_) {}
+  }
 
   function getTrackKey(track) {
     if (!track) return '';
@@ -13,6 +41,7 @@
   function readAll(storage) {
     const store = storage || (typeof localStorage !== 'undefined' ? localStorage : null);
     if (!store) return {};
+    migrateLegacy(store);
     try {
       const raw = store.getItem(STORAGE_KEY);
       const parsed = raw ? JSON.parse(raw) : {};
@@ -34,14 +63,24 @@
     const key = getTrackKey(track);
     if (!key) return [];
     const all = readAll(storage);
-    return Array.isArray(all[key]) ? all[key] : [];
+    const val = all[key];
+    if (Array.isArray(val)) return val;
+    if (typeof val === 'number' && Number.isFinite(val)) {
+      return [{ id: 'tm_pin', timeSec: val, label: 'Top Moment' }];
+    }
+    return [];
   }
 
   function addMoment(track, { timeSec, label = 'Top Moment' } = {}, storage) {
     const key = getTrackKey(track);
     if (!key || !Number.isFinite(timeSec) || timeSec < 0) return null;
     const all = readAll(storage);
-    const list = Array.isArray(all[key]) ? [...all[key]] : [];
+    const existing = all[key];
+    const list = Array.isArray(existing)
+      ? [...existing]
+      : (typeof existing === 'number' && Number.isFinite(existing)
+        ? [{ id: 'tm_pin', timeSec: existing, label: 'Top Moment' }]
+        : []);
     const entry = {
       id: `tm_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       timeSec: Math.round(timeSec * 10) / 10,
