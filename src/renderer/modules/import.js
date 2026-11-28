@@ -1467,8 +1467,21 @@ function updateGoogleAuthUI() {
     }
   }
   if (btnSettingsConnectYtm) {
-    btnSettingsConnectYtm.textContent = googleConnected ? (typeof t === 'function' ? t('Connected') : 'Connected') : (typeof t === 'function' ? t('Connect') : 'Connect');
-    btnSettingsConnectYtm.disabled = !!googleConnected;
+    btnSettingsConnectYtm.textContent = googleConnected ? (typeof t === 'function' ? t('Manage') : 'Manage') : (typeof t === 'function' ? t('Connect') : 'Connect');
+    btnSettingsConnectYtm.disabled = false;
+  }
+  const inappYtmStatus = document.getElementById('inapp-ytm-status');
+  const btnInappYtmSignin = document.getElementById('btn-inapp-ytm-signin');
+  const btnInappYtmLogout = document.getElementById('btn-inapp-ytm-logout');
+  if (inappYtmStatus) {
+    inappYtmStatus.textContent = googleConnected ? (typeof t === 'function' ? t('Connected') : 'Connected') : (typeof t === 'function' ? t('Not connected') : 'Not connected');
+    inappYtmStatus.style.color = googleConnected ? '#4caf50' : 'var(--md-sys-color-outline)';
+  }
+  if (btnInappYtmSignin) {
+    btnInappYtmSignin.textContent = googleConnected ? 'Switch Account' : 'Sign in with Google';
+  }
+  if (btnInappYtmLogout) {
+    btnInappYtmLogout.classList.toggle('hidden', !googleConnected);
   }
   if (btnGoogleLogin) {
     btnGoogleLogin.classList.toggle('hidden', !!googleConnected);
@@ -1601,10 +1614,15 @@ const btnCopyAllDetails = document.getElementById('btn-copy-all-details');
 const pairingCountdownVal = document.getElementById('pairing-countdown-val');
 
 const browserLoginError = document.getElementById('browser-login-error');
+const browserLoginModes = document.getElementById('browser-login-modes');
+const tabLoginInapp = document.getElementById('tab-login-inapp');
 const tabLoginProfiles = document.getElementById('tab-login-profiles');
 const tabLoginExtension = document.getElementById('tab-login-extension');
+const tabLoginCookie = document.getElementById('tab-login-cookie');
+const paneLoginInapp = document.getElementById('pane-login-inapp');
 const paneLoginProfiles = document.getElementById('pane-login-profiles');
 const paneLoginExtension = document.getElementById('pane-login-extension');
+const paneLoginCookie = document.getElementById('pane-login-cookie');
 
 let extensionSavedFilePath = '';
 let pairingCountdownInterval = null;
@@ -1615,23 +1633,31 @@ if (!browserLoginDialog) {
 }
 
 function switchBrowserLoginTab(mode) {
-  if (mode === 'profiles') {
-    if (tabLoginProfiles) tabLoginProfiles.classList.add('active');
-    if (tabLoginExtension) tabLoginExtension.classList.remove('active');
-    if (paneLoginProfiles) paneLoginProfiles.classList.remove('hidden');
-    if (paneLoginExtension) paneLoginExtension.classList.add('hidden');
-  } else {
-    if (tabLoginExtension) tabLoginExtension.classList.add('active');
-    if (tabLoginProfiles) tabLoginProfiles.classList.remove('active');
-    if (paneLoginExtension) paneLoginExtension.classList.remove('hidden');
-    if (paneLoginProfiles) paneLoginProfiles.classList.add('hidden');
+  const targetMode = mode || 'inapp';
+  if (browserLoginModes) {
+    browserLoginModes.querySelectorAll('button[data-mode]').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.mode === targetMode);
+    });
+  }
+  if (browserLoginDialog) {
+    browserLoginDialog.querySelectorAll('.browser-login-pane[data-mode]').forEach((pane) => {
+      pane.classList.toggle('hidden', pane.dataset.mode !== targetMode);
+    });
+  }
+  if (browserLoginError) {
+    browserLoginError.classList.add('hidden');
+  }
+  if (targetMode === 'profiles') {
+    refreshBrowserProfilesUI();
   }
 }
 
+if (tabLoginInapp) tabLoginInapp.addEventListener('click', () => switchBrowserLoginTab('inapp'));
 if (tabLoginProfiles) tabLoginProfiles.addEventListener('click', () => switchBrowserLoginTab('profiles'));
 if (tabLoginExtension) tabLoginExtension.addEventListener('click', () => switchBrowserLoginTab('extension'));
+if (tabLoginCookie) tabLoginCookie.addEventListener('click', () => switchBrowserLoginTab('cookie'));
 
-function openBrowserLoginModal() {
+function openBrowserLoginModal(initialMode = 'inapp') {
   if (!browserLoginDialog) {
     console.error('[BrowserLogin] Cannot open Browser Login modal: #browser-login-dialog element is missing');
     if (typeof showToast === 'function') {
@@ -1641,8 +1667,8 @@ function openBrowserLoginModal() {
   }
   browserLoginDialog.classList.remove('hidden');
   browserLoginDialog.classList.add('visible');
-  switchBrowserLoginTab('profiles');
-  refreshBrowserProfilesUI();
+  switchBrowserLoginTab(initialMode);
+  updateGoogleAuthUI();
 }
 
 function closeBrowserLoginModal() {
@@ -2422,7 +2448,110 @@ if (btnGoogleLogin) {
 
 if (btnSettingsConnectYtm) {
   btnSettingsConnectYtm.addEventListener('click', () => {
-    openBrowserLoginModal();
+    openBrowserLoginModal('inapp');
+  });
+}
+
+const btnInappYtmSignin = document.getElementById('btn-inapp-ytm-signin');
+const btnInappYtmBrowserFallback = document.getElementById('btn-inapp-ytm-browser-fallback');
+const btnInappYtmLogout = document.getElementById('btn-inapp-ytm-logout');
+const modalYtmCookieInput = document.getElementById('modal-ytm-cookie-input');
+const btnModalYtmCookieApply = document.getElementById('btn-modal-ytm-cookie-apply');
+const modalYtmCookieMsg = document.getElementById('modal-ytm-cookie-msg');
+
+if (btnInappYtmSignin) {
+  btnInappYtmSignin.addEventListener('click', async () => {
+    if (!window.electronAPI || typeof window.electronAPI.googleLogin !== 'function') {
+      showBrowserLoginError('In-app sign-in is unavailable in this environment.');
+      return;
+    }
+    btnInappYtmSignin.disabled = true;
+    const prevText = btnInappYtmSignin.textContent;
+    btnInappYtmSignin.textContent = 'Signing in...';
+    try {
+      const res = await window.electronAPI.googleLogin();
+      if (res && res.success) {
+        onLoginSuccess(res.user || res.account || null);
+      } else if (res && !res.cancelled) {
+        showBrowserLoginError((res && res.error) || 'Google sign-in did not complete.');
+      }
+    } catch (err) {
+      showBrowserLoginError((err && err.message) || 'Google sign-in failed.');
+    } finally {
+      btnInappYtmSignin.disabled = false;
+      btnInappYtmSignin.textContent = prevText;
+      updateGoogleAuthUI();
+    }
+  });
+}
+
+if (btnInappYtmBrowserFallback) {
+  btnInappYtmBrowserFallback.addEventListener('click', () => {
+    const url = 'https://accounts.google.com/ServiceLogin?service=youtube&continue=https://music.youtube.com';
+    if (window.electronAPI && typeof window.electronAPI.openExternal === 'function') {
+      window.electronAPI.openExternal(url);
+    } else {
+      window.open(url, '_blank');
+    }
+    if (typeof showToast === 'function') showToast('Opened Google sign-in in your browser.', 'info');
+  });
+}
+
+if (btnInappYtmLogout) {
+  btnInappYtmLogout.addEventListener('click', async () => {
+    if (!window.electronAPI || typeof window.electronAPI.googleLogout !== 'function') return;
+    btnInappYtmLogout.disabled = true;
+    try {
+      await window.electronAPI.googleLogout();
+      googleConnected = false;
+      updateGoogleAuthUI();
+      if (typeof showToast === 'function') showToast('Disconnected YouTube Music account.', 'info');
+    } catch (_) {} finally {
+      btnInappYtmLogout.disabled = false;
+    }
+  });
+}
+
+if (btnModalYtmCookieApply && modalYtmCookieInput) {
+  btnModalYtmCookieApply.addEventListener('click', async () => {
+    const val = (modalYtmCookieInput.value || '').trim();
+    if (!val) {
+      if (modalYtmCookieMsg) {
+        modalYtmCookieMsg.textContent = 'Please paste a cookie header first.';
+        modalYtmCookieMsg.style.color = 'var(--md-sys-color-error, #ba1a1a)';
+      }
+      return;
+    }
+    if (modalYtmCookieMsg) {
+      modalYtmCookieMsg.textContent = 'Verifying cookie...';
+      modalYtmCookieMsg.style.color = 'var(--md-sys-color-outline)';
+    }
+    btnModalYtmCookieApply.disabled = true;
+    try {
+      if (window.electronAPI && typeof window.electronAPI.googleImportCookieText === 'function') {
+        const res = await window.electronAPI.googleImportCookieText(val);
+        if (res && res.success && res.loggedIn) {
+          modalYtmCookieInput.value = '';
+          if (modalYtmCookieMsg) {
+            modalYtmCookieMsg.textContent = 'Connected!';
+            modalYtmCookieMsg.style.color = '#4caf50';
+          }
+          onLoginSuccess(res.user || res.account || null);
+        } else {
+          if (modalYtmCookieMsg) {
+            modalYtmCookieMsg.textContent = (res && res.error) || 'Invalid cookie (missing SAPISID).';
+            modalYtmCookieMsg.style.color = 'var(--md-sys-color-error, #ba1a1a)';
+          }
+        }
+      }
+    } catch (err) {
+      if (modalYtmCookieMsg) {
+        modalYtmCookieMsg.textContent = (err && err.message) || 'Failed to apply cookie.';
+        modalYtmCookieMsg.style.color = 'var(--md-sys-color-error, #ba1a1a)';
+      }
+    } finally {
+      btnModalYtmCookieApply.disabled = false;
+    }
   });
 }
 

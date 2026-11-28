@@ -772,6 +772,158 @@ function applyTheme(hexColor, mode, intensity = state.themeIntensity, brightness
   const mono = intensity < 8;
   updateMeshGradient(mono ? '#9E9E9E' : hexColor, mono ? '#757575' : resolvedAccent2, mode);
   refreshCachedThemeColors();
+  updateLikedCoverTint(hexColor, mode, intensity, brightness);
+}
+
+var _likedBaseImg = null;
+var _likedBaseCanvas = null;
+var _likedBaseData = null;
+var _lastLikedTintKey = '';
+
+function hslToRgbTuple(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = ((h % 360) + 360) % 360 / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let r1 = 0, g1 = 0, b1 = 0;
+  if (hp < 1) { r1 = c; g1 = x; }
+  else if (hp < 2) { r1 = x; g1 = c; }
+  else if (hp < 3) { g1 = c; b1 = x; }
+  else if (hp < 4) { g1 = x; b1 = c; }
+  else if (hp < 5) { r1 = x; b1 = c; }
+  else { r1 = c; b1 = x; }
+  const m = l - c / 2;
+  return [
+    Math.round(Math.max(0, Math.min(1, r1 + m)) * 255),
+    Math.round(Math.max(0, Math.min(1, g1 + m)) * 255),
+    Math.round(Math.max(0, Math.min(1, b1 + m)) * 255)
+  ];
+}
+
+function updateLikedCoverTint(hexColor, mode, intensity, brightness) {
+  const styleKey = state.paletteStyle || 'classic';
+  const monoBr = typeof state.monoBrightness === 'number' ? state.monoBrightness : 100;
+  const key = `${hexColor}_${mode}_${intensity}_${brightness}_${styleKey}_${monoBr}`;
+  if (key === _lastLikedTintKey) return;
+
+  const runTransform = () => {
+    if (!_likedBaseData || !_likedBaseCanvas) return;
+    _lastLikedTintKey = key;
+    const rgb = hexToRgb(hexColor || '#5247d1');
+    const targetHsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+    const style = PALETTE_STYLES[styleKey] || PALETTE_STYLES.classic;
+    const intensityFactor = Math.max(0, Math.min(1, (typeof intensity === 'number' ? intensity : 85) / 100));
+    const isMono = intensityFactor < 0.08 || (styleKey === 'neutral' && intensityFactor < 0.05);
+    const brFactor = (typeof brightness === 'number' ? brightness : 20) / 100;
+    const monoFactor = monoBr / 100;
+
+    const w = _likedBaseCanvas.width;
+    const h = _likedBaseCanvas.height;
+    const ctx = _likedBaseCanvas.getContext('2d');
+    const outImg = ctx.createImageData(w, h);
+    const src = _likedBaseData;
+    const dst = outImg.data;
+    const baseRefHue = 252;
+    const hueSpread = style.secHueShift ? 0.55 : 0.35;
+    const satBoost = (style.priSatScale || 1.0) * intensityFactor * (0.65 + (targetHsl.s / 100) * 0.65);
+
+    for (let i = 0; i < src.length; i += 4) {
+      const r = src[i] / 255;
+      const g = src[i + 1] / 255;
+      const b = src[i + 2] / 255;
+      const a = src[i + 3];
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const d = max - min;
+      const l = (max + min) / 2;
+      const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+      let hDeg = 0;
+      if (d > 0) {
+        if (max === r) hDeg = ((g - b) / d + (g < b ? 6 : 0)) * 60;
+        else if (max === g) hDeg = ((b - r) / d + 2) * 60;
+        else hDeg = ((r - g) / d + 4) * 60;
+      }
+
+      const heartPreserve = Math.max(0, Math.min(1, Math.pow(Math.max(0, (l - 0.58) / 0.42), 1.35) * Math.pow(Math.max(0, 1 - s * 1.35), 1.2)));
+
+      let newH, newS, newL;
+      if (isMono) {
+        newH = 0;
+        newS = 0;
+        const mScale = mode === 'light' ? (0.45 + monoFactor * 0.45) : (0.35 + monoFactor * 0.55);
+        newL = Math.max(0.05, Math.min(0.96, l * mScale));
+      } else {
+        let deltaH = ((hDeg - baseRefHue + 540) % 360) - 180;
+        newH = (targetHsl.h + deltaH * hueSpread + (style.secHueShift || 0) * (l * 0.25) + 360) % 360;
+        newS = Math.max(0, Math.min(1, s * satBoost * 1.15));
+        const lOffset = (brFactor - 0.3) * 0.14;
+        newL = Math.max(0.04, Math.min(0.95, l + lOffset * (1 - Math.abs(2 * l - 1))));
+      }
+
+      const [tr, tg, tb] = hslToRgbTuple(newH, newS, newL);
+      dst[i]     = Math.round(tr * (1 - heartPreserve) + src[i] * heartPreserve);
+      dst[i + 1] = Math.round(tg * (1 - heartPreserve) + src[i + 1] * heartPreserve);
+      dst[i + 2] = Math.round(tb * (1 - heartPreserve) + src[i + 2] * heartPreserve);
+      dst[i + 3] = a;
+    }
+
+    ctx.putImageData(outImg, 0, 0);
+    const dataUrl = _likedBaseCanvas.toDataURL('image/png');
+    document.documentElement.style.setProperty('--liked-cover-img', `url("${dataUrl}")`);
+    const heroHex = isMono
+      ? hslToHex(0, 0, Math.round(25 + monoFactor * 35))
+      : hslToHex(targetHsl.h, Math.min(100, Math.round(65 * intensityFactor * (style.priSatScale || 1))), mode === 'light' ? 52 : 42);
+    document.documentElement.style.setProperty('--liked-hero-accent', heroHex);
+  };
+
+  if (_likedBaseData) {
+    runTransform();
+  } else if (!_likedBaseImg) {
+    const initProceduralBase = () => {
+      try {
+        const size = 200;
+        _likedBaseCanvas = document.createElement('canvas');
+        _likedBaseCanvas.width = size;
+        _likedBaseCanvas.height = size;
+        const ctx = _likedBaseCanvas.getContext('2d');
+        const grad = ctx.createLinearGradient(0, 0, size, size);
+        grad.addColorStop(0, '#450af5');
+        grad.addColorStop(1, '#8e8ee5');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, size, size);
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.moveTo(100, 142);
+        ctx.bezierCurveTo(100, 142, 52, 112, 52, 80);
+        ctx.bezierCurveTo(52, 62, 66, 50, 82, 50);
+        ctx.bezierCurveTo(92, 50, 98, 56, 100, 62);
+        ctx.bezierCurveTo(102, 56, 108, 50, 118, 50);
+        ctx.bezierCurveTo(134, 50, 148, 62, 148, 80);
+        ctx.bezierCurveTo(148, 112, 100, 142, 100, 142);
+        ctx.closePath();
+        ctx.fill();
+        _likedBaseData = new Uint8ClampedArray(ctx.getImageData(0, 0, size, size).data);
+        runTransform();
+      } catch (_) {}
+    };
+    _likedBaseImg = new Image();
+    _likedBaseImg.crossOrigin = 'Anonymous';
+    _likedBaseImg.onload = () => {
+      try {
+        const size = 200;
+        _likedBaseCanvas = document.createElement('canvas');
+        _likedBaseCanvas.width = size;
+        _likedBaseCanvas.height = size;
+        const ctx = _likedBaseCanvas.getContext('2d');
+        ctx.drawImage(_likedBaseImg, 0, 0, size, size);
+        _likedBaseData = new Uint8ClampedArray(ctx.getImageData(0, 0, size, size).data);
+        runTransform();
+      } catch (_) {
+        initProceduralBase();
+      }
+    };
+    _likedBaseImg.onerror = initProceduralBase;
+    _likedBaseImg.src = '../../assets/liked.png';
+  }
 }
 
 function updateThemeFromState() {

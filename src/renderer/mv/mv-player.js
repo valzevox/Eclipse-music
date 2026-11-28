@@ -17,6 +17,9 @@
       this.muted = false;
       this._listeners = new Map();
       this._disposed = false;
+      this._widgetId = 1;
+      this._receivedDelivery = false;
+      this._handshakeTimer = null;
       this._onWindowMessage = this._handleWindowMessage.bind(this);
 
       if (typeof window !== 'undefined') {
@@ -62,24 +65,38 @@
         msg = event.data;
       }
       if (!msg) return;
-
-      if (msg.event === 'infoDelivery' && msg.info && typeof msg.info.currentTime === 'number') {
-        this.position = msg.info.currentTime;
-        this._emit('timeupdate', this.position);
+      this._receivedDelivery = true;
+      if (this._handshakeTimer) {
+        clearInterval(this._handshakeTimer);
+        this._handshakeTimer = null;
       }
 
-      if (msg.event === 'onStateChange') {
-        if (msg.info === 1) {
+      const applyPlayerState = (rawState) => {
+        if (rawState === 1 && this.state !== 'PLAYING') {
           this.state = 'PLAYING';
           this._emit('stateChange', 'PLAYING');
-        } else if (msg.info === 2) {
+        } else if (rawState === 2 && this.state !== 'PAUSED') {
           this.state = 'PAUSED';
           this._emit('stateChange', 'PAUSED');
-        } else if (msg.info === 0) {
+        } else if (rawState === 0 && this.state !== 'ENDED') {
           this.state = 'ENDED';
           this._emit('stateChange', 'ENDED');
           this._emit('ended');
         }
+      };
+
+      if ((msg.event === 'infoDelivery' || msg.event === 'initialDelivery') && msg.info) {
+        if (typeof msg.info.currentTime === 'number') {
+          this.position = msg.info.currentTime;
+          this._emit('timeupdate', this.position);
+        }
+        if (typeof msg.info.playerState === 'number') {
+          applyPlayerState(msg.info.playerState);
+        }
+      }
+
+      if (msg.event === 'onStateChange') {
+        applyPlayerState(msg.info);
       }
 
       if (msg.event === 'onError') {
@@ -88,16 +105,34 @@
       }
     }
 
+    _sendListeningHandshake() {
+      if (this._disposed || !this.iframe || !this.iframe.contentWindow) return;
+      try {
+        this.iframe.contentWindow.postMessage(
+          JSON.stringify({ event: 'listening', id: this._widgetId, channel: 'widget' }),
+          '*'
+        );
+      } catch (_) {}
+    }
+
     async load(source, startSec = 0) {
       if (this._disposed || !source || source.type !== 'iframe' || !source.videoId) return;
       this.state = 'LOADING';
       this.position = Math.max(0, Math.floor(startSec || 0));
+      this._receivedDelivery = false;
+      if (this._handshakeTimer) {
+        clearInterval(this._handshakeTimer);
+        this._handshakeTimer = null;
+      }
 
       if (!this.wrapper || typeof document === 'undefined') return;
       const aspectBox = this.wrapper.querySelector('.mv-player-aspect') || this.wrapper;
       let existingIframe = aspectBox.querySelector('iframe#mv-youtube-iframe');
 
-      const embedSrc = `https://www.youtube.com/embed/${source.videoId}?enablejsapi=1&autoplay=1&mute=${this.muted ? 1 : 0}&start=${this.position}&playsinline=1&modestbranding=1&rel=0&iv_load_policy=3`;
+      const pageOrigin = (typeof window !== 'undefined' && window.location && /^https?:\/\//i.test(window.location.origin))
+        ? window.location.origin
+        : 'https://www.youtube.com';
+      const embedSrc = `https://www.youtube.com/embed/${source.videoId}?enablejsapi=1&autoplay=1&mute=${this.muted ? 1 : 0}&start=${this.position}&playsinline=1&modestbranding=1&rel=0&iv_load_policy=3&origin=${encodeURIComponent(pageOrigin)}`;
 
       if (!existingIframe) {
         existingIframe = document.createElement('iframe');
@@ -106,10 +141,26 @@
         existingIframe.style.height = '100%';
         existingIframe.style.border = 'none';
         existingIframe.style.borderRadius = '12px';
+        existingIframe.referrerPolicy = 'strict-origin-when-cross-origin';
         existingIframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
         existingIframe.allowFullscreen = true;
         aspectBox.appendChild(existingIframe);
       }
+
+      existingIframe.onload = () => {
+        this._sendListeningHandshake();
+        let attempts = 0;
+        if (this._handshakeTimer) clearInterval(this._handshakeTimer);
+        this._handshakeTimer = setInterval(() => {
+          attempts++;
+          if (this._disposed || this._receivedDelivery || attempts >= 12) {
+            clearInterval(this._handshakeTimer);
+            this._handshakeTimer = null;
+            return;
+          }
+          this._sendListeningHandshake();
+        }, 250);
+      };
 
       existingIframe.src = embedSrc;
       this.iframe = existingIframe;
@@ -158,6 +209,10 @@
       if (typeof window !== 'undefined') {
         window.removeEventListener('message', this._onWindowMessage);
       }
+      if (this._handshakeTimer) {
+        clearInterval(this._handshakeTimer);
+        this._handshakeTimer = null;
+      }
       this._listeners.clear();
       if (this.iframe && this.iframe.parentNode) {
         try { this.iframe.parentNode.removeChild(this.iframe); } catch (_) {}
@@ -179,6 +234,7 @@
       this.loadingOverlay = options.loadingOverlay || getEl(options.loadingOverlayId || 'mv-loading-overlay');
       this.apiBase = options.apiBase || '';
       this.apiToken = options.apiToken || '';
+      this.onOpenPanel = options.onOpenPanel || null;
 
       this.engine = new IFrameEngine({ wrapper: this.wrapper });
       const SyncCtrl = typeof window !== 'undefined' && window.MvSyncController
@@ -240,11 +296,20 @@
     }
 
     switchToVideo() {
+      if (typeof this.onOpenPanel === 'function') {
+        try { this.onOpenPanel(); } catch (_) {}
+      }
       return this.sync.switchToVideo();
     }
 
     switchToSong() {
       return this.sync.switchToSong({ keepPreferred: false });
+    }
+
+    seekSongTime(songSec) {
+      if (!this.isMvActive()) return;
+      const target = Math.max(0, (Number(songSec) || 0) + ((this.sync.offsetMs || 0) / 1000));
+      this.engine.seek(target);
     }
 
     _authHeaders() {

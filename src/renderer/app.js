@@ -2850,6 +2850,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function isTrackPreloadValid(track, requestedQuality) {
     if (!track || !track._preloadedStreamUrl) return false;
+    if (!track._preloadedAt || (Date.now() - track._preloadedAt > 180000)) return false;
     if (track._preloadedStreamUrlExpires && Date.now() >= track._preloadedStreamUrlExpires) return false;
     const reqQ = String(requestedQuality || getConfiguredAudioQuality()).trim().toLowerCase();
     if (track._preloadedStreamQuality !== reqQ) return false;
@@ -2932,6 +2933,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (data && data.success && (data.proxyUrl || data.streamUrl)) {
         const chosenUrl = data.proxyUrl || data.streamUrl;
         nextTrack._preloadedStreamUrl = chosenUrl;
+        nextTrack._preloadedAt = Date.now();
         nextTrack._preloadedStreamQuality = (data.resolvedQuality ? String(data.resolvedQuality).trim().toLowerCase() : curQuality);
         nextTrack._preloadedStreamPlatform = String(nextTrack.platform || 'ytmusic').trim().toLowerCase();
         nextTrack._preloadedStreamUrlExpires = Date.now() + 3600 * 1000;
@@ -3295,13 +3297,18 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       if (nextTrackCoordinator) nextTrackCoordinator.cancel('track_changed');
       else cancelActiveNextPreload('track_changed');
       const configuredQuality = getConfiguredAudioQuality();
-      if (!isTrackPreloadValid(track, configuredQuality) && globalPreloadManager) {
-        const cachedPreload = globalPreloadManager.getCached(track, configuredQuality);
-        if (cachedPreload && (cachedPreload.proxyUrl || cachedPreload.streamUrl) && cachedPreload.quality === configuredQuality) {
-          track._preloadedStreamUrl = cachedPreload.proxyUrl || cachedPreload.streamUrl;
-          track._preloadedStreamQuality = configuredQuality;
-          track._preloadedStreamPlatform = String(track.platform || 'ytmusic').trim().toLowerCase();
-          if (cachedPreload.resolvedId) track._matchedYtId = cachedPreload.resolvedId;
+      if (!isTrackPreloadValid(track, configuredQuality)) {
+        delete track._preloadedStreamUrl;
+        delete track._preloadedAt;
+        if (globalPreloadManager) {
+          const cachedPreload = globalPreloadManager.getCached(track, configuredQuality);
+          if (cachedPreload && (cachedPreload.proxyUrl || cachedPreload.streamUrl) && cachedPreload.quality === configuredQuality) {
+            track._preloadedStreamUrl = cachedPreload.proxyUrl || cachedPreload.streamUrl;
+            track._preloadedAt = Date.now();
+            track._preloadedStreamQuality = configuredQuality;
+            track._preloadedStreamPlatform = String(track.platform || 'ytmusic').trim().toLowerCase();
+            if (cachedPreload.resolvedId) track._matchedYtId = cachedPreload.resolvedId;
+          }
         }
       }
 
@@ -3395,6 +3402,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       }
 
       track._preloadedStreamUrl = data.proxyUrl || data.streamUrl;
+      track._preloadedAt = Date.now();
       track._preloadedStreamQuality = resolvedQuality;
       track._preloadedStreamPlatform = String(streamInfoPlatform || 'ytmusic').trim().toLowerCase();
       track._preloadedStreamUrlExpires = Date.now() + 3600 * 1000;
@@ -4174,140 +4182,112 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
   }
 
   
+  let _eclipseMvPlayer = null;
+  function ensureMvPlayer() {
+    if (_eclipseMvPlayer) return _eclipseMvPlayer;
+    if (typeof window === 'undefined' || typeof window.EclipseMvPlayer !== 'function') return null;
+    const token = (window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '';
+    const port = (state && state.serverPort) || 38472;
+    _eclipseMvPlayer = new window.EclipseMvPlayer({
+      audioElement: el.nativeAudio,
+      wrapper: el.mvPlayerWrapper,
+      coverContainer: el.coverContainer,
+      btnSong: el.btnAvSong,
+      btnVideo: el.btnAvVideo,
+      btnToggleMv: el.btnToggleMv,
+      loadingOverlay: el.mvLoadingOverlay,
+      apiBase: `http://127.0.0.1:${port}`,
+      apiToken: token,
+      onAdvanceQueue: () => { try { playNext(); } catch (_) {} },
+      onAbortAutoMix: (reason) => { try { abortAutoMixIfActive(reason); } catch (_) {} },
+      onOpenPanel: () => {
+        if (!state.isRightPanelOpen && el.btnToggleLyricsPanel) {
+          el.btnToggleLyricsPanel.click();
+        }
+      }
+    });
+    if (_eclipseMvPlayer.engine && typeof _eclipseMvPlayer.engine.on === 'function') {
+      _eclipseMvPlayer.engine.on('timeupdate', (videoSec) => {
+        if (!_eclipseMvPlayer || !_eclipseMvPlayer.isMvActive() || isDraggingScrubber) return;
+        const songSec = Math.max(0, (Number(videoSec) || 0) - ((_eclipseMvPlayer.sync?.offsetMs || 0) / 1000));
+        const dur = getReliableTrackDuration();
+        if (dur > 0 && el.scrubberFill) {
+          const pct = Math.max(0, Math.min(100, (songSec / dur) * 100));
+          el.scrubberFill.style.width = `${pct}%`;
+          if (el.scrubberThumb) el.scrubberThumb.style.left = `${pct}%`;
+        }
+        const curText = formatDuration(songSec);
+        if (el.timeCurrent) el.timeCurrent.textContent = curText;
+        syncTvkTimeDisplay(curText, undefined);
+        if (el.tvkSeekSlider && !isDraggingTvkSeek && dur > 0) {
+          el.tvkSeekSlider.value = Math.round((songSec / dur) * 1000);
+        }
+        if (state.isRightPanelOpen || state.isTvKaraokeOpen) {
+          updateSyncedLyricsHighlight(songSec);
+        }
+      });
+      _eclipseMvPlayer.engine.on('stateChange', (st) => {
+        if (!_eclipseMvPlayer || !_eclipseMvPlayer.isMvActive()) return;
+        if (st === 'PLAYING') {
+          state.isPlaying = true;
+          updatePlayPauseButton(true, false);
+        } else if (st === 'PAUSED') {
+          state.isPlaying = false;
+          updatePlayPauseButton(false, false);
+        }
+      });
+    }
+    window.eclipseMvPlayer = _eclipseMvPlayer;
+    return _eclipseMvPlayer;
+  }
+
   const mvController = {
-    active: false,
-    videoId: null,
-    loading: false,
-    extractYtId(track) {
-      if (!track) return null;
-      if (track._matchedYtId && /^[a-zA-Z0-9_-]{11}$/.test(track._matchedYtId)) return track._matchedYtId;
-      if (track.id && /^[a-zA-Z0-9_-]{11}$/.test(track.id)) return track.id;
-      const str = track.url || '';
-      const m = str.match(/(?:youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([a-zA-Z0-9_-]{11})/);
-      return m ? m[1] : null;
+    get active() {
+      return Boolean(_eclipseMvPlayer && _eclipseMvPlayer.isMvActive());
     },
-    async showMv() {
+    get videoId() {
+      return _eclipseMvPlayer?.sync?.currentVideoId || null;
+    },
+    showMv() {
       if (!state.currentTrack) return;
-      const track = state.currentTrack;
-      let vid = this.extractYtId(track);
-      this.active = true;
-      this.videoId = vid || (track && track.id) || 'mv';
-
-      if (el.btnAvVideo) el.btnAvVideo.classList.add('active');
-      if (el.btnAvSong) el.btnAvSong.classList.remove('active');
-      if (el.btnToggleMv) el.btnToggleMv.classList.add('active');
-      if (el.coverContainer) el.coverContainer.classList.add('hidden');
-      if (el.mvPlayerWrapper) el.mvPlayerWrapper.classList.remove('hidden');
-
-      if (!state.isRightPanelOpen && el.btnToggleLyricsPanel) {
-        el.btnToggleLyricsPanel.click();
+      const p = ensureMvPlayer();
+      if (!p) return;
+      if (!p.sync.currentTrack || !isSameTrack(p.sync.currentTrack, state.currentTrack)) {
+        p.sync.currentTrack = state.currentTrack;
       }
-
-      if (el.mvVideo) {
-        if (!el.mvVideo._hasListeners) {
-          el.mvVideo._hasListeners = true;
-          el.mvVideo.addEventListener('loadedmetadata', () => {
-            try {
-              const cur = el.nativeAudio ? (el.nativeAudio.currentTime || 0) : 0;
-              el.mvVideo.currentTime = cur;
-              if (state.isPlaying && !el.nativeAudio.paused) {
-                el.mvVideo.play().catch(() => {});
-              }
-            } catch (_) {}
-          });
-          el.mvVideo.addEventListener('error', () => {
-            const err = el.mvVideo.error;
-            console.error('MV Video decode error:', err ? err.code : 'unknown', err ? err.message : '');
-            if (typeof showToast === 'function') showToast('Không thể giải mã luồng video');
-          });
-        }
-
-        const trackKey = vid || ((track.title || '') + '|' + (track.artist || ''));
-        if (el.mvVideo.dataset.trackKey !== trackKey || !el.mvVideo.src) {
-          if (el.mvLoadingOverlay) el.mvLoadingOverlay.classList.remove('hidden');
-          this.loading = true;
-          try {
-            const token = (window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '';
-            const port = state.serverPort || 38472;
-            const resp = await fetch(`http://127.0.0.1:${port}/api/mv-stream-info?id=${encodeURIComponent(vid || '')}&title=${encodeURIComponent((track && track.title) || '')}&artist=${encodeURIComponent((track && track.artist) || '')}&token=${encodeURIComponent(token)}`);
-            const data = await resp.json();
-            if (data && data.success && data.url) {
-              el.mvVideo.dataset.trackKey = trackKey;
-              el.mvVideo.dataset.vid = vid || (data.resolvedId || '');
-              el.mvVideo.src = data.url;
-              el.mvVideo.load();
-            } else {
-              if (typeof showToast === 'function') showToast(data && data.error ? `Lỗi MV: ${data.error}` : 'Không thể tải luồng video');
-            }
-          } catch (e) {
-            try { console.error('MV fetch error:', e); } catch (_) {}
-            if (typeof showToast === 'function') showToast('Không thể kết nối máy chủ video');
-          } finally {
-            if (el.mvLoadingOverlay) el.mvLoadingOverlay.classList.add('hidden');
-            this.loading = false;
-          }
-        } else if (el.mvVideo.readyState >= 1) {
-          const cur = el.nativeAudio ? (el.nativeAudio.currentTime || 0) : 0;
-          try {
-            el.mvVideo.currentTime = cur;
-            if (state.isPlaying && !el.nativeAudio.paused) {
-              el.mvVideo.play().catch(() => {});
-            }
-          } catch (_) {}
-        }
-      }
+      return p.switchToVideo();
     },
     hideMv() {
-      this.active = false;
-      this.videoId = null;
-
-      if (el.btnAvVideo) el.btnAvVideo.classList.remove('active');
-      if (el.btnAvSong) el.btnAvSong.classList.add('active');
-      if (el.btnToggleMv) el.btnToggleMv.classList.remove('active');
-      if (el.coverContainer) el.coverContainer.classList.remove('hidden');
-      if (el.mvPlayerWrapper) el.mvPlayerWrapper.classList.add('hidden');
-
-      if (el.mvVideo) {
-        try { el.mvVideo.pause(); } catch (_) {}
-      }
+      if (!_eclipseMvPlayer) return;
+      return _eclipseMvPlayer.switchToSong();
     },
     toggle() {
-      if (this.active) {
-        this.hideMv();
-      } else {
-        this.showMv();
+      if (!state.currentTrack) return;
+      const p = ensureMvPlayer();
+      if (!p) return;
+      if (!p.sync.currentTrack || !isSameTrack(p.sync.currentTrack, state.currentTrack)) {
+        p.sync.currentTrack = state.currentTrack;
       }
+      return p.toggle();
     },
     onTrackChanged(track) {
-      if (!this.active) return;
-      this.showMv();
+      const p = ensureMvPlayer();
+      if (!p) return;
+      return p.setTrack(track);
     },
     onPlay() {
-      if (!this.active || !el.mvVideo) return;
-      try {
-        if (el.nativeAudio) el.mvVideo.currentTime = el.nativeAudio.currentTime;
-        el.mvVideo.play().catch(() => {});
-      } catch (_) {}
+      if (!_eclipseMvPlayer || !_eclipseMvPlayer.isMvActive()) return;
+      _eclipseMvPlayer.engine.play();
     },
     onPause() {
-      if (!this.active || !el.mvVideo) return;
-      try { el.mvVideo.pause(); } catch (_) {}
+      if (!_eclipseMvPlayer || !_eclipseMvPlayer.isMvActive()) return;
+      _eclipseMvPlayer.engine.pause();
     },
     onSeek(sec) {
-      if (!this.active || !el.mvVideo) return;
-      try { el.mvVideo.currentTime = sec; } catch (_) {}
+      if (!_eclipseMvPlayer || !_eclipseMvPlayer.isMvActive()) return;
+      _eclipseMvPlayer.seekSongTime(sec);
     },
-    onTimeUpdate(curTime) {
-      if (!this.active || !el.mvVideo || this.loading) return;
-      try {
-        if (el.mvVideo.readyState >= 2) {
-          const diff = Math.abs(el.mvVideo.currentTime - curTime);
-          if (diff > 0.4) {
-            el.mvVideo.currentTime = curTime;
-          }
-        }
-      } catch (_) {}
-    }
+    onTimeUpdate() {}
   };
 
   function togglePlayPause() {
@@ -4606,7 +4586,211 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       }
     });
 
+    const FAILED_TRACKS_KEY = 'eclipse_failed_tracks';
+    function getFailedTracks() {
+      try {
+        const raw = localStorage.getItem(FAILED_TRACKS_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        return {
+          ids: Array.isArray(parsed?.ids) ? parsed.ids : [],
+          keys: Array.isArray(parsed?.keys) ? parsed.keys : []
+        };
+      } catch (_) {
+        return { ids: [], keys: [] };
+      }
+    }
+    function isTrackFailedOrUnavailable(track) {
+      if (!track) return true;
+      if (track._gaveUp || track.isUnavailable || track._unavailNotice) return true;
+      const failed = getFailedTracks();
+      const trackId = track.id ? String(track.id) : '';
+      if (trackId && failed.ids.some(id => id && String(id) === trackId)) return true;
+      const key = (typeof getTrackNormalizedKey === 'function') ? getTrackNormalizedKey(track.artist, track.title) : '';
+      if (key && failed.keys.includes(key)) return true;
+      if (track.key && failed.keys.includes(track.key)) return true;
+      return false;
+    }
+    function recordFailedTrack(track) {
+      if (!track) return;
+      const trackId = track.id ? String(track.id) : '';
+      const trackKey = (typeof getTrackNormalizedKey === 'function') ? getTrackNormalizedKey(track.artist, track.title) : '';
+      if (!trackId && !trackKey) return;
+      const failed = getFailedTracks();
+      if (trackId && !failed.ids.some(id => String(id) === trackId)) failed.ids.push(trackId);
+      if (trackKey && !failed.keys.includes(trackKey)) failed.keys.push(trackKey);
+      if (failed.ids.length > 300) failed.ids.splice(0, failed.ids.length - 300);
+      if (failed.keys.length > 300) failed.keys.splice(0, failed.keys.length - 300);
+      try { localStorage.setItem(FAILED_TRACKS_KEY, JSON.stringify(failed)); } catch (_) {}
+    }
+
+    let activeStreamRecovery = null;
+    let lastStreamErrorToastTime = 0;
+    let playbackStallTimer = null;
+
+    function clearPlaybackStallTimer() {
+      if (playbackStallTimer) clearTimeout(playbackStallTimer);
+      playbackStallTimer = null;
+    }
+
+    function recoverCurrentStream(resumePos = 0) {
+      if (syncState && syncState.active) return Promise.resolve();
+      const token = state.loadToken;
+      if (activeStreamRecovery && activeStreamRecovery.token === token) return activeStreamRecovery.promise;
+      const promise = recoverCurrentStreamOnce(resumePos, token).finally(() => {
+        if (activeStreamRecovery && activeStreamRecovery.promise === promise) activeStreamRecovery = null;
+      });
+      activeStreamRecovery = { token, promise };
+      return promise;
+    }
+
+    async function recoverCurrentStreamOnce(resumePos, myToken) {
+      if (syncState && syncState.active) return;
+      if (el.trackLoadingOverlay) el.trackLoadingOverlay.classList.add('hidden');
+      const cur = state.currentTrack;
+      if (!cur || cur._gaveUp) {
+        updatePlayPauseButton(false, false);
+        setPlayPauseState(false, false);
+        return;
+      }
+      if (cur.platform === 'local') {
+        updatePlayPauseButton(false, false);
+        showToast('File missing from library', 'error');
+        return;
+      }
+
+      let d = null;
+      cur._retryCount = (cur._retryCount || 0) + 1;
+      if (cur._retryCount > 2) {
+        cur._gaveUp = true;
+        cur._unavailNotice = true;
+        recordFailedTrack(cur);
+        state.isLoadingTrack = false;
+        state.isPlaying = false;
+        document.body.classList.remove('is-playing');
+        updatePlayPauseButton(false, false);
+        setPlayPauseState(false, false);
+        try {
+          if (el.nativeAudio) {
+            el.nativeAudio.pause();
+            el.nativeAudio.removeAttribute('src');
+          }
+        } catch (_) {}
+        const now = Date.now();
+        if (now - lastStreamErrorToastTime > 5000) {
+          lastStreamErrorToastTime = now;
+          showToast('Could not load audio stream', 'error');
+        }
+        return;
+      }
+
+      delete cur._preloadedStreamUrl;
+      delete cur._preloadedAt;
+      state.isLoadingTrack = true;
+
+      try {
+        const reqQuality = getConfiguredAudioQuality();
+        const qQuality = encodeURIComponent(reqQuality);
+        const qSearch = encodeURIComponent(cur.searchQuery || ((cur.artist ? cur.artist + ' - ' : '') + (cur.title || '')));
+        const retryYtId = cur._matchedYtId || cur.id || '';
+        const retryTrackUrl = cur.url || (cur._matchedYtId ? ('https://www.youtube.com/watch?v=' + cur._matchedYtId) : '');
+        const forceYtDlpParam = (cur._retryCount >= 2) ? '&forceYtDlp=1' : '';
+        const retryTimeoutMs = (cur._retryCount >= 2) ? 25000 : 12000;
+        const tokenParam = (window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '';
+        const retryUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?url=${encodeURIComponent(retryTrackUrl)}&id=${encodeURIComponent(retryYtId)}&platform=${encodeURIComponent(cur.platform || state.platform)}&title=${encodeURIComponent(cur.title || '')}&artist=${encodeURIComponent(cur.artist || '')}&duration=${encodeURIComponent(cur.duration || 0)}&quality=${qQuality}&q=${qSearch}${forceYtDlpParam}&token=${encodeURIComponent(tokenParam)}&bust=${Date.now()}`;
+        const r = await fetch(retryUrl, { signal: AbortSignal.timeout(retryTimeoutMs) });
+        d = await r.json();
+        if (myToken !== state.loadToken) return;
+        if (d && d.success && (d.proxyUrl || d.streamUrl)) {
+          const chosenUrl = d.proxyUrl || d.streamUrl;
+          cur._preloadedStreamUrl = chosenUrl;
+          cur._preloadedAt = Date.now();
+          cur._preloadedStreamQuality = (d.resolvedQuality ? String(d.resolvedQuality).trim().toLowerCase() : reqQuality);
+          cur._preloadedStreamPlatform = String(cur.platform || state.platform || 'ytmusic').trim().toLowerCase();
+          cur._preloadedStreamUrlExpires = Date.now() + 3600 * 1000;
+          if (hlsInstance) {
+            try { hlsInstance.destroy(); } catch (_) {}
+            hlsInstance = null;
+          }
+          try { el.nativeAudio.pause(); } catch (_) {}
+          const restoreSeek = () => {
+            if (resumePos > 1 && Number.isFinite(resumePos) && el.nativeAudio) {
+              try { el.nativeAudio.currentTime = resumePos; } catch (_) {}
+            }
+          };
+          if (d.isHls && window.Hls && Hls.isSupported()) {
+            hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true, maxBufferLength: 10, maxMaxBufferLength: 20, maxBufferSize: 4 * 1024 * 1024 });
+            hlsInstance.on(Hls.Events.ERROR, (_, errData) => {
+              if (errData && errData.fatal) {
+                if (errData.type === Hls.ErrorTypes.NETWORK_ERROR) hlsInstance.startLoad();
+                else if (errData.type === Hls.ErrorTypes.MEDIA_ERROR) hlsInstance.recoverMediaError();
+              }
+            });
+            hlsInstance.loadSource(chosenUrl);
+            hlsInstance.attachMedia(el.nativeAudio);
+            hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+              if (myToken === state.loadToken) {
+                restoreSeek();
+                playSmooth();
+              }
+            });
+          } else {
+            el.nativeAudio.src = chosenUrl;
+            restoreSeek();
+            playSmooth();
+          }
+          return;
+        }
+      } catch (_) {}
+
+      cur._gaveUp = true;
+      cur._unavailNotice = true;
+      recordFailedTrack(cur);
+      state.isLoadingTrack = false;
+      state.isPlaying = false;
+      document.body.classList.remove('is-playing');
+      updatePlayPauseButton(false, false);
+      setPlayPauseState(false, false);
+      try {
+        if (el.nativeAudio) {
+          el.nativeAudio.pause();
+          el.nativeAudio.removeAttribute('src');
+        }
+      } catch (_) {}
+      const now = Date.now();
+      if (now - lastStreamErrorToastTime > 5000) {
+        lastStreamErrorToastTime = now;
+        showToast('Could not load audio stream', 'error');
+      }
+    }
+
+    function watchPlaybackStall() {
+      if (syncState && syncState.active) return;
+      clearPlaybackStallTimer();
+      const token = state.loadToken;
+      const stallPos = (el.nativeAudio && Number.isFinite(el.nativeAudio.currentTime)) ? el.nativeAudio.currentTime : 0;
+      playbackStallTimer = setTimeout(() => {
+        playbackStallTimer = null;
+        if (syncState && syncState.active) return;
+        if (token !== state.loadToken) return;
+        if (state.isLoadingTrack) {
+          recoverCurrentStream((el.nativeAudio && Number.isFinite(el.nativeAudio.currentTime)) ? el.nativeAudio.currentTime : 0);
+          return;
+        }
+        if (!el.nativeAudio || el.nativeAudio.paused || el.nativeAudio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return;
+        if (Math.abs((el.nativeAudio.currentTime || 0) - stallPos) > 0.5) return;
+        recoverCurrentStream(el.nativeAudio.currentTime || 0);
+      }, 12000);
+    }
+
+    window.clearPlaybackStallTimer = clearPlaybackStallTimer;
+    window.watchPlaybackStall = watchPlaybackStall;
+    window.recoverCurrentStream = recoverCurrentStream;
+    window.recoverCurrentStreamOnce = recoverCurrentStreamOnce;
+    window.isTrackFailedOrUnavailable = isTrackFailedOrUnavailable;
+    window.recordFailedTrack = recordFailedTrack;
+
     el.nativeAudio.addEventListener('error', async () => {
+      clearPlaybackStallTimer();
       if (el.trackLoadingOverlay) el.trackLoadingOverlay.classList.add('hidden');
       const cur = state.currentTrack;
       if (!cur) {
@@ -4632,29 +4816,13 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
       if (retryStage <= 1) {
         cur._errorRetryStage = 2;
-        try {
-          const reqQuality = getConfiguredAudioQuality();
-          const qQuality = encodeURIComponent(reqQuality);
-          const qSearch = encodeURIComponent(cur.searchQuery || ((cur.artist ? cur.artist + ' - ' : '') + (cur.title || '')));
-          const retryYtId = cur._matchedYtId || cur.id || '';
-          const retryTrackUrl = cur.url || (cur._matchedYtId ? ('https://www.youtube.com/watch?v=' + cur._matchedYtId) : '');
-          const retryUrl = `http://127.0.0.1:${state.serverPort}/api/stream-info?url=${encodeURIComponent(retryTrackUrl)}&id=${encodeURIComponent(retryYtId)}&platform=${encodeURIComponent(cur.platform || state.platform)}&title=${encodeURIComponent(cur.title || '')}&artist=${encodeURIComponent(cur.artist || '')}&duration=${encodeURIComponent(cur.duration || 0)}&quality=${qQuality}&q=${qSearch}&forceYtDlp=1&token=${encodeURIComponent((window.electronAPI && window.electronAPI.serverToken) || (state && state.serverToken) || '')}`;
-          const r = await fetch(retryUrl);
-          const d = await r.json();
-          if (myToken !== state.loadToken) return;
-          if (d && d.success && d.streamUrl) {
-            cur._preloadedStreamUrl = d.proxyUrl || d.streamUrl;
-            cur._preloadedStreamQuality = (d.resolvedQuality ? String(d.resolvedQuality).trim().toLowerCase() : reqQuality);
-            cur._preloadedStreamPlatform = String(cur.platform || state.platform || 'ytmusic').trim().toLowerCase();
-            cur._preloadedStreamUrlExpires = Date.now() + 3600 * 1000;
-            el.nativeAudio.src = d.proxyUrl || d.streamUrl;
-            playSmooth();
-            return;
-          }
-        } catch (_) {}
+        const pos = (el.nativeAudio && Number.isFinite(el.nativeAudio.currentTime)) ? el.nativeAudio.currentTime : 0;
+        await recoverCurrentStream(pos);
+        if (myToken !== state.loadToken || !cur._gaveUp) return;
       }
 
       cur._errorRetryStage = 0;
+      recordFailedTrack(cur);
       state.isPlaying = false;
       updatePlayPauseButton(false, false);
       state._consecutiveErrors = (state._consecutiveErrors || 0) + 1;
@@ -4665,7 +4833,11 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         }, 1200);
       } else {
         state._consecutiveErrors = 0;
-        showToast('Playback stopped: stream unavailable', 'error');
+        const now = Date.now();
+        if (now - lastStreamErrorToastTime > 5000) {
+          lastStreamErrorToastTime = now;
+          showToast('Playback stopped: stream unavailable', 'error');
+        }
       }
     });
 
@@ -4683,6 +4855,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
 
     el.nativeAudio.addEventListener('waiting', () => {
       updatePlayPauseButton(state.isPlaying, true);
+      watchPlaybackStall();
       const nowPerf = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
       if (!state._waitingStartedPerfMs) state._waitingStartedPerfMs = nowPerf;
       postNetworkDiagnostics({ playbackBuffering: true });
@@ -4695,6 +4868,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     }
 
     el.nativeAudio.addEventListener('playing', () => {
+      clearPlaybackStallTimer();
       state._consecutiveErrors = 0;
       state.isPlaying = true;
       document.body.classList.add('is-playing');
@@ -4821,6 +4995,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     });
 
     el.nativeAudio.addEventListener('pause', () => {
+      clearPlaybackStallTimer();
       isPauseFading = false;
       emitPluginEvent('pause');
       updatePlayPauseButton(false, false);
@@ -4855,6 +5030,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     }
 
     el.nativeAudio.addEventListener('ended', () => {
+      clearPlaybackStallTimer();
       if (window._autoMixHandlingEnd) return;
       updatePlayPauseButton(false, false);
       if (state.sleepTimer && state.sleepTimer.mode === 'end') {
@@ -4878,8 +5054,7 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         const pos = el.nativeAudio.currentTime || 0;
         if (state.currentTrack && state.currentTrack.platform !== 'local' && expectedDur > 25 && pos > 2 && pos < expectedDur - 12 && (state._streamRecoverCount || 0) < 2) {
           state._streamRecoverCount = (state._streamRecoverCount || 0) + 1;
-          el.nativeAudio.currentTime = pos;
-          playSmooth();
+          recoverCurrentStream(pos);
           return;
         }
         state._isNaturalEnding = true;
@@ -5077,6 +5252,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
     const targetTime = updateScrubberPositionFromEvent(e);
     if (!isNaN(targetTime) && el.nativeAudio) {
       el.nativeAudio.currentTime = targetTime;
+      if (mvController && mvController.active) {
+        try { mvController.onSeek(targetTime); } catch (_) {}
+      }
       updateMediaPositionState();
     }
     state.scrubberDragTargetTime = undefined;
@@ -5122,6 +5300,9 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
       const targetTime = updateTvkScrubberPositionFromEvent(e);
       if (!isNaN(targetTime) && el.nativeAudio) {
         el.nativeAudio.currentTime = targetTime;
+        if (mvController && mvController.active) {
+          try { mvController.onSeek(targetTime); } catch (_) {}
+        }
         updateMediaPositionState();
       }
       state.scrubberDragTargetTime = undefined;
@@ -6803,23 +6984,12 @@ function updateNavIndicator(animate) {
   }
 
   
-  if (el.btnAvSong) el.btnAvSong.addEventListener('click', () => mvController.hideMv());
-  if (el.btnAvVideo) el.btnAvVideo.addEventListener('click', () => mvController.showMv());
-  if (el.btnToggleMv) el.btnToggleMv.addEventListener('click', () => mvController.toggle());
+  ensureMvPlayer();
   if (el.btnMvPopout) {
     el.btnMvPopout.addEventListener('click', () => {
       if (el.mvPlayerWrapper) el.mvPlayerWrapper.classList.toggle('expanded');
     });
   }
-  window.addEventListener('message', (event) => {
-    if (!mvController.active || !event.data || typeof event.data !== 'string') return;
-    try {
-      const data = JSON.parse(event.data);
-      if (data.event === 'onStateChange' && data.info === 0) {
-        playNext();
-      }
-    } catch (_) {}
-  });
 
   if (el.btnCloseRightPanel) {
     el.btnCloseRightPanel.addEventListener('click', () => {
@@ -13732,6 +13902,42 @@ function bindCoverHoldZoom(wrapEl) {
     return `${y}-${m}-${day}`;
   }
 
+  function isDuplicateOrVariantTrack(a, b) {
+    if (!a || !b) return false;
+    const normArt = (s) => String(s || '').toLowerCase().replace(/\b(vevo|official|records|topic)\b/gi, '').split(/[,;&\/]|\s+(?:feat\.?|ft\.?|with|x|×)\s+/i)[0].replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+    const artA = normArt(a.artist);
+    const artB = normArt(b.artist);
+    if (!artA || !artB || artA !== artB) return false;
+    const normTitle = (s) => String(s || '').toLowerCase().replace(/\([^)]*\)|\[[^\]]*\]/g, ' ').replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+    const rA = normTitle(a.title);
+    const rB = normTitle(b.title);
+    if (!rA || !rB) return false;
+    if (rA === rB) return true;
+    const minLen = Math.min(rA.length, rB.length);
+    if (minLen >= 6 && (rA.includes(rB) || rB.includes(rA))) return true;
+    return false;
+  }
+
+  function coverCandidatesFromTracks(tracks, max = 8) {
+    const out = [];
+    (Array.isArray(tracks) ? tracks.slice(0, max) : []).forEach(t => {
+      if (!t) return;
+      const u = (typeof getTrackThumbUrl === 'function' ? getTrackThumbUrl(t) : '') || t.thumbnail || t.cover || '';
+      if (u && !out.includes(u)) out.push(u);
+    });
+    return out;
+  }
+
+  function hashMixSeed(str) {
+    let h = 0x811c9dc5;
+    const s = String(str || '');
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0).toString(16).padStart(8, '0');
+  }
+
   async function planMixes() {
     const profile = await computeTasteProfile(40);
     const seeds = (profile && Array.isArray(profile.seeds)) ? profile.seeds : [];
@@ -13764,9 +13970,9 @@ function bindCoverHoldZoom(wrapEl) {
     artists.sort((a, b) => b.weight - a.weight);
     const topArtists = artists.slice(0, 28);
     topArtists.sort((a, b) => (b.weight * (0.65 + Math.random() * 0.7)) - (a.weight * (0.65 + Math.random() * 0.7)));
-    if (topArtists.length < 4) return [];
+    if (topArtists.length < 1) return [];
 
-    const bucketCount = Math.min(5, Math.floor(topArtists.length / 2));
+    const bucketCount = topArtists.length >= 4 ? Math.min(5, Math.floor(topArtists.length / 2)) : topArtists.length;
     const buckets = [];
     for (let i = 0; i < bucketCount; i++) {
       buckets.push({
@@ -13786,7 +13992,7 @@ function bindCoverHoldZoom(wrapEl) {
       if (b.seeds.length > 6) b.seeds = b.seeds.slice(0, 6);
     });
 
-    let validBuckets = buckets.filter(b => b.artists.length >= 2);
+    let validBuckets = buckets.filter(b => b.artists.length >= 1);
     if (validBuckets.length === 0 && buckets.length > 0) {
       validBuckets = [buckets[0]];
     }
@@ -13811,7 +14017,35 @@ function bindCoverHoldZoom(wrapEl) {
       if (raw) cached = JSON.parse(raw);
     } catch (_) {}
 
-    if (!force && cached && cached.day === today && Array.isArray(cached.mixes)) {
+    if (!force && cached && cached.day === today && Array.isArray(cached.mixes) && cached.mixes.length > 0) {
+      const seenDayKeys = new Set();
+      const seenDayIds = new Set();
+      if (Array.isArray(myWaveCurrentTracks)) {
+        myWaveCurrentTracks.forEach(t => {
+          if (!t) return;
+          const k = (t.artist && t.title && typeof getTrackNormalizedKey === 'function') ? getTrackNormalizedKey(t.artist, t.title) : '';
+          if (k) seenDayKeys.add(k);
+          const cid = (typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(t) : '') || (t.id ? String(t.id).trim() : '');
+          if (cid) seenDayIds.add(cid);
+        });
+      }
+      cached.mixes.forEach(m => {
+        if (Array.isArray(m.tracks)) {
+          const seenInMix = [];
+          m.tracks = m.tracks.filter(tr => {
+            if (isTrackBlocked(tr) || isArtistBlocked(tr.artist) || (typeof isTrackFailedOrUnavailable === 'function' && isTrackFailedOrUnavailable(tr)) || !getTrackThumbUrl(tr)) return false;
+            const k = (tr && tr.artist && tr.title && typeof getTrackNormalizedKey === 'function') ? getTrackNormalizedKey(tr.artist, tr.title) : '';
+            const cid = (tr && typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(tr) : '') || (tr && tr.id ? String(tr.id).trim() : '');
+            if (cid && seenDayIds.has(cid)) return false;
+            if (k && seenDayKeys.has(k)) return false;
+            if (seenInMix.some(existing => isDuplicateOrVariantTrack(tr, existing))) return false;
+            if (cid) seenDayIds.add(cid);
+            if (k) seenDayKeys.add(k);
+            seenInMix.push(tr);
+            return true;
+          });
+        }
+      });
       return cached;
     }
 
@@ -13828,10 +14062,32 @@ function bindCoverHoldZoom(wrapEl) {
     if (typeof renderMadeForYou === 'function') renderMadeForYou();
 
     const generatedMixes = [];
+    const usedDayTrackKeys = new Set();
+    const usedDayTrackIds = new Set();
+
+    if (Array.isArray(myWaveCurrentTracks)) {
+      myWaveCurrentTracks.forEach(t => {
+        if (!t) return;
+        const k = (t.artist && t.title && typeof getTrackNormalizedKey === 'function') ? getTrackNormalizedKey(t.artist, t.title) : '';
+        if (k) usedDayTrackKeys.add(k);
+        const cid = (typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(t) : '') || (t.id ? String(t.id).trim() : '');
+        if (cid) usedDayTrackIds.add(cid);
+      });
+    }
+
     try {
       const profile = await computeTasteProfile();
       for (let i = 0; i < buckets.length; i++) {
         const bucket = buckets[i];
+        const baseAvoid = typeof getWaveAvoid === 'function' ? getWaveAvoid() : { keys: [], artists: [], ids: [] };
+        const avoidKeys = Array.from(new Set([
+          ...(Array.isArray(baseAvoid?.keys) ? baseAvoid.keys : []),
+          ...usedDayTrackKeys
+        ]));
+        const avoidIds = Array.from(new Set([
+          ...(Array.isArray(baseAvoid?.ids) ? baseAvoid.ids : []),
+          ...usedDayTrackIds
+        ]));
         const payload = {
           history: (state.history || []).slice(0, 30),
           favorites: (state.favorites || []).slice(0, 25),
@@ -13839,7 +14095,11 @@ function bindCoverHoldZoom(wrapEl) {
           limit: 20,
           clientProfile: profile,
           seeds: bucket.seeds,
-          avoid: typeof getWaveAvoid === 'function' ? getWaveAvoid() : []
+          avoid: {
+            keys: avoidKeys,
+            artists: Array.isArray(baseAvoid?.artists) ? baseAvoid.artists : [],
+            ids: avoidIds
+          }
         };
 
         try {
@@ -13849,18 +14109,36 @@ function bindCoverHoldZoom(wrapEl) {
             body: JSON.stringify(payload)
           });
           const data = await res.json();
-          if (data && data.success && Array.isArray(data.tracks) && data.tracks.length >= 8) {
-            generatedMixes.push({
-              id: bucket.id || `daily-mix-${generatedMixes.length + 1}`,
-              title: `Daily Mix ${generatedMixes.length + 1}`,
-              artists: bucket.artists,
-              tracks: data.tracks
-            });
-            localStorage.setItem(MIX_KEY, JSON.stringify({
-              day: today,
-              mixes: generatedMixes
-            }));
-            if (typeof renderMadeForYou === 'function') renderMadeForYou();
+          if (data && data.success && Array.isArray(data.tracks)) {
+            const uniqueMixTracks = [];
+            for (const tr of data.tracks) {
+              if (isTrackBlocked(tr) || isArtistBlocked(tr.artist) || (typeof isTrackFailedOrUnavailable === 'function' && isTrackFailedOrUnavailable(tr)) || !getTrackThumbUrl(tr)) continue;
+              const k = (tr && tr.artist && tr.title && typeof getTrackNormalizedKey === 'function') ? getTrackNormalizedKey(tr.artist, tr.title) : '';
+              const cid = (tr && typeof getTrackCanonicalId === 'function' ? getTrackCanonicalId(tr) : '') || (tr && tr.id ? String(tr.id).trim() : '');
+              if (cid && usedDayTrackIds.has(cid)) continue;
+              if (k && usedDayTrackKeys.has(k)) continue;
+              if (uniqueMixTracks.some(existing => isDuplicateOrVariantTrack(tr, existing))) continue;
+              if (cid) usedDayTrackIds.add(cid);
+              if (k) usedDayTrackKeys.add(k);
+              uniqueMixTracks.push(tr);
+            }
+            if (uniqueMixTracks.length >= 4) {
+              const mixSeed = (uniqueMixTracks[0]?.id || '') + (uniqueMixTracks[1]?.id || '') + Date.now().toString(36);
+              const mixId = 'dm_' + today + '_' + (i + 1) + '_' + hashMixSeed(mixSeed);
+              generatedMixes.push({
+                id: mixId,
+                title: 'Daily Mix ' + (i + 1),
+                type: 'Daily Mix',
+                isDailyMix: true,
+                artists: bucket.artists,
+                tracks: uniqueMixTracks
+              });
+              localStorage.setItem(MIX_KEY, JSON.stringify({
+                day: today,
+                mixes: generatedMixes
+              }));
+              if (typeof renderMadeForYou === 'function') renderMadeForYou();
+            }
           }
         } catch (err) {
           break;
@@ -13912,6 +14190,9 @@ function bindCoverHoldZoom(wrapEl) {
     }
 
     sec.hidden = false;
+    const sig = hasWave + '|' + (myWaveCurrentTracks[0]?.id || '') + '|' + mixes.map(m => m.id + ':' + m.tracks.length).join(',') + '|' + Boolean(state.mixesBusy);
+    if (row._lastHomeSig === sig && row.children.length > 0) return;
+    row._lastHomeSig = sig;
     row.innerHTML = '';
 
     let myWaveCard;
@@ -13955,8 +14236,43 @@ function bindCoverHoldZoom(wrapEl) {
 
     mixes.forEach((mix, i) => {
       const fourCovers = getMix4Covers(mix);
-      const cover = fourCovers[0] || '';
-      const sub = (mix.artists && mix.artists.length > 0) ? mix.artists.join(', ') : '';
+      const coverCandidates = coverCandidatesFromTracks(mix.tracks);
+      const cover = fourCovers[0] || coverCandidates[0] || '';
+
+      let sub = '';
+      if (mix && Array.isArray(mix.tracks) && mix.tracks.length > 0) {
+        const counts = new Map();
+        const order = [];
+        for (const t of mix.tracks) {
+          const raw = t.artist || t.uploader;
+          if (!raw || typeof raw !== 'string') continue;
+          const names = raw.split(/[,/&;•|]|\s+(?:feat|ft|featuring)\.?\s+/i)
+            .map(s => s.trim().replace(/^\.+\s*/, '').replace(/^[-–—]\s*/, ''))
+            .filter(Boolean);
+          for (const name of names) {
+            const clean = typeof stripYoutubeTopic === 'function' ? stripYoutubeTopic(name).trim() : name.trim();
+            if (!clean || clean.toLowerCase() === 'various artists' || clean.toLowerCase() === 'unknown artist') continue;
+            if (!counts.has(clean)) {
+              counts.set(clean, 1);
+              order.push(clean);
+            } else {
+              counts.set(clean, counts.get(clean) + 1);
+            }
+          }
+        }
+        order.sort((a, b) => (counts.get(b) || 0) - (counts.get(a) || 0));
+        if (order.length === 0 && Array.isArray(mix.artists) && mix.artists.length > 0) {
+          mix.artists.forEach(a => {
+            const clean = typeof stripYoutubeTopic === 'function' ? stripYoutubeTopic(a).trim() : String(a).trim();
+            if (clean && !order.includes(clean)) order.push(clean);
+          });
+        }
+        sub = order.length <= 3 ? order.join(', ') : (order.slice(0, 3).join(', ') + '...');
+      } else if (Array.isArray(mix.artists) && mix.artists.length > 0) {
+        const cleanList = mix.artists.map(a => typeof stripYoutubeTopic === 'function' ? stripYoutubeTopic(a).trim() : String(a).trim()).filter(Boolean);
+        sub = cleanList.slice(0, 3).join(', ') + (cleanList.length > 3 ? '...' : '');
+      }
+
       const card = spCard({
         cover,
         gridCovers: fourCovers.length >= 4 ? fourCovers : null,
@@ -13968,11 +14284,12 @@ function bindCoverHoldZoom(wrapEl) {
               id: mix.id || `daily-mix-${i + 1}`,
               title: mix.title || `Daily Mix ${i + 1}`,
               type: 'Daily Mix',
+              isDailyMix: true,
               artist: (mix.artists && mix.artists.length > 0) ? mix.artists.join(', ') : 'Daily Mix',
               trackCount: mix.tracks.length,
               tracks: [...mix.tracks],
               gridCovers: fourCovers.length >= 4 ? fourCovers : null,
-              cover: cover
+              cover: coverCandidates
             });
           }
         }
@@ -15757,8 +16074,8 @@ function bindCoverHoldZoom(wrapEl) {
     if (state.secondaryAudio && !state.secondaryAudio.paused) {
       state.secondaryAudio.currentTime = targetSeconds;
     }
-    if (typeof mvController !== 'undefined' && mvController && mvController.active && el.mvVideo && el.mvVideo.readyState >= 1) {
-      try { el.mvVideo.currentTime = targetSeconds; } catch (_) {}
+    if (typeof mvController !== 'undefined' && mvController && mvController.active) {
+      try { mvController.onSeek(targetSeconds); } catch (_) {}
     }
     if (typeof updateMediaPositionState === 'function') {
       updateMediaPositionState();

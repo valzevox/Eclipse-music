@@ -2536,10 +2536,43 @@ ipcMain.on('window-minimize', () => {
           });
         }
 
-        const cleanSessionUa = (app.userAgentFallback || s.getUserAgent() || '')
-          .replace(/\s*Electron\/[^\s]+/gi, '')
-          .replace(/\s*(?:riff|eclipse)\/[^\s]+/gi, '');
-        if (cleanSessionUa) s.setUserAgent(cleanSessionUa);
+        const CLEAN_LOGIN_UA = process.platform === 'darwin'
+          ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0'
+          : process.platform === 'win32'
+          ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0'
+          : 'Mozilla/5.0 (X11; Linux x86_64; rv:135.0) Gecko/20100101 Firefox/135.0';
+
+        function isYoutubeAuthUrl(value) {
+          try {
+            const parsed = new URL(value);
+            return parsed.protocol === 'https:' &&
+              (parsed.hostname === 'youtube.com' || parsed.hostname.endsWith('.youtube.com') ||
+                parsed.hostname === 'google.com' || parsed.hostname.endsWith('.google.com'));
+          } catch (_) {
+            return false;
+          }
+        }
+
+        let googleSessionHeadersHooked = false;
+        function ensureCleanGoogleSession(googleSession) {
+          googleSession.setUserAgent(CLEAN_LOGIN_UA);
+          if (googleSessionHeadersHooked) return;
+          googleSessionHeadersHooked = true;
+          try {
+            googleSession.webRequest.onBeforeSendHeaders((details, callback) => {
+              const headers = details.requestHeaders || {};
+              headers['User-Agent'] = CLEAN_LOGIN_UA;
+              for (const k of Object.keys(headers)) {
+                if (/^sec-ch-ua/i.test(k)) {
+                  delete headers[k];
+                }
+              }
+              callback({ requestHeaders: headers });
+            });
+          } catch (_) {}
+        }
+
+        ensureCleanGoogleSession(s);
         return new Promise((resolve) => {
           const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
           const win = new BrowserWindow({
@@ -2556,6 +2589,15 @@ ipcMain.on('window-minimize', () => {
               nodeIntegration: false,
               sandbox: true
             }
+          });
+          win.webContents.setUserAgent(CLEAN_LOGIN_UA);
+          win.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
+            if (isYoutubeAuthUrl(targetUrl)) {
+              win.loadURL(targetUrl, { userAgent: CLEAN_LOGIN_UA }).catch(() => {});
+              return { action: 'deny' };
+            }
+            shell.openExternal(targetUrl);
+            return { action: 'deny' };
           });
           let finished = false;
           let validating = false;
@@ -2790,13 +2832,19 @@ ipcMain.on('window-minimize', () => {
               const h = details.requestHeaders || {};
               try {
                 const u = new URL(details.url);
-                const c = u.searchParams.get('c') || '';
+                const c = (u.searchParams.get('c') || '').toUpperCase();
                 if (c === 'ANDROID_VR') {
-                  h['User-Agent'] = 'com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 14; eureka-user Build/SQ3A.220605.009.A1) gzip';
+                  h['User-Agent'] = 'com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip';
                 } else if (c === 'IOS') {
-                  h['User-Agent'] = 'com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X;)';
-                } else if (c === 'ANDROID_TESTSUITE' || c.startsWith('ANDROID')) {
-                  h['User-Agent'] = 'com.google.android.youtube/1.9 (Linux; U; Android 14; en_US) gzip';
+                  h['User-Agent'] = 'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)';
+                } else if (c === 'ANDROID_MUSIC') {
+                  h['User-Agent'] = 'com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 14; en_US; sdk_gphone64_x86_64 Build/UE1A.230829.036) gzip';
+                } else if (c === 'TVHTML5_SIMPLY_EMBEDDED_PLAYER' || c.startsWith('TVHTML5')) {
+                  h['User-Agent'] = 'Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.5) AppleWebKit/537.36 (KHTML, like Gecko) 85.0.4183.93/6.5 TV Safari/537.36';
+                } else if (c === 'ANDROID_TESTSUITE') {
+                  h['User-Agent'] = 'com.google.android.youtube/1.9 (Linux; U; Android 11; en_US) gzip';
+                } else if (c.startsWith('ANDROID')) {
+                  h['User-Agent'] = 'com.google.android.youtube/19.44.38 (Linux; U; Android 14; en_US; sdk_gphone64_x86_64 Build/UE1A.230829.036) gzip';
                 }
                 delete h['Origin'];
                 delete h['origin'];

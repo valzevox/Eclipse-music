@@ -447,20 +447,38 @@ async function openAlbum(album) {
 
   currentAlbumForFeedback = album;
   state.currentAlbum = album;
+  const albumView = document.getElementById('view-album');
+  const isDailyMix = album.type === 'Daily Mix' || !!album.isDailyMix || String(album.id || '').startsWith('daily-mix') || String(album.id || '').startsWith('dm_');
+  if (albumView) {
+    albumView.classList.toggle('is-daily-mix', isDailyMix);
+  }
+  const feedback = getMixFeedback();
+  const mixRateKey = isDailyMix
+    ? `${album.id || 'mix'}_${getLocalDateString()}_${(album.tracks && album.tracks[0] && (album.tracks[0].id || album.tracks[0].title)) || ''}`
+    : '';
+  if (isDailyMix) album._rateKey = mixRateKey;
+  const currentRating = isDailyMix && feedback.ratingsByMix ? (feedback.ratingsByMix[mixRateKey] || feedback.ratingsByMix[album.id]) : null;
+
+  const bLike = document.getElementById('btn-dm-like');
+  const bDislike = document.getElementById('btn-dm-dislike');
+  if (bLike && bDislike) {
+    if (isDailyMix) {
+      bLike.style.display = 'inline-flex';
+      bDislike.style.display = 'inline-flex';
+      bLike.classList.toggle('active', currentRating === 'like');
+      bDislike.classList.toggle('active', currentRating === 'dislike');
+      bLike.onclick = (e) => { e.preventDefault(); e.stopPropagation(); handleDailyMixRating(true); };
+      bDislike.onclick = (e) => { e.preventDefault(); e.stopPropagation(); handleDailyMixRating(false); };
+    } else {
+      bLike.style.display = 'none';
+      bDislike.style.display = 'none';
+    }
+  }
+
   const mixFeedbackEl = document.getElementById('daily-mix-feedback');
   if (mixFeedbackEl) {
-    const feedback = getMixFeedback();
-    const isDailyMix = album.type === 'Daily Mix';
     if (isDailyMix) {
-      const firstTrackId = (album.tracks && album.tracks[0] && (album.tracks[0].id || album.tracks[0].title)) || '';
-      const mixRateKey = `${album.id || 'mix'}_${getLocalDateString()}_${firstTrackId}`;
-      album._rateKey = mixRateKey;
-      const currentRating = feedback.ratingsByMix && feedback.ratingsByMix[mixRateKey];
       mixFeedbackEl.classList.remove('hidden', 'fading-out');
-      const bLike = document.getElementById('btn-dm-like');
-      const bDislike = document.getElementById('btn-dm-dislike');
-      if (bLike) bLike.classList.toggle('active', currentRating === 'like');
-      if (bDislike) bDislike.classList.toggle('active', currentRating === 'dislike');
     } else {
       mixFeedbackEl.classList.add('hidden');
       mixFeedbackEl.classList.remove('fading-out');
@@ -469,7 +487,7 @@ async function openAlbum(album) {
 
   const btnSaveAlbum = document.getElementById('btn-save-album');
   if (btnSaveAlbum) {
-    if (album.type === 'Daily Mix') {
+    if (isDailyMix) {
       btnSaveAlbum.style.display = 'none';
     } else {
       btnSaveAlbum.style.display = '';
@@ -523,6 +541,9 @@ async function openAlbum(album) {
     }
   }
 
+  const resolvedAlbumCover = Array.isArray(album.cover)
+    ? (album.cover.find(u => typeof u === 'string' && u.trim()) || '')
+    : (typeof album.cover === 'string' ? album.cover.trim() : '');
   const coverEl = document.getElementById('album-detail-cover');
   if (coverEl) {
     if (album.gridCovers && Array.isArray(album.gridCovers) && album.gridCovers.length >= 4) {
@@ -532,8 +553,8 @@ async function openAlbum(album) {
         </div>
       `;
     } else {
-      coverEl.innerHTML = album.cover
-        ? `<img src="${escapeHtml(album.cover)}" alt="${escapeHtml(album.title)}" style="width:100%;height:100%;aspect-ratio:1;border-radius:20px;object-fit:cover;box-shadow:none;" />`
+      coverEl.innerHTML = resolvedAlbumCover
+        ? `<img src="${escapeHtml(resolvedAlbumCover)}" alt="${escapeHtml(album.title)}" style="width:100%;height:100%;aspect-ratio:1;border-radius:20px;object-fit:cover;box-shadow:none;" />`
         : '<div style="width:100%;height:100%;aspect-ratio:1;border-radius:20px;background:var(--md-sys-color-surface-container);"></div>';
     }
     if (typeof bindCoverHoldZoom === 'function') bindCoverHoldZoom(coverEl);
@@ -544,13 +565,15 @@ async function openAlbum(album) {
 
   const artistBtn = document.getElementById('album-detail-artist');
   if (artistBtn) {
-    const artistName = album.artist || '';
-    if (album.type !== 'Daily Mix') {
-      renderClickableArtists(artistBtn, artistName);
+    if (isDailyMix) {
+      artistBtn.textContent = '';
+      artistBtn.style.display = 'none';
     } else {
-      artistBtn.textContent = artistName;
+      artistBtn.style.display = '';
+      const artistName = album.artist || '';
+      renderClickableArtists(artistBtn, artistName);
+      artistBtn.title = `View ${artistName}`;
     }
-    artistBtn.title = `View ${artistName}`;
     artistBtn.onclick = null;
   }
 
@@ -567,12 +590,11 @@ async function openAlbum(album) {
     : [album.type || 'Album', album.year, album.trackCount ? `${album.trackCount} bản nhạc` : 'Đang tải bài hát...'].filter(Boolean).join(' • ');
   if (countEl) countEl.textContent = initialMeta;
 
-  const albumView = document.getElementById('view-album');
   const albumHeroFx = document.getElementById('album-hero-fx');
   if (albumHeroFx) {
-    albumHeroFx.style.backgroundImage = (album && album.cover) ? `url("${album.cover}")` : '';
+    albumHeroFx.style.backgroundImage = resolvedAlbumCover ? `url("${resolvedAlbumCover}")` : '';
   }
-  const colorCover = album.cover || (album.gridCovers && album.gridCovers[0]) || '';
+  const colorCover = resolvedAlbumCover || (album.gridCovers && album.gridCovers[0]) || '';
   if (colorCover) {
     getCoverDominantColors(colorCover).then(([domColor]) => {
       if (state.currentView === 'album' && currentAlbumRunId === runId) {

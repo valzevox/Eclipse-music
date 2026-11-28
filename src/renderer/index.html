@@ -4025,7 +4025,7 @@
 
   <div class="toast-container" id="toast-container"></div>
 
-  <!-- Browser Login & Extension Pairing Dialog (SimpMusic Style) -->
+  <!-- YouTube Music Account Connection Dialog -->
   <div id="browser-login-dialog" class="modal-backdrop hidden">
     <div class="dialog-card browser-login-dialog-card">
       <div class="dialog-header">
@@ -4038,16 +4038,31 @@
         </button>
       </div>
       <div class="browser-login-desc">
-        Connect your YouTube Music account using local browser profiles or the Eclipse companion extension.
+        Choose a sign-in method to connect your YouTube Music account and sync your library.
       </div>
 
       <div class="sp-modes" id="browser-login-modes">
-        <button type="button" class="active" data-mode="profiles" id="tab-login-profiles">Browser Profiles</button>
+        <button type="button" class="active" data-mode="inapp" id="tab-login-inapp">In-App Sign-In</button>
+        <button type="button" data-mode="profiles" id="tab-login-profiles">Browser Profiles</button>
         <button type="button" data-mode="extension" id="tab-login-extension">Extension Pairing</button>
+        <button type="button" data-mode="cookie" id="tab-login-cookie">Paste Cookie</button>
       </div>
 
-      <!-- Tab Pane 1: Browser Profiles -->
-      <div class="browser-login-pane sp-pane" id="pane-login-profiles" data-mode="profiles">
+      <!-- Tab Pane 1: In-App Sign-In -->
+      <div class="browser-login-pane sp-pane" id="pane-login-inapp" data-mode="inapp">
+        <div style="font-size: calc(13px * var(--font-scale, 1)); color: var(--md-sys-color-on-surface-variant); margin-bottom: 14px; line-height: 1.45;">
+          Sign in directly inside Eclipse using an isolated Google session. Your credentials stay local on your device.
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px;">
+          <button type="button" id="btn-inapp-ytm-signin" class="btn-pill-primary">Sign in with Google</button>
+          <button type="button" id="btn-inapp-ytm-browser-fallback" class="btn-outline-pill">Open in Browser</button>
+          <button type="button" id="btn-inapp-ytm-logout" class="btn-outline-pill hidden">Log out</button>
+        </div>
+        <div id="inapp-ytm-status" style="font-size: calc(13px * var(--font-scale, 1)); color: var(--md-sys-color-outline);">Not connected</div>
+      </div>
+
+      <!-- Tab Pane 2: Browser Profiles -->
+      <div class="browser-login-pane sp-pane hidden" id="pane-login-profiles" data-mode="profiles">
         <div class="browser-pane-header">
           <span class="browser-pane-title">Detected Profiles</span>
           <button type="button" id="btn-refresh-browser-profiles" class="btn-outline-pill">
@@ -4057,6 +4072,18 @@
         </div>
         <div id="browser-profiles-list" class="browser-profiles-list">
           <div class="browser-profiles-empty">Discovering browser profiles...</div>
+        </div>
+      </div>
+
+      <!-- Tab Pane 4: Paste Cookie -->
+      <div class="browser-login-pane sp-pane hidden" id="pane-login-cookie" data-mode="cookie">
+        <div style="font-size: calc(13px * var(--font-scale, 1)); color: var(--md-sys-color-on-surface-variant); margin-bottom: 10px; line-height: 1.4;">
+          Paste a YouTube / YouTube Music cookie header (e.g. <code>SAPISID=...; SID=...</code>) or Netscape <code>cookies.txt</code> content.
+        </div>
+        <textarea id="modal-ytm-cookie-input" class="pill-text-input" placeholder="SAPISID=...; HSID=...; SSID=..." style="width: 100%; height: 96px; resize: vertical; font-family: monospace; font-size: 11.5px; padding: 10px; box-sizing: border-box; margin-bottom: 10px;"></textarea>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <button type="button" id="btn-modal-ytm-cookie-apply" class="btn-pill-primary">Apply Cookie</button>
+          <span id="modal-ytm-cookie-msg" style="font-size: 12px; color: var(--md-sys-color-outline);"></span>
         </div>
       </div>
 

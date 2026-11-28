@@ -2924,12 +2924,17 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
 
   const meta = { title, artist, duration, thumbnail };
 
-  const [cachedFile, downloadedName] = await Promise.all([
+  let [cachedFile, downloadedName] = await Promise.all([
     cleanId ? findCachedFile(cleanId) : Promise.resolve(null),
     (title || artist) ? findDownloadedFile(title, artist) : Promise.resolve(null)
   ]);
 
-  if (!forShare && cachedFile) {
+  if (forceYtDlp && cachedFile) {
+    try { await fs.promises.unlink(cachedFile); } catch (_) {}
+    cachedFile = null;
+  }
+
+  if (!forShare && !forceYtDlp && cachedFile) {
     const data = {
       success: true,
       isLocal: true,
@@ -2959,7 +2964,18 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
     mimeType: null,
     bitrate: null
   };
+  const cleanArtist = (artist || '').toLowerCase().trim();
+  const cleanTitle = (title || '').toLowerCase().trim();
+  const metaStreamKey = (cleanArtist && cleanTitle) ? `${cleanArtist}::${cleanTitle}_${quality}` : null;
   const cacheKey = (cleanId || trackUrl || queryQ || `${artist}_${title}`).toLowerCase() + '_' + quality;
+  if (forceYtDlp) {
+    if (cacheKey) streamUrlCache.delete(cacheKey);
+    if (cleanId) {
+      streamUrlCache.delete(cleanId + '_' + quality);
+      streamUrlCache.delete(cleanId.toLowerCase() + '_' + quality);
+    }
+    if (metaStreamKey) streamUrlCache.delete(metaStreamKey);
+  }
   if (!forShare && !forceYtDlp && cacheKey && (streamUrlCache.has(cacheKey) || (cleanId && streamUrlCache.has(cleanId + '_' + quality)))) {
     const cached = streamUrlCache.get(cacheKey) || (cleanId ? streamUrlCache.get(cleanId + '_' + quality) : null);
     const notExpired = cached && (cached.expiresAt ? Date.now() < cached.expiresAt : (Date.now() - cached.timestamp < 7200000));
@@ -3979,10 +3995,24 @@ async function handleDownloadedTrack(req, res, name) {
   }
 }
 
+const GV_UA = {
+  IOS: 'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)',
+  ANDROID_VR: 'com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip',
+  ANDROID_MUSIC: 'com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 14; en_US; sdk_gphone64_x86_64 Build/UE1A.230829.036) gzip',
+  TV: 'Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.5) AppleWebKit/537.36 (KHTML, like Gecko) 85.0.4183.93/6.5 TV Safari/537.36',
+  ANDROID_TESTSUITE: 'com.google.android.youtube/1.9 (Linux; U; Android 11; en_US) gzip',
+  ANDROID: 'com.google.android.youtube/19.44.38 (Linux; U; Android 14; en_US; sdk_gphone64_x86_64 Build/UE1A.230829.036) gzip',
+  WEB: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+};
 function googleVideoUserAgent(parsed) {
   const c = (parsed && parsed.searchParams && parsed.searchParams.get('c') || '').toUpperCase();
-  if (c === 'ANDROID_MUSIC') return 'com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 14; en_US; sdk_gphone64_x86_64 Build/UE1A.230829.036) gzip';
-  return 'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)';
+  if (c === 'ANDROID_MUSIC') return GV_UA.ANDROID_MUSIC;
+  if (c === 'ANDROID_VR') return GV_UA.ANDROID_VR;
+  if (c.startsWith('TVHTML5')) return GV_UA.TV;
+  if (c === 'ANDROID_TESTSUITE') return GV_UA.ANDROID_TESTSUITE;
+  if (c.startsWith('ANDROID')) return GV_UA.ANDROID;
+  if (c === 'WEB' || c === 'WEB_REMIX' || c === 'MWEB') return GV_UA.WEB;
+  return GV_UA.IOS;
 }
 
 
@@ -4102,6 +4132,8 @@ async function handleGoogleVideoChunkedProxy(req, res, targetUrl, initialUrl) {
   }
 }
 
+const gvRedirectCache = new Map();
+
 async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl = null, options = {}) {
   const initialUrl = origUrl || targetUrl;
   if (!targetUrl) {
@@ -4115,6 +4147,15 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
     } catch (e) {
       res.writeHead(400);
       return res.end('Invalid url');
+    }
+    if (redirectsLeft === 5 && gvRedirectCache.has(targetUrl)) {
+      targetUrl = gvRedirectCache.get(targetUrl);
+      try {
+        parsed = new URL(targetUrl);
+      } catch (e) {
+        res.writeHead(400);
+        return res.end('Invalid url');
+      }
     }
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       res.writeHead(400);
@@ -4234,6 +4275,10 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
           if ([301, 302, 303, 307, 308].includes(proxyRes.statusCode) && proxyRes.headers.location && redirectsLeft > 0) {
             proxyRes.resume();
             const nextUrl = new URL(proxyRes.headers.location, targetUrl).toString();
+            if (isGv && [301, 302, 307, 308].includes(proxyRes.statusCode)) {
+              gvRedirectCache.set(initialUrl, nextUrl);
+              boundMap(gvRedirectCache, 100);
+            }
             finishProxy();
             return handleAudioProxy(req, res, nextUrl, redirectsLeft - 1, initialUrl, options);
           }
@@ -4349,7 +4394,7 @@ async function handleAudioProxy(req, res, targetUrl, redirectsLeft = 5, origUrl 
         };
         if (signal) signal.addEventListener('abort', onAbort, { once: true });
 
-        proxyReq.setTimeout(30000, () => {
+        proxyReq.setTimeout(120000, () => {
           evictStreamCache(initialUrl);
           proxyReq.destroy(new Error('Proxy timeout'));
         });

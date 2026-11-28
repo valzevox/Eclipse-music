@@ -234,3 +234,34 @@ test('Phase A2: IFrameEngine on() returns unsubscribe and dispose() is idempoten
   eng.dispose(); // idempotent
   assert.equal(eng.getState(), 'IDLE');
 });
+
+test('Phase A2: IFrameEngine sends listening handshake and handles infoDelivery playerState + currentTime', () => {
+  const eng = new IFrameEngine();
+  const posted = [];
+  const fakeWin = {
+    postMessage: (msg) => posted.push(JSON.parse(msg))
+  };
+  eng.iframe = { contentWindow: fakeWin };
+
+  eng._sendListeningHandshake();
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].event, 'listening');
+  assert.equal(posted[0].channel, 'widget');
+
+  const states = [];
+  const times = [];
+  eng.on('stateChange', (s) => states.push(s));
+  eng.on('timeupdate', (t) => times.push(t));
+
+  eng._handleWindowMessage({
+    origin: 'https://www.youtube.com',
+    source: fakeWin,
+    data: JSON.stringify({ event: 'infoDelivery', info: { playerState: 1, currentTime: 12.5 } })
+  });
+
+  assert.deepEqual(states, ['PLAYING']);
+  assert.deepEqual(times, [12.5]);
+  assert.equal(eng.getState(), 'PLAYING');
+  assert.equal(eng.getPosition(), 12.5);
+  eng.dispose();
+});

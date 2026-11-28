@@ -1768,9 +1768,9 @@ async function renderLocalFiles(forceFetch = false) {
     state.localFiles = state.localTracks;
   }
 
-  if (!localRescanDone && window.electronAPI && window.electronAPI.rescanLocalMetadata && state.localFiles.length > 0) {
+  if (!localRescanDone && window.electronAPI && window.electronAPI.rescanLocalMetadata && state.localFiles.length > 0 && state.localFiles.length <= 150) {
     localRescanDone = true;
-    const needRescan = state.localFiles.filter(t => t.path && (!t.thumbnail || t.artist === 'Unknown Artist'));
+    const needRescan = state.localFiles.filter(t => t.path && (!t.thumbnail || t.artist === 'Unknown Artist')).slice(0, 60);
     if (needRescan.length > 0) {
       const paths = needRescan.map(t => t.path);
       window.electronAPI.rescanLocalMetadata(paths).then(rescannedTracks => {
@@ -1821,9 +1821,15 @@ async function renderLocalFiles(forceFetch = false) {
       albObj.tracks.push(t);
     });
 
+    for (const [key, alb] of Array.from(albumMap.entries())) {
+      if (!(alb.tracks.length >= 2 || alb.cover)) {
+        albumMap.delete(key);
+      }
+    }
+
     if (albumMap.size > 0) {
       localAlbumsRow.style.display = 'flex';
-      localAlbumsRow.innerHTML = Array.from(albumMap.values()).map(alb => {
+      localAlbumsRow.innerHTML = Array.from(albumMap.values()).slice(0, 30).map(alb => {
         const count = alb.tracks.length;
         const sub = alb.artist ? `${escapeHtml(alb.artist)} · ${count} track${count === 1 ? '' : 's'}` : `${count} track${count === 1 ? '' : 's'}`;
         return `
@@ -1877,6 +1883,27 @@ async function renderLocalFiles(forceFetch = false) {
       (t.album && t.album.toLowerCase().includes(query))
     );
   }
+  const localSortEl = el.localSort || document.getElementById('local-sort');
+  if (localSortEl) {
+    const localSortMode = localStorage.getItem('eclipse_local_sort') || 'manual';
+    if (localSortMode === 'title-asc') {
+      filtered = [...filtered].sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+    } else if (localSortMode === 'added-desc') {
+      filtered = [...filtered].reverse();
+    } else if (localSortMode === 'added-asc') {
+      filtered = [...filtered];
+    }
+    localSortEl.value = localSortMode;
+    const localLabel = document.getElementById('local-sort-label');
+    const localMenu = document.getElementById('local-sort-menu');
+    if (localMenu) {
+      localMenu.querySelectorAll('.m3-dropdown-option').forEach(opt => {
+        const isSel = opt.dataset.value === localSortMode;
+        opt.classList.toggle('selected', isSel);
+        if (isSel && localLabel) localLabel.textContent = opt.textContent;
+      });
+    }
+  }
   if (el.localSubtitle) {
     el.localSubtitle.textContent = query
       ? `${filtered.length} of ${allTracks.length} tracks`
@@ -1915,6 +1942,18 @@ window.renderLocalView = renderLocalView;
 
 if (typeof el !== 'undefined' && el.localSearchInput) {
   el.localSearchInput.addEventListener('input', () => renderLocalView(false));
+}
+
+const localSortSelect = document.getElementById('local-sort');
+if (localSortSelect) {
+  localSortSelect.value = localStorage.getItem('eclipse_local_sort') || 'manual';
+  localSortSelect.addEventListener('change', () => {
+    localStorage.setItem('eclipse_local_sort', localSortSelect.value);
+    renderLocalFiles(false);
+  });
+  if (typeof setupSortDropdown === 'function') {
+    setupSortDropdown('local-sort-dropdown', 'local-sort-trigger', 'local-sort-menu', 'local-sort-label', localSortSelect);
+  }
 }
 
 async function importLocalFiles() {
