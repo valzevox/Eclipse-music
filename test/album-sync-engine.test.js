@@ -8,6 +8,8 @@ const {
   computeAlbumMetadata,
   formatAlbumMetaLine,
   getTrackDedupKey,
+  deduplicateTracks,
+  deduplicatePlaylists,
   reconcilePlaylistTracks,
   getEntityIdentityKey,
   mergeSavedAlbumEntities,
@@ -198,4 +200,40 @@ test('5. Background Sync Coordinator: single-flight join, real timeout cancellat
   const r5 = await coord.runSync('background');
   assert.strictEqual(r5.skipped, true);
   assert.strictEqual(r5.reason, 'backoff_active');
+});
+
+test('6. Post-sync & startup deduplication: normalizes VLPL vs PL, migrates default accountId, and removes duplicate tracks/playlists/albums', () => {
+  // VLPL vs PL identity key normalization
+  assert.strictEqual(
+    getEntityIdentityKey({ id: 'VLPLabc123', type: 'Playlist', accountId: 'acc1' }),
+    getEntityIdentityKey({ id: 'PLabc123', type: 'Playlist', accountId: 'acc1' })
+  );
+
+  // mergeSavedAlbumEntities deduplicates existing list and migrates 'default' -> active accountId
+  const existingAlbums = [
+    { id: 'VLPLabc123', title: 'Chill', type: 'Playlist', accountId: 'default', tracks: [{ id: 'v1', title: 'A' }, { id: 'v1', title: 'A' }] },
+    { id: 'PLabc123', title: 'Chill', type: 'Playlist', accountId: 'acc1', tracks: [{ id: 'v2', title: 'B' }] }
+  ];
+  const merged = mergeSavedAlbumEntities(existingAlbums, [], 'acc1');
+  assert.strictEqual(merged.list.length, 1);
+  assert.strictEqual(merged.list[0].tracks.length, 1);
+
+  // deduplicateTracks preserves earliest addedAt and removes duplicates
+  const deduped = deduplicateTracks([
+    { id: 'v1', title: 'Song 1', addedAt: 200 },
+    { id: 'v1', title: 'Song 1', addedAt: 100 },
+    { id: 'v2', title: 'Song 2', addedAt: 300 }
+  ]);
+  assert.strictEqual(deduped.length, 2);
+  assert.strictEqual(deduped[0].addedAt, 100);
+
+  // deduplicatePlaylists merges VLPL/PL and default/acc1 duplicates and deduplicates tracks
+  const plRes = deduplicatePlaylists([
+    { id: 'p1', ytId: 'VLPLxyz', name: 'Roadtrip', accountId: 'default', tracks: [{ id: 't1', title: 'T1' }, { id: 't1', title: 'T1' }] },
+    { id: 'p2', ytId: 'PLxyz', name: 'Roadtrip', accountId: 'acc1', tracks: [{ id: 't2', title: 'T2' }] }
+  ], 'acc1');
+  assert.strictEqual(plRes.changed, true);
+  assert.strictEqual(plRes.playlists.length, 1);
+  assert.strictEqual(plRes.playlists[0].tracks.length, 2);
+  assert.strictEqual(plRes.playlists[0].accountId, 'acc1');
 });

@@ -184,11 +184,17 @@
     return { tracks: result, added, removed, reordered };
   }
 
+  function normalizeUpstreamId(rawId) {
+    const s = String(rawId || '').trim();
+    if (!s) return '';
+    return s.replace(/^VL(?=(?:PL|LM|OLAK|RDCLAK|UU|FL))/i, '');
+  }
+
   function getEntityIdentityKey(entity, defaultAccountId) {
     const accountId = String((entity && entity.accountId) || defaultAccountId || 'default').trim();
     const rawType = normalizeText(entity && (entity.entityType || entity.type));
     const entityType = rawType.includes('playlist') || rawType.includes('danh sách phát') ? 'playlist' : 'album';
-    const upstreamId = String((entity && (entity.upstreamId || entity.ytId || entity.id)) || '').trim();
+    const upstreamId = normalizeUpstreamId(entity && (entity.upstreamId || entity.ytId || entity.id));
     if (upstreamId) {
       return `${accountId}::${entityType}::id:${upstreamId}`;
     }
@@ -198,45 +204,164 @@
     return `${accountId}::${entityType}::fallback:${title}::${artist}::${year}`;
   }
 
-  function mergeSavedAlbumEntities(existingList, incomingList, accountId) {
-    const result = Array.isArray(existingList) ? existingList.map(x => ({ ...x })) : [];
+  function deduplicateTracks(tracks) {
+    if (!Array.isArray(tracks)) return [];
+    const out = [];
     const indexByKey = new Map();
-    for (let i = 0; i < result.length; i++) {
-      indexByKey.set(getEntityIdentityKey(result[i], result[i].accountId || accountId), i);
+    for (const t of tracks) {
+      if (!t || typeof t !== 'object') continue;
+      const k = getTrackDedupKey(t);
+      if (!k) {
+        out.push(t);
+        continue;
+      }
+      if (indexByKey.has(k)) {
+        const idx = indexByKey.get(k);
+        const prev = out[idx];
+        if (typeof t.addedAt === 'number' && (typeof prev.addedAt !== 'number' || t.addedAt < prev.addedAt)) {
+          out[idx] = { ...prev, addedAt: t.addedAt };
+        }
+        if (!prev.cover && t.cover) out[idx] = { ...out[idx], cover: t.cover };
+      } else {
+        indexByKey.set(k, out.length);
+        out.push(t);
+      }
     }
+    return out;
+  }
+
+  function deduplicatePlaylists(playlists, activeAccountId) {
+    if (!Array.isArray(playlists)) return { playlists: [], changed: false };
+    const out = [];
+    const byYtId = new Map();
+    const byName = new Map();
+    let changed = false;
+
+    for (const rawPl of playlists) {
+      if (!rawPl || typeof rawPl !== 'object') continue;
+      const pl = { ...rawPl };
+      const origLen = Array.isArray(pl.tracks) ? pl.tracks.length : 0;
+      pl.tracks = deduplicateTracks(pl.tracks || []);
+      if (pl.tracks.length !== origLen) changed = true;
+
+      const normYtId = normalizeUpstreamId(pl.ytId);
+      if (normYtId && normYtId !== pl.ytId) {
+        pl.ytId = normYtId;
+        changed = true;
+      }
+      const acc = String(pl.accountId || 'default').trim();
+      const normName = normalizeText(pl.name);
+
+      let targetIdx = -1;
+      if (normYtId) {
+        const idKey = `${acc}::${normYtId}`;
+        const defIdKey = `default::${normYtId}`;
+        if (byYtId.has(idKey)) targetIdx = byYtId.get(idKey);
+        else if (acc !== 'default' && byYtId.has(defIdKey)) targetIdx = byYtId.get(defIdKey);
+        else if (acc === 'default' && activeAccountId && byYtId.has(`${activeAccountId}::${normYtId}`)) {
+          targetIdx = byYtId.get(`${activeAccountId}::${normYtId}`);
+        }
+      }
+      if (targetIdx === -1 && normName) {
+        const nameKey = `${acc}::${normName}`;
+        if (byName.has(nameKey)) {
+          const cand = out[byName.get(nameKey)];
+          const candYt = normalizeUpstreamId(cand.ytId);
+          if (!normYtId || !candYt || normYtId === candYt) {
+            targetIdx = byName.get(nameKey);
+          }
+        }
+      }
+
+      if (targetIdx !== -1) {
+        const prev = out[targetIdx];
+        const mergedTracks = deduplicateTracks([...(prev.tracks || []), ...(pl.tracks || [])]);
+        out[targetIdx] = {
+          ...prev,
+          ytId: prev.ytId || pl.ytId,
+          accountId: (prev.accountId && prev.accountId !== 'default') ? prev.accountId : (pl.accountId || prev.accountId),
+          cover: prev.cover || pl.cover,
+          tracks: mergedTracks
+        };
+        changed = true;
+      } else {
+        const idx = out.length;
+        out.push(pl);
+        if (normYtId) byYtId.set(`${acc}::${normYtId}`, idx);
+        if (normName) byName.set(`${acc}::${normName}`, idx);
+      }
+    }
+    return { playlists: out, changed };
+  }
+
+  function mergeSavedAlbumEntities(existingList, incomingList, accountId) {
+    const result = [];
+    const indexByKey = new Map();
     let added = 0;
     let updated = 0;
 
+    const findExistingIndex = (entity, acc) => {
+      const key = getEntityIdentityKey(entity, acc);
+      if (indexByKey.has(key)) return indexByKey.get(key);
+      const effectiveAcc = String((entity && entity.accountId) || acc || 'default').trim();
+      if (effectiveAcc !== 'default') {
+        const defKey = getEntityIdentityKey({ ...entity, accountId: 'default' }, 'default');
+        if (indexByKey.has(defKey)) return indexByKey.get(defKey);
+      }
+      return -1;
+    };
+
+    const mergeInto = (idx, tagged) => {
+      const prev = result[idx];
+      const next = { ...prev };
+      if (tagged.accountId && tagged.accountId !== 'default') next.accountId = tagged.accountId;
+      if (tagged.title) next.title = tagged.title;
+      if (tagged.artist && !prev.artist) next.artist = tagged.artist;
+      if (tagged.cover) next.cover = tagged.cover;
+      if (tagged.year && !prev.year) next.year = tagged.year;
+      const hasTracks = Array.isArray(tagged.tracks);
+      const isFetchComplete = tagged.failed !== true && tagged.complete !== false && tagged.continuationRemaining !== true;
+      if (hasTracks && isFetchComplete && (tagged.tracks.length > 0 || tagged.complete === true)) {
+        const rec = reconcilePlaylistTracks(prev.tracks || [], tagged.tracks, {
+          complete: tagged.complete,
+          failed: tagged.failed,
+          continuationRemaining: tagged.continuationRemaining
+        });
+        if (!rec.preservedDueToIncompleteFetch) {
+          next.tracks = rec.tracks;
+          const meta = computeAlbumMetadata(rec.tracks);
+          next.trackCount = meta.trackCount;
+          next.totalDurationSec = meta.totalDurationSec;
+        }
+      } else if (Array.isArray(prev.tracks) && prev.tracks.length > 0) {
+        next.tracks = deduplicateTracks(prev.tracks);
+      }
+      if (prev.sortMode) next.sortMode = prev.sortMode;
+      if (prev.addedAt) next.addedAt = prev.addedAt;
+      result[idx] = next;
+      indexByKey.set(getEntityIdentityKey(next, next.accountId || accountId), idx);
+    };
+
+    for (const raw of (Array.isArray(existingList) ? existingList : [])) {
+      if (!raw || typeof raw !== 'object') continue;
+      const item = { ...raw };
+      if (Array.isArray(item.tracks)) item.tracks = deduplicateTracks(item.tracks);
+      const idx = findExistingIndex(item, item.accountId || accountId);
+      if (idx !== -1) {
+        mergeInto(idx, item);
+      } else {
+        const newIdx = result.length;
+        result.push(item);
+        indexByKey.set(getEntityIdentityKey(item, item.accountId || accountId), newIdx);
+      }
+    }
+
     for (const inc of (Array.isArray(incomingList) ? incomingList : [])) {
       const tagged = { ...inc, accountId: inc.accountId || accountId || 'default' };
-      const key = getEntityIdentityKey(tagged, accountId);
-      if (indexByKey.has(key)) {
-        const idx = indexByKey.get(key);
-        const prev = result[idx];
-        const next = { ...prev };
-        if (tagged.title) next.title = tagged.title;
-        if (tagged.artist && !prev.artist) next.artist = tagged.artist;
-        if (tagged.cover) next.cover = tagged.cover;
-        if (tagged.year && !prev.year) next.year = tagged.year;
-        const hasTracks = Array.isArray(tagged.tracks);
-        const isFetchComplete = tagged.failed !== true && tagged.complete !== false && tagged.continuationRemaining !== true;
-        if (hasTracks && isFetchComplete && (tagged.tracks.length > 0 || tagged.complete === true)) {
-          const rec = reconcilePlaylistTracks(prev.tracks || [], tagged.tracks, {
-            complete: tagged.complete,
-            failed: tagged.failed,
-            continuationRemaining: tagged.continuationRemaining
-          });
-          if (!rec.preservedDueToIncompleteFetch) {
-            next.tracks = rec.tracks;
-            const meta = computeAlbumMetadata(rec.tracks);
-            next.trackCount = meta.trackCount;
-            next.totalDurationSec = meta.totalDurationSec;
-          }
-        }
-        // Preserve user local preferences (e.g., sortMode, addedAt)
-        if (prev.sortMode) next.sortMode = prev.sortMode;
-        if (prev.addedAt) next.addedAt = prev.addedAt;
-        result[idx] = next;
+      if (Array.isArray(tagged.tracks)) tagged.tracks = deduplicateTracks(tagged.tracks);
+      const idx = findExistingIndex(tagged, accountId);
+      if (idx !== -1) {
+        mergeInto(idx, tagged);
         updated++;
       } else {
         const meta = Array.isArray(tagged.tracks) && tagged.tracks.length > 0
@@ -246,8 +371,9 @@
           tagged.trackCount = meta.trackCount;
           tagged.totalDurationSec = meta.totalDurationSec;
         }
+        const newIdx = result.length;
         result.push(tagged);
-        indexByKey.set(key, result.length - 1);
+        indexByKey.set(getEntityIdentityKey(tagged, accountId), newIdx);
         added++;
       }
     }
@@ -398,7 +524,10 @@
     formatAlbumMetaLine,
     extractVersionTags,
     getTrackDedupKey,
+    deduplicateTracks,
+    deduplicatePlaylists,
     reconcilePlaylistTracks,
+    normalizeUpstreamId,
     getEntityIdentityKey,
     mergeSavedAlbumEntities,
     createLibrarySyncCoordinator

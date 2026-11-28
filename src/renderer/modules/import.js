@@ -2125,16 +2125,27 @@ async function autoSyncYtmLibraryOnLogin(account, opts) {
     }
 
     if (playlists.length > 0) {
+      const normPlId = (raw) => (syncEngine && typeof syncEngine.normalizeUpstreamId === 'function')
+        ? syncEngine.normalizeUpstreamId(raw)
+        : String(raw || '').trim().replace(/^VL(?=(?:PL|LM|OLAK|RDCLAK|UU|FL))/i, '');
       for (const pl of playlists) {
-        const plTracks = pl.tracks || [];
+        const rawPlTracks = pl.tracks || [];
+        const plTracks = (syncEngine && typeof syncEngine.deduplicateTracks === 'function')
+          ? syncEngine.deduplicateTracks(rawPlTracks)
+          : rawPlTracks;
+        const plYtId = normPlId(pl.id);
         const normName = (pl.name || '').trim().toLowerCase();
-        // P1-2: Match by accountId + upstream ID; fallback requires matching accountId + entity type
-        const existingPl = state.playlists.find(p =>
-          (pl.id && p.ytId && p.ytId === pl.id && (p.accountId || 'default') === activeYtmAccountId) ||
-          (!pl.id && !p.ytId && (p.accountId || 'default') === activeYtmAccountId && normName && (p.name || '').trim().toLowerCase() === normName)
-        );
+        // P1-2: Match by normalized upstream ID (migrating 'default' -> activeYtmAccountId) or fallback name
+        const existingPl = state.playlists.find(p => {
+          const pAcc = p.accountId || 'default';
+          const accMatch = pAcc === activeYtmAccountId || pAcc === 'default';
+          const pYtId = normPlId(p.ytId);
+          if (plYtId && pYtId && pYtId === plYtId && accMatch) return true;
+          if ((!plYtId || !pYtId) && accMatch && normName && (p.name || '').trim().toLowerCase() === normName) return true;
+          return false;
+        });
         if (existingPl) {
-          if (pl.id) existingPl.ytId = pl.id;
+          if (plYtId) existingPl.ytId = plYtId;
           existingPl.accountId = activeYtmAccountId;
           if (pl.cover) existingPl.cover = pl.cover;
           if (syncEngine) {
@@ -2161,13 +2172,14 @@ async function autoSyncYtmLibraryOnLogin(account, opts) {
         } else {
           const created = typeof createPlaylist === 'function' ? createPlaylist(pl.name, plTracks, pl.cover || '') : null;
           if (created) {
-            if (pl.id) created.ytId = pl.id;
+            if (plYtId) created.ytId = plYtId;
             created.accountId = activeYtmAccountId;
           }
           addedPlaylists++;
           addedTracks += plTracks.length;
         }
       }
+      if (typeof deduplicateLibraryData === 'function') deduplicateLibraryData({ silent: true });
       localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists));
       if (typeof renderPlaylistsList === 'function') renderPlaylistsList();
     }
@@ -2930,12 +2942,23 @@ async function handleGoogleLoginImport() {
     }
 
     if (playlists.length > 0) {
+      const syncEngine = window.EclipseAlbumSyncEngine || null;
+      const normPlId = (raw) => (syncEngine && typeof syncEngine.normalizeUpstreamId === 'function')
+        ? syncEngine.normalizeUpstreamId(raw)
+        : String(raw || '').trim().replace(/^VL(?=(?:PL|LM|OLAK|RDCLAK|UU|FL))/i, '');
       for (const pl of playlists) {
-        const plTracks = pl.tracks || [];
+        const rawPlTracks = pl.tracks || [];
+        const plTracks = (syncEngine && typeof syncEngine.deduplicateTracks === 'function')
+          ? syncEngine.deduplicateTracks(rawPlTracks)
+          : rawPlTracks;
         if (targetPlId !== 'new') {
           const targetPl = state.playlists.find(p => p.id === targetPlId);
           if (targetPl) {
+            const existingKeys = new Set((targetPl.tracks || []).map(t => syncEngine ? syncEngine.getTrackDedupKey(t) : (t.id || t.url || t.title)));
             for (const t of plTracks) {
+              const k = syncEngine ? syncEngine.getTrackDedupKey(t) : (t.id || t.url || t.title);
+              if (k && existingKeys.has(k)) continue;
+              if (k) existingKeys.add(k);
               targetPl.tracks.push(stampAddedAt(t));
               importedCount++;
               updateProgress(importedCount);
@@ -2948,17 +2971,21 @@ async function handleGoogleLoginImport() {
             hydrateMissingPlaylistCovers(targetPl);
           }
         } else {
+          const plYtId = normPlId(pl.id);
           const normName = (pl.name || '').trim().toLowerCase();
           const accId = (res && res.accountId) ? String(res.accountId) : activeYtmAccountId;
-          const existingPl = state.playlists.find(p =>
-            (pl.id && p.ytId && p.ytId === pl.id && (p.accountId || 'default') === accId) ||
-            (!pl.id && !p.ytId && (p.accountId || 'default') === accId && normName && (p.name || '').trim().toLowerCase() === normName)
-          );
+          const existingPl = state.playlists.find(p => {
+            const pAcc = p.accountId || 'default';
+            const accMatch = pAcc === accId || pAcc === 'default';
+            const pYtId = normPlId(p.ytId);
+            if (plYtId && pYtId && pYtId === plYtId && accMatch) return true;
+            if ((!plYtId || !pYtId) && accMatch && normName && (p.name || '').trim().toLowerCase() === normName) return true;
+            return false;
+          });
           if (existingPl) {
-            if (pl.id) existingPl.ytId = pl.id;
+            if (plYtId) existingPl.ytId = plYtId;
             existingPl.accountId = accId;
             if (pl.cover && !existingPl.cover) existingPl.cover = pl.cover;
-            const syncEngine = window.EclipseAlbumSyncEngine;
             if (syncEngine && typeof syncEngine.reconcilePlaylistTracks === 'function') {
               const rec = syncEngine.reconcilePlaylistTracks(
                 existingPl.tracks || [],
@@ -2986,7 +3013,7 @@ async function handleGoogleLoginImport() {
           } else {
             const created = createPlaylist(pl.name, plTracks, pl.cover || '');
             if (created) {
-              if (pl.id) created.ytId = pl.id;
+              if (plYtId) created.ytId = plYtId;
               created.accountId = accId;
               localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists));
             }
@@ -3036,11 +3063,12 @@ async function handleGoogleLoginImport() {
       if (syncEngine && typeof syncEngine.mergeSavedAlbumEntities === 'function') {
         const merged = syncEngine.mergeSavedAlbumEntities(currentSaved, incomingEntities, accId);
         if (merged.added > 0 || merged.updated > 0) {
-          setSavedAlbums(merged.albums);
+          setSavedAlbums(merged.list);
           if (state.currentView === 'albums') renderSavedAlbums();
           updateAlbumsCount();
         }
       }
+      if (typeof deduplicateLibraryData === 'function') deduplicateLibraryData({ silent: true });
     } catch (errSaveAlbums) {
       console.warn('[handleGoogleLoginImport] failed saving albums:', errSaveAlbums);
     }

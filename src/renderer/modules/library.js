@@ -2521,12 +2521,17 @@ enableTrackSort({
 
 function createPlaylist(name, initialTracks = [], cover = '') {
   if (!name || !name.trim()) return;
+  const syncEngine = window.EclipseAlbumSyncEngine || null;
+  const rawTracks = Array.isArray(initialTracks)
+    ? initialTracks.map(t => (t && typeof t.addedAt === 'number') ? t : stampAddedAt(t))
+    : [];
+  const dedupedTracks = (syncEngine && typeof syncEngine.deduplicateTracks === 'function')
+    ? syncEngine.deduplicateTracks(rawTracks)
+    : rawTracks;
   const newPl = {
     id: 'pl_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
     name: name.trim(),
-    tracks: Array.isArray(initialTracks)
-      ? initialTracks.map(t => (t && typeof t.addedAt === 'number') ? t : stampAddedAt(t))
-      : []
+    tracks: dedupedTracks
   };
   if (cover && typeof cover === 'string' && cover.trim()) {
     newPl.cover = cover.trim();
@@ -2904,4 +2909,70 @@ function openAddToPlaylistModal(track) {
     });
   }
   if (el.addToPlaylistModal) openModal(el.addToPlaylistModal);
+}
+
+function deduplicateLibraryData({ silent = true } = {}) {
+  const syncEngine = window.EclipseAlbumSyncEngine || null;
+  if (!syncEngine) return { playlistsChanged: false, favoritesChanged: false, albumsChanged: false };
+
+  let playlistsChanged = false;
+  let favoritesChanged = false;
+  let albumsChanged = false;
+
+  if (Array.isArray(state.favorites) && typeof syncEngine.deduplicateTracks === 'function') {
+    const dedupFavs = syncEngine.deduplicateTracks(state.favorites);
+    if (dedupFavs.length !== state.favorites.length) {
+      state.favorites = dedupFavs;
+      favoritesChanged = true;
+      try {
+        localStorage.setItem('devsize_favorites', JSON.stringify(state.favorites.map(sanitizeTrackForStorage)));
+      } catch (_) {}
+      if (typeof updateFavoritesBadge === 'function') updateFavoritesBadge();
+      if (typeof updateFavoriteIcon === 'function') updateFavoriteIcon();
+      if (state.currentView === 'favorites' && typeof renderFavoritesView === 'function') renderFavoritesView();
+    }
+  }
+
+  if (Array.isArray(state.playlists) && typeof syncEngine.deduplicatePlaylists === 'function') {
+    const accId = typeof activeYtmAccountId !== 'undefined' ? activeYtmAccountId : 'default';
+    const res = syncEngine.deduplicatePlaylists(state.playlists, accId);
+    if (res.changed) {
+      state.playlists = res.playlists;
+      playlistsChanged = true;
+      try { localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists)); } catch (_) {}
+      if (typeof renderPlaylistsList === 'function') renderPlaylistsList();
+      if (state.currentView === 'playlist-detail' && state.currentPlaylistId && typeof openPlaylistDetail === 'function') {
+        openPlaylistDetail(state.currentPlaylistId);
+      }
+    }
+  }
+
+  if (typeof getSavedAlbums === 'function' && typeof setSavedAlbums === 'function' && typeof syncEngine.mergeSavedAlbumEntities === 'function') {
+    const currentAlbums = getSavedAlbums();
+    if (Array.isArray(currentAlbums) && currentAlbums.length > 0) {
+      const accId = typeof activeYtmAccountId !== 'undefined' ? activeYtmAccountId : 'default';
+      const merged = syncEngine.mergeSavedAlbumEntities(currentAlbums, [], accId);
+      const trackCountChanged = merged.list.some((a, i) => {
+        const prev = currentAlbums[i];
+        return !prev || (Array.isArray(a.tracks) && Array.isArray(prev.tracks) && a.tracks.length !== prev.tracks.length);
+      });
+      if (merged.list.length !== currentAlbums.length || trackCountChanged) {
+        setSavedAlbums(merged.list);
+        albumsChanged = true;
+        if (state.currentView === 'albums' && typeof renderSavedAlbums === 'function') renderSavedAlbums();
+      }
+    }
+  }
+
+  if (!silent && (playlistsChanged || favoritesChanged || albumsChanged) && typeof showToast === 'function') {
+    showToast('Cleaned up duplicate tracks, playlists, and albums.', 'success');
+  }
+  return { playlistsChanged, favoritesChanged, albumsChanged };
+}
+
+if (typeof window !== 'undefined') {
+  window.deduplicateLibraryData = deduplicateLibraryData;
+  setTimeout(() => {
+    try { deduplicateLibraryData({ silent: true }); } catch (_) {}
+  }, 800);
 }
