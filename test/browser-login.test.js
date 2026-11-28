@@ -338,7 +338,7 @@ test('19: modal-backdrop class and visible/hidden state transition', () => {
   const fs = require('fs');
   const path = require('path');
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/index.html'), 'utf8');
-  const appJs = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+  const appJs = fs.readFileSync(path.join(__dirname, '../src/renderer/modules/import.js'), 'utf8');
   const css = fs.readFileSync(path.join(__dirname, '../src/renderer/styles.css'), 'utf8');
 
   // 1. #browser-login-dialog must use modal-backdrop hidden
@@ -465,7 +465,7 @@ test('23: 3 stages rendered, 6 instructions present, prerequisites gating Start 
   const fs = require('fs');
   const path = require('path');
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/index.html'), 'utf8');
-  const appJs = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+  const appJs = fs.readFileSync(path.join(__dirname, '../src/renderer/modules/import.js'), 'utf8');
 
   // Verify 3 stages rendered in DOM
   assert.ok(html.includes('id="stage-get-extension"'), 'Stage 1 must exist');
@@ -492,7 +492,7 @@ test('23: 3 stages rendered, 6 instructions present, prerequisites gating Start 
 test('24: Copy Port, Nonce, All Details formatting', () => {
   const fs = require('fs');
   const path = require('path');
-  const appJs = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+  const appJs = fs.readFileSync(path.join(__dirname, '../src/renderer/modules/import.js'), 'utf8');
 
   assert.ok(appJs.includes('btnCopyPairingPort'), 'btnCopyPairingPort handler must exist');
   assert.ok(appJs.includes('btnCopyPairingNonce'), 'btnCopyPairingNonce handler must exist');
@@ -509,7 +509,7 @@ test('24: Copy Port, Nonce, All Details formatting', () => {
 test('25: Timeout 120s expiry and cancel clearing session', () => {
   const fs = require('fs');
   const path = require('path');
-  const appJs = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+  const appJs = fs.readFileSync(path.join(__dirname, '../src/renderer/modules/import.js'), 'utf8');
 
   // Verify 120s timer logic using expiresAt timestamp
   assert.ok(appJs.includes('startPairingTimer(res.expiresAt)'), 'startPairingFlow must pass expiresAt to timer');
@@ -705,7 +705,7 @@ test('28 (P1-3 Behavioral): Prerequisite guard blocks startExtensionPairingFlow 
   assert.equal(allReady.allowed, true);
 
   // 6. Verify Browser Profiles click does NOT bypass guard
-  const appJs = require('fs').readFileSync(require('path').join(__dirname, '../src/renderer/app.js'), 'utf8');
+  const appJs = require('fs').readFileSync(require('path').join(__dirname, '../src/renderer/modules/import.js'), 'utf8');
   assert.ok(
     !appJs.includes("btnConnect.addEventListener('click', async () => {\n              if (p.requiresExtension) {\n                switchBrowserLoginTab('extension');\n                startExtensionPairingFlow();"),
     'Browser Profiles must NOT call startExtensionPairingFlow() directly upon click'

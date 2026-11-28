@@ -135,7 +135,10 @@ describe('Fast-Start Quality Policy & Rolling One-Track-Ahead Preload', () => {
       assert.strictEqual(audioA.paused, false);
 
       // Scenario 11: Normal playback uses configuredQuality directly without Low override
-      const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+      const appSrc = [
+      fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8'),
+      fs.readFileSync(path.join(__dirname, '../src/renderer/modules/settings-ui.js'), 'utf8')
+    ].join('\n');
       assert.doesNotMatch(appSrc, /isFastStartQuality\s*\(/);
       assert.match(appSrc, /fetchStreamInfoWithRetry\(configuredQuality\)/);
     } finally {
@@ -208,7 +211,11 @@ describe('Fast-Start Quality Policy & Rolling One-Track-Ahead Preload', () => {
   });
 
   test('8 & 12: Tempo Synced candidate selection & rolling one-track-ahead wiring in app.js + integration-bridge.js', () => {
-    const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+    const appSrc = [
+      fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8'),
+      fs.readFileSync(path.join(__dirname, '../src/renderer/modules/settings-ui.js'), 'utf8')
+    ].join('\n');
+    const librarySrc = fs.readFileSync(path.join(__dirname, '../src/renderer/modules/library.js'), 'utf8');
     const bridgeSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/integration-bridge.js'), 'utf8');
 
     // Tempo Synced candidate used via NextTrackCoordinator in both app.js rolling preload and integration-bridge early preload
@@ -216,7 +223,7 @@ describe('Fast-Start Quality Policy & Rolling One-Track-Ahead Preload', () => {
     assert.match(bridgeSrc, /const coord = window\._eclipseNextTrackCoordinator;[\s\S]*?coord\.reserve\(\)[\s\S]*?preloadManager\.prepareNextTrack\(preloadTarget,\s*auxAudio,\s*curQuality\)/);
 
     // No secondNext batch prefetching in prefetchUpcomingQueueStreams
-    const upcomingFn = appSrc.slice(appSrc.indexOf('function prefetchUpcomingQueueStreams()'), appSrc.indexOf('// === ECLIPSE MERGE: OFFLINE MODE ==='));
+    const upcomingFn = librarySrc.slice(librarySrc.indexOf('function prefetchUpcomingQueueStreams()'), librarySrc.indexOf('// Offline mode'));
     assert.doesNotMatch(upcomingFn, /secondNext/);
 
     // Authoritative quality: normal playback, retry, and preload all use configuredQuality

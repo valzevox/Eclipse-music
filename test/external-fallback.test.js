@@ -526,7 +526,10 @@ test('LoginWindow + ExternalSessionService: verifies before persisting and never
 
 test('Renderer & Main: Connection Center state machine/consent/disconnect exist and Library Importer is untouched', () => {
   const html = fs.readFileSync(path.join(ROOT_DIR, 'src/renderer/index.html'), 'utf8');
-  const appJs = fs.readFileSync(path.join(ROOT_DIR, 'src/renderer/app.js'), 'utf8');
+  const appJs = [
+    fs.readFileSync(path.join(ROOT_DIR, 'src/renderer/app.js'), 'utf8'),
+    fs.readFileSync(path.join(ROOT_DIR, 'src/renderer/modules/import.js'), 'utf8')
+  ].join('\n');
   const mainJs = fs.readFileSync(path.join(ROOT_DIR, 'src/main/main.js'), 'utf8');
 
   // Connection Center UI controls

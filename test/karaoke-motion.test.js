@@ -931,22 +931,22 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
     const fs = require('node:fs');
     const path = require('node:path');
     const vm = require('node:vm');
-    const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+    const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/modules/visualizer.js'), 'utf8');
 
     // Verify single-per-frame computation before sCtx/tCtx branches
     assert.match(appSrc, /const frameRainbowBlend = updateAutomixRainbowBlend\(frameNowMs\);/);
     const blendCalls = appSrc.match(/updateAutomixRainbowBlend\(/g) || [];
     assert.strictEqual(blendCalls.length, 2, 'updateAutomixRainbowBlend should only be defined once and called once per frame');
 
-    const startIdx = appSrc.indexOf('const reducedMotionMql =');
+    const startIdx = appSrc.indexOf('var reducedMotionMql =');
     const endIdx = appSrc.indexOf('function resizeCanvases()');
     assert.ok(startIdx > 0 && endIdx > startIdx);
     const snippet = appSrc.slice(startIdx, endIdx);
 
     const sandbox = { window: env.window, document: env.document, Math };
     vm.runInNewContext(snippet, sandbox);
-    const updateBlend = env.window._eclipseUpdateAutomixRainbowBlend;
-    const strokeWave = env.window._eclipseSeekbarStroke;
+    const updateBlend = env.window._eclipseUpdateAutomixRainbowBlend || sandbox.updateAutomixRainbowBlend;
+    const strokeWave = env.window._eclipseSeekbarStroke || sandbox.strokeSeekbarWave;
     assert.strictEqual(typeof updateBlend, 'function');
     assert.strictEqual(typeof strokeWave, 'function');
 
@@ -1019,7 +1019,7 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
     const fs = require('node:fs');
     const path = require('node:path');
     const cssSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/styles.css'), 'utf8');
-    const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+    const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/modules/visualizer.js'), 'utf8');
 
     // CSS centering, inline time labels & responsive width
     assert.match(cssSrc, /\.tvk-progress-row\s*\{[^}]*width:\s*clamp\(240px,\s*30vw,\s*420px\);[^}]*margin:\s*6px auto 0;/s);
@@ -1043,13 +1043,18 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
     const fs = require('node:fs');
     const path = require('node:path');
     const vm = require('node:vm');
-    const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+    const vizSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/modules/visualizer.js'), 'utf8');
+    const appSrc = [
+      fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8'),
+      vizSrc,
+      fs.readFileSync(path.join(__dirname, '../src/renderer/modules/lyrics.js'), 'utf8')
+    ].join('\n');
 
     // Extract syncTvkTimeDisplay and execute against mock DOM
-    const startIdx = appSrc.indexOf('function syncTvkTimeDisplay(');
-    const endIdx = appSrc.indexOf('function resizeCanvases()');
+    const startIdx = vizSrc.indexOf('function syncTvkTimeDisplay(');
+    const endIdx = vizSrc.indexOf('function resizeCanvases()');
     assert.ok(startIdx > 0 && endIdx > startIdx);
-    const snippet = appSrc.slice(startIdx, endIdx);
+    const snippet = vizSrc.slice(startIdx, endIdx);
 
     const tvkTimeCurrent = env.document.createElement('span');
     const tvkTimeDuration = env.document.createElement('span');
@@ -1071,7 +1076,7 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
       el: { tvkTimeCurrent, tvkTimeDuration }
     };
     vm.runInNewContext(snippet, sandbox);
-    const syncTvkTimeDisplay = env.window._eclipseSyncTvkTimeDisplay;
+    const syncTvkTimeDisplay = env.window._eclipseSyncTvkTimeDisplay || sandbox.syncTvkTimeDisplay;
     assert.strictEqual(typeof syncTvkTimeDisplay, 'function');
 
     // 1. Track change reset
@@ -1102,7 +1107,7 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
     const fs = require('node:fs');
     const path = require('node:path');
     const flHtml = fs.readFileSync(path.join(__dirname, '../src/renderer/floating-lyrics.html'), 'utf8');
-    const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
+    const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/modules/lyrics.js'), 'utf8');
 
     // Compact wavy canvas & pointer-capture scrubber in floating-lyrics.html
     assert.match(flHtml, /id="mini-scrubber-track"/);

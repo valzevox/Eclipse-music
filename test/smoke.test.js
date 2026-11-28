@@ -178,9 +178,9 @@ test('Spotify library reports skipped playlists and rejects malformed pages', as
 });
 
 test('renderer requires consent before importing a partial Spotify library', async () => {
-  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
-  const start = source.indexOf('  async function handleSpotifyLoginImport()');
-  const end = source.indexOf('  async function handleSpotifyImportAction()', start);
+  const source = fs.readFileSync(path.join(__dirname, '../src/renderer/modules/import.js'), 'utf8');
+  const start = source.indexOf('async function handleSpotifyLoginImport()');
+  const end = source.indexOf('async function handleSpotifyImportAction()', start);
   assert.ok(start > 0 && end > start);
   let approved = false;
   let imported = null;
