@@ -6,7 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 
-const { EclipsePreloadManager } = require('../src/renderer/preload-manager');
+const { EclipsePreloadManager } = require('../src/renderer/audio/preload-manager');
 const { PreloadManager } = require('../src/renderer/automix/preload-manager');
 
 test('Warm-up Bounds: accepts valid 206, rejects HTTP 200 multi-MB, bad Content-Range, and empty responses', async () => {

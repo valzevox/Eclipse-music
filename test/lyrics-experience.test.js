@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const path = require('node:path');
 const fs = require('node:fs');
 
-const LyricsCardGenerator = require('../src/renderer/lyrics-card.js');
+const LyricsCardGenerator = require('../src/renderer/lyrics/lyrics-card.js');
 
 describe('Fullscreen Lyrics & Karaoke Parity Unit Tests', () => {
   test('P0 & P1: LyricsCardGenerator exports valid SVG markup with escapeXml', () => {

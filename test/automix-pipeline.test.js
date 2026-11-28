@@ -12,7 +12,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
 
-const AutoMixDJ = require('../src/renderer/automix-dj.js');
+const AutoMixDJ = require('../src/renderer/automix/automix-dj.js');
 const { PlaybackHandover } = require('../src/renderer/automix/playback-handover.js');
 const { TrackAnalyzer } = require('../src/renderer/automix/track-analyzer.js');
 const { TransitionPlanner } = require('../src/renderer/automix/transition-planner.js');

@@ -20,7 +20,7 @@ const {
 } = require('../src/server/server');
 const { Priority } = require('../src/server/network-scheduler');
 const { parseRangeHeader } = require('../src/server/range-cache');
-const { EclipsePreloadManager } = require('../src/renderer/preload-manager');
+const { EclipsePreloadManager } = require('../src/renderer/audio/preload-manager');
 const { PreloadManager } = require('../src/renderer/automix/preload-manager');
 
 function sleep(ms) {

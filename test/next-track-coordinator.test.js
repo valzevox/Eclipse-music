@@ -4,8 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 
-const { NextTrackCoordinator } = require('../src/renderer/next-track-coordinator.js');
-const AutoMixDJ = require('../src/renderer/automix-dj.js');
+const { NextTrackCoordinator } = require('../src/renderer/audio/next-track-coordinator.js');
+const AutoMixDJ = require('../src/renderer/automix/automix-dj.js');
 const { PreloadManager } = require('../src/renderer/automix/preload-manager.js');
 
 function makeQueue() {
@@ -279,7 +279,7 @@ describe('NextTrackCoordinator — Shuffle, AutoMix DJ & Fast-Start Unified Sele
 
   test('12. Wiring check: app.js and integration-bridge.js share NextTrackCoordinator without duplicate selection', () => {
     const appSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/app.js'), 'utf8');
-    const bridgeSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/integration-bridge.js'), 'utf8');
+    const bridgeSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/ui/integration-bridge.js'), 'utf8');
 
     assert.match(appSrc, /window\._eclipseNextTrackCoordinator = nextTrackCoordinator/);
     assert.match(appSrc, /const plan = await nextTrackCoordinator\.reserve\(\);\s*const committed = plan \? nextTrackCoordinator\.commit\(plan\.token\) : null;/);

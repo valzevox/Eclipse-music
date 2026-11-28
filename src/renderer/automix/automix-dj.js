@@ -6,7 +6,7 @@
 
   const _suppressionMod = (typeof module !== 'undefined' && module.exports)
     ? (function() {
-        try { return require('./automix/suppression-controller'); }
+        try { return require('./suppression-controller'); }
         catch (_) { return { getVolumeSyncSuppression: () => null }; }
       })()
     : { getVolumeSyncSuppression: () => (typeof window !== 'undefined' && window.volumeSyncSuppression ? window.volumeSyncSuppression : null) };

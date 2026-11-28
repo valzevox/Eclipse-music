@@ -1,8 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const MvSyncController = require('../src/renderer/mv-sync-controller');
-const { IFrameEngine } = require('../src/renderer/mv-player');
+const MvSyncController = require('../src/renderer/mv/mv-sync-controller');
+const { IFrameEngine } = require('../src/renderer/mv/mv-player');
 
 function createMockAudio({ paused = false, currentTime = 10 } = {}) {
   return {

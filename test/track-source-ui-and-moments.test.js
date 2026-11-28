@@ -1,8 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const trackSourceUI = require('../src/renderer/track-source-ui');
-const topMoments = require('../src/renderer/top-moments');
+const trackSourceUI = require('../src/renderer/audio/track-source-ui');
+const topMoments = require('../src/renderer/audio/top-moments');
 
 test('bulkResearchPlaylistTracks: skips local files, bounds concurrency to 3, preserves currentTrackId, and saves source', async () => {
   let active = 0;

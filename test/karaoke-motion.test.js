@@ -177,8 +177,8 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
   beforeEach(() => {
     env = setupMockEnvironment();
     // Re-require fresh controller
-    delete require.cache[require.resolve('../src/renderer/karaoke-motion.js')];
-    const mod = require('../src/renderer/karaoke-motion.js');
+    delete require.cache[require.resolve('../src/renderer/lyrics/karaoke-motion.js')];
+    const mod = require('../src/renderer/lyrics/karaoke-motion.js');
     KaraokeMotionController = mod.KaraokeMotionController;
   });
 
@@ -441,8 +441,8 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
     env.window.addEventListener('eclipse:automix-state', onState);
 
     // Instantiate AutoMixDJ
-    delete require.cache[require.resolve('../src/renderer/automix-dj.js')];
-    const AutoMixDJ = require('../src/renderer/automix-dj.js');
+    delete require.cache[require.resolve('../src/renderer/automix/automix-dj.js')];
+    const AutoMixDJ = require('../src/renderer/automix/automix-dj.js');
     const dj = new AutoMixDJ();
 
     // Mock an active crossfade with transitionId
@@ -475,8 +475,8 @@ describe('KaraokeMotionController Unit & Integration Pipeline', () => {
   });
 
   test('P2 Outcome Classification: distinguishes cancelled (pause/seek/skip/mode) from error', () => {
-    delete require.cache[require.resolve('../src/renderer/automix-dj.js')];
-    const AutoMixDJ = require('../src/renderer/automix-dj.js');
+    delete require.cache[require.resolve('../src/renderer/automix/automix-dj.js')];
+    const AutoMixDJ = require('../src/renderer/automix/automix-dj.js');
     const dj = new AutoMixDJ();
 
     const cancellationCases = ['pause', 'seek', 'skip', 'manual', 'user_cancelled', 'user_skipped', 'queue_replaced', 'mode_change'];

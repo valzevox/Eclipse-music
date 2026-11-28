@@ -5,7 +5,7 @@ const path = require('node:path');
 const http = require('node:http');
 
 const { PreloadManager } = require('../src/renderer/automix/preload-manager.js');
-const { EclipsePreloadManager } = require('../src/renderer/preload-manager.js');
+const { EclipsePreloadManager } = require('../src/renderer/audio/preload-manager.js');
 
 function createMockAudioElement() {
   const listeners = new Map();
@@ -216,7 +216,7 @@ describe('Fast-Start Quality Policy & Rolling One-Track-Ahead Preload', () => {
       fs.readFileSync(path.join(__dirname, '../src/renderer/modules/settings-ui.js'), 'utf8')
     ].join('\n');
     const librarySrc = fs.readFileSync(path.join(__dirname, '../src/renderer/modules/library.js'), 'utf8');
-    const bridgeSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/integration-bridge.js'), 'utf8');
+    const bridgeSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/ui/integration-bridge.js'), 'utf8');
 
     // Tempo Synced candidate used via NextTrackCoordinator in both app.js rolling preload and integration-bridge early preload
     assert.match(appSrc, /async function resolveNextPreloadTarget\(\)[\s\S]*?nextTrackCoordinator\.reserve\(\)/);

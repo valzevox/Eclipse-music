@@ -65,7 +65,7 @@ test('2. Two-way cloud sync methods on YtmAuthManager', () => {
 });
 
 test('3. EclipseAudioEngine Multi-Tap Echo Delay & Sleep Timer Cosine Fade (sleepFadeGain)', () => {
-  const audioCode = fs.readFileSync(path.join(__dirname, '../src/renderer/audio.js'), 'utf8');
+  const audioCode = fs.readFileSync(path.join(__dirname, '../src/renderer/audio/audio.js'), 'utf8');
 
   // Verify Echo Delay nodes and methods
   assert.ok(audioCode.includes('this.sleepFadeGain = null;'), 'sleepFadeGain property declared');
@@ -82,7 +82,7 @@ test('3. EclipseAudioEngine Multi-Tap Echo Delay & Sleep Timer Cosine Fade (slee
 });
 
 test('4. AutoEqManager.applyToAudioEngine and expanded profile search', () => {
-  const { AutoEqManager, POPULAR_HEADPHONES } = require('../src/renderer/auto-eq');
+  const { AutoEqManager, POPULAR_HEADPHONES } = require('../src/renderer/audio/auto-eq');
   assert.strictEqual(typeof AutoEqManager, 'function');
   assert.ok(Array.isArray(POPULAR_HEADPHONES) && POPULAR_HEADPHONES.length >= 40);
 
@@ -96,7 +96,7 @@ test('4. AutoEqManager.applyToAudioEngine and expanded profile search', () => {
 });
 
 test('5. AutoMixDJ.shouldSkipCrossfade & structure offsets', () => {
-  const AutoMixDJ = require('../src/renderer/automix-dj');
+  const AutoMixDJ = require('../src/renderer/automix/automix-dj');
   assert.strictEqual(typeof AutoMixDJ, 'function');
 
   const dj = new AutoMixDJ();
@@ -114,7 +114,7 @@ test('5. AutoMixDJ.shouldSkipCrossfade & structure offsets', () => {
 });
 
 test('6. SmartDownloadManager.isWifiConnection on Desktop (type === undefined)', async () => {
-  const { SmartDownloadManager } = require('../src/renderer/smart-downloads');
+  const { SmartDownloadManager } = require('../src/renderer/library/smart-downloads');
   assert.strictEqual(typeof SmartDownloadManager.isWifiConnection, 'function');
 
   const desktopNav = { onLine: true, connection: { type: undefined, saveData: false } };
@@ -125,7 +125,7 @@ test('6. SmartDownloadManager.isWifiConnection on Desktop (type === undefined)',
 });
 
 test('7. SongDnaManager dynamic port & modal rendering', () => {
-  const { SongDnaManager } = require('../src/renderer/song-dna');
+  const { SongDnaManager } = require('../src/renderer/features/song-dna');
   assert.strictEqual(typeof SongDnaManager, 'function');
 
   const manager = new SongDnaManager();
@@ -136,7 +136,7 @@ test('7. SongDnaManager dynamic port & modal rendering', () => {
 });
 
 test('8. ListenTogetherRoom real LAN/relay networking methods', () => {
-  const listenTogetherCode = fs.readFileSync(path.join(__dirname, '../src/renderer/listen-together.js'), 'utf8');
+  const listenTogetherCode = fs.readFileSync(path.join(__dirname, '../src/renderer/features/listen-together.js'), 'utf8');
 
   assert.ok(listenTogetherCode.includes('/api/sync-room/create'), 'createRoom endpoint wired');
   assert.ok(listenTogetherCode.includes('/api/sync-room/join'), 'joinRoom endpoint wired');
@@ -146,7 +146,7 @@ test('8. ListenTogetherRoom real LAN/relay networking methods', () => {
 });
 
 test('9. EclipseAnalyticsManager & EclipseFrameGovernor', () => {
-  const { EclipseAnalyticsManager } = require('../src/renderer/eclipse-analytics');
+  const { EclipseAnalyticsManager } = require('../src/renderer/features/eclipse-analytics');
   assert.strictEqual(typeof EclipseAnalyticsManager, 'function');
 
   const analytics = new EclipseAnalyticsManager();
@@ -156,7 +156,7 @@ test('9. EclipseAnalyticsManager & EclipseFrameGovernor', () => {
   assert.strictEqual(typeof analytics.renderSonicRadarSvg, 'function');
   assert.strictEqual(typeof analytics.determineSonicPersona, 'function');
 
-  const { EclipseFrameGovernor, redactSensitiveTokens } = require('../src/renderer/frame-governor');
+  const { EclipseFrameGovernor, redactSensitiveTokens } = require('../src/renderer/ui/frame-governor');
   assert.strictEqual(typeof EclipseFrameGovernor, 'function');
   assert.strictEqual(typeof redactSensitiveTokens, 'function');
 
@@ -168,11 +168,11 @@ test('9. EclipseAnalyticsManager & EclipseFrameGovernor', () => {
 test('10. index.html script tags order', () => {
   const html = fs.readFileSync(path.join(__dirname, '../src/renderer/index.html'), 'utf8');
 
-  const themeIdx = html.indexOf('src="theme-presets.js"');
-  const dnaIdx = html.indexOf('src="song-dna.js"');
-  const analyticsIdx = html.indexOf('src="eclipse-analytics.js"');
-  const frameGovIdx = html.indexOf('src="frame-governor.js"');
-  const bridgeIdx = html.indexOf('src="integration-bridge.js"');
+  const themeIdx = html.indexOf('src="ui/theme-presets.js"');
+  const dnaIdx = html.indexOf('src="features/song-dna.js"');
+  const analyticsIdx = html.indexOf('src="features/eclipse-analytics.js"');
+  const frameGovIdx = html.indexOf('src="ui/frame-governor.js"');
+  const bridgeIdx = html.indexOf('src="ui/integration-bridge.js"');
 
   assert.ok(themeIdx > 0, 'theme-presets.js script tag found');
   assert.ok(dnaIdx > 0, 'song-dna.js script tag found');
@@ -188,10 +188,10 @@ test('10. index.html script tags order', () => {
 
 test('11. Zero competitor brand mentions in newly added UI presets and modules', () => {
   const checkFiles = [
-    '../src/renderer/theme-presets.js',
-    '../src/renderer/song-dna.js',
-    '../src/renderer/eclipse-analytics.js',
-    '../src/renderer/frame-governor.js'
+    '../src/renderer/ui/theme-presets.js',
+    '../src/renderer/features/song-dna.js',
+    '../src/renderer/features/eclipse-analytics.js',
+    '../src/renderer/ui/frame-governor.js'
   ];
 
   const forbidden = [/\bsimpmusic\b/i, /\bechomusic\b/i];

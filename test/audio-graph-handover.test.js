@@ -11,7 +11,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const AutoMixDJ = require('../src/renderer/automix-dj.js');
+const AutoMixDJ = require('../src/renderer/automix/automix-dj.js');
 const { PlaybackHandover } = require('../src/renderer/automix/playback-handover.js');
 
 function createMockAudioContext() {
@@ -158,7 +158,7 @@ function loadAudioEngineClass(MockAudioContext) {
   sandbox.global = sandbox;
   sandbox.self = sandbox.window;
 
-  const audioSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/audio.js'), 'utf8');
+  const audioSrc = fs.readFileSync(path.join(__dirname, '../src/renderer/audio/audio.js'), 'utf8');
   vm.runInNewContext(audioSrc, sandbox);
   return { EclipseAudioEngine: sandbox.EclipseAudioEngine || sandbox.window.EclipseAudioEngine, eventsDispatched, sandbox };
 }

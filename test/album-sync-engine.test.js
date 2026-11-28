@@ -12,9 +12,9 @@ const {
   getEntityIdentityKey,
   mergeSavedAlbumEntities,
   createLibrarySyncCoordinator
-} = require('../src/renderer/album-sync-engine');
+} = require('../src/renderer/library/album-sync-engine');
 
-const { sortTracks, TRACK_SORT_MODES } = require('../src/renderer/track-sort');
+const { sortTracks, TRACK_SORT_MODES } = require('../src/renderer/library/track-sort');
 
 test('1. Album Sort: all 5 modes work, missing duration goes last in asc & desc, original order preserved', () => {
   assert.ok(TRACK_SORT_MODES.includes('manual'));

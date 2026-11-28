@@ -4,7 +4,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const AutoMixDJ = require('../src/renderer/automix-dj.js');
+const AutoMixDJ = require('../src/renderer/automix/automix-dj.js');
 const { PreloadManager } = require('../src/renderer/automix/preload-manager.js');
 const { VALID_AUTOMIX_MODES, resolveInitialAutoMixMode } = require('../src/renderer/automix/settings-controller.js');
 
@@ -230,6 +230,6 @@ test('PreloadManager tracks explicit preload stages and handles slow/failed stre
 test('Deck B CORS invariant: integration-bridge sets crossOrigin = anonymous on eclipse-aux-audio', () => {
   const fs = require('node:fs');
   const path = require('node:path');
-  const src = fs.readFileSync(path.join(__dirname, '../src/renderer/integration-bridge.js'), 'utf8');
+  const src = fs.readFileSync(path.join(__dirname, '../src/renderer/ui/integration-bridge.js'), 'utf8');
   assert.ok(src.includes("auxAudio.crossOrigin = 'anonymous'"), 'eclipse-aux-audio must set crossOrigin = anonymous to prevent WebAudio CORS silence');
 });

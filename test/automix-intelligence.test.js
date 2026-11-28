@@ -2,7 +2,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const AutoMixDJ = require('../src/renderer/automix-dj.js');
+const AutoMixDJ = require('../src/renderer/automix/automix-dj.js');
 const { TrackAnalyzer } = require('../src/renderer/automix/track-analyzer.js');
 const { AnalysisCoordinator } = require('../src/renderer/automix/analysis-coordinator.js');
 

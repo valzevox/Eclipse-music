@@ -617,7 +617,7 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
   });
 
   it('P0/P1 Full Cancellation Semantics: verifies seek, pause, skip, mode_change, queue_replaced, and error', () => {
-    const AutoMixDJ = require('../src/renderer/automix-dj.js');
+    const AutoMixDJ = require('../src/renderer/automix/automix-dj.js');
     const dj = new AutoMixDJ();
     dj.configure({ mode: 'dj_mix', keepAlbumContinuous: true });
 
@@ -783,7 +783,7 @@ describe('P1/P2 — Routing, Queue Fingerprint, WAV (22k/44.1k), FFmpeg MP3/M4A 
   });
 
   it('P0 syncAutoMixSettings: dispatches eclipse:automix-mode-changed once, preserves 5 modes, and suppresses unneeded aborts', () => {
-    const AutoMixDJ = require('../src/renderer/automix-dj.js');
+    const AutoMixDJ = require('../src/renderer/automix/automix-dj.js');
 
     // Setup mock browser environment (localStorage + window event dispatch)
     const store = new Map();

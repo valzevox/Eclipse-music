@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { EclipsePreloadManager } = require('../src/renderer/preload-manager');
+const { EclipsePreloadManager } = require('../src/renderer/audio/preload-manager');
 
 test('EclipsePreloadManager: Trending Sequential Preload queues at most top 3 tracks', async () => {
   const executed = [];
