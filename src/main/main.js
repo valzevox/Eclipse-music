@@ -267,6 +267,10 @@ function runGUI() {
     if (storageFlushTimer) { clearTimeout(storageFlushTimer); storageFlushTimer = null; }
     if (data && typeof data === 'object') {
       latestStorageSnapshot = data;
+      storageDirty = false;
+      writeStorageDiskSync(latestStorageSnapshot);
+    } else if (storageDirty && latestStorageSnapshot) {
+      storageDirty = false;
       writeStorageDiskSync(latestStorageSnapshot);
     }
     event.returnValue = true;

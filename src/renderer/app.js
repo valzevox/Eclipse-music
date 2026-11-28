@@ -19273,6 +19273,46 @@ function bindCoverHoldZoom(wrapEl) {
     syncActiveProxyToBackend();
   }
 
+  function captureSongQualitySnapshot(requestedValue) {
+    const label = document.getElementById('label-song-quality');
+    const menu = document.getElementById('menu-song-quality');
+    const selectedEl = menu ? menu.querySelector('.m3-dropdown-option.selected') : null;
+    let localStorageReadback = null;
+    try {
+      localStorageReadback = localStorage.getItem('eclipse_audio_quality');
+    } catch (_) {}
+    const storageMapValue = (typeof window !== 'undefined' && window.__RIFF_STORAGE_MAP__ && typeof window.__RIFF_STORAGE_MAP__ === 'object')
+      ? (Object.prototype.hasOwnProperty.call(window.__RIFF_STORAGE_MAP__, 'eclipse_audio_quality') ? window.__RIFF_STORAGE_MAP__['eclipse_audio_quality'] : null)
+      : null;
+    return {
+      requestedValue: requestedValue ?? null,
+      localStorageReadback,
+      storageMapValue,
+      dropdownLabel: label ? label.textContent.trim() : null,
+      selectedOption: selectedEl ? (selectedEl.dataset.val || null) : null,
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  function logSongQualityDiagnostic(stage, requestedValue) {
+    const snap = captureSongQualitySnapshot(requestedValue);
+    console.info(`[quality-setting] ${stage}`, snap);
+    if (requestedValue === 'high' || requestedValue === 'max') {
+      const failedSteps = [];
+      if (snap.localStorageReadback !== requestedValue) failedSteps.push(`localStorageReadback=${snap.localStorageReadback}`);
+      if (typeof window !== 'undefined' && window.__RIFF_STORAGE_MAP__ && snap.storageMapValue !== requestedValue) {
+        failedSteps.push(`storageMap=${snap.storageMapValue}`);
+      }
+      if (snap.selectedOption !== requestedValue) failedSteps.push(`selectedOption=${snap.selectedOption}`);
+      const expectedLabel = requestedValue === 'high' ? 'High' : 'Max';
+      if (snap.dropdownLabel !== expectedLabel) failedSteps.push(`dropdownLabel=${snap.dropdownLabel}`);
+      if (failedSteps.length > 0) {
+        console.warn(`[quality-setting] persistence-mismatch at ${stage}: requested=${requestedValue}, failed=[${failedSteps.join(', ')}]`);
+      }
+    }
+    return snap;
+  }
+
   function initSongQualitySetting() {
     const drop = document.getElementById('dropdown-song-quality');
     const trigger = document.getElementById('btn-song-quality-trigger');
@@ -19282,8 +19322,11 @@ function bindCoverHoldZoom(wrapEl) {
     if (!drop || !trigger || !menu) return;
 
     const qualityNames = { low: 'Low', medium: 'Medium', high: 'High', max: 'Max' };
-    const saved = localStorage.getItem('eclipse_audio_quality') || 'medium';
-    const active = qualityNames[saved] ? saved : 'medium';
+    const saved = localStorage.getItem('eclipse_audio_quality');
+    if (saved && !qualityNames[saved]) {
+      console.warn(`[quality-setting] invalid-saved-value at init: saved=${saved}`);
+    }
+    const active = (saved && qualityNames[saved]) ? saved : 'medium';
 
     const applySelection = (val) => {
       if (label) label.textContent = qualityNames[val] || 'Medium';
@@ -19304,16 +19347,26 @@ function bindCoverHoldZoom(wrapEl) {
         e.stopPropagation();
         const val = opt.dataset.val;
         if (val) {
+          window.__eclipseLastRequestedQuality = val;
           localStorage.setItem('eclipse_audio_quality', val);
           applySelection(val);
         }
         drop.classList.remove('open');
+        logSongQualityDiagnostic('click', val || null);
+        queueMicrotask(() => {
+          logSongQualityDiagnostic('immediate-readback', val || null);
+        });
+        setTimeout(() => {
+          logSongQualityDiagnostic('delayed-readback', val || null);
+        }, 300);
       });
     });
 
     document.addEventListener('click', () => {
       drop.classList.remove('open');
     });
+
+    window.__eclipseQualitySettingInitialized = true;
   }
 
   function showSettingsCategory(cat) {
@@ -19326,6 +19379,9 @@ function bindCoverHoldZoom(wrapEl) {
     if (cat === 'custom-themes' && typeof renderThemeCards === 'function') renderThemeCards();
     if (cat === 'plugins' && typeof reloadPluginsList === 'function') reloadPluginsList();
     refreshStacks();
+    if (window.__eclipseQualitySettingInitialized) {
+      logSongQualityDiagnostic('settings-reopen', window.__eclipseLastRequestedQuality || null);
+    }
   }
   window.showSettingsCategory = showSettingsCategory;
 
