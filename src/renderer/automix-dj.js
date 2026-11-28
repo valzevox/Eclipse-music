@@ -710,7 +710,7 @@ class AutoMixDJ {
         pending.cancelled = true;
         pending.reason = reason;
         this._pendingTransition = null;
-        const cancellationReasons = ['pause', 'seek', 'skip', 'next', 'prev', 'manual', 'user_cancelled', 'user_skipped', 'queue_replaced', 'mode_change'];
+        const cancellationReasons = ['pause', 'seek', 'skip', 'next', 'prev', 'manual', 'user_cancelled', 'user_skipped', 'queue_replaced', 'mode_change', 'mv_active'];
         const isCancelled = cancellationReasons.includes(reason);
         this.emitTransitionState({
           phase: isCancelled ? 'cancelled' : 'failed',

@@ -12257,6 +12257,26 @@ async function playTrack(track, queueList = null, startIndex = -1, context = nul
         }
       },
       {
+        id: 'change-source',
+        label: 'Change audio source',
+        icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
+        action: () => {
+          if (window.EclipseTrackSourceUI && typeof window.EclipseTrackSourceUI.openChangeAudioSourceModal === 'function') {
+            window.EclipseTrackSourceUI.openChangeAudioSourceModal(track);
+          }
+        }
+      },
+      {
+        id: 'top-moment',
+        label: 'Mark Top Moment',
+        icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
+        action: () => {
+          if (window.EclipseTopMoments && typeof window.EclipseTopMoments.promptAddMoment === 'function') {
+            window.EclipseTopMoments.promptAddMoment(track);
+          }
+        }
+      },
+      {
         id: 'trim',
         label: 'Trim best part',
         icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>',
@@ -14907,6 +14927,60 @@ function renderClickableArtists(container, rawArtist) {
     }
     state.currentPlaylistId = playlistId;
     state.currentPlaylist = pl;
+    const provBadge = document.getElementById('playlist-provenance-badge');
+    if (provBadge) {
+      const src = pl.importSource || pl.importedFrom || '';
+      const syncedAt = pl.lastSyncedAt || pl.importedAt || null;
+      if (src) {
+        const dateStr = syncedAt ? ` • ${new Date(syncedAt).toLocaleDateString()}` : '';
+        provBadge.textContent = `Imported from ${src}${dateStr}`;
+        provBadge.classList.remove('hidden');
+      } else {
+        provBadge.textContent = '';
+        provBadge.classList.add('hidden');
+      }
+    }
+    const addLocalPlBtn = document.getElementById('btn-playlist-add-local');
+    if (addLocalPlBtn) {
+      addLocalPlBtn.onclick = async () => {
+        if (!window.electronAPI || !window.electronAPI.pickLocalFiles) return;
+        const picked = await window.electronAPI.pickLocalFiles();
+        if (!Array.isArray(picked) || picked.length === 0) return;
+        if (typeof mergeLocalFiles === 'function') mergeLocalFiles(picked);
+        if (!Array.isArray(pl.tracks)) pl.tracks = [];
+        const existingKeys = new Set(pl.tracks.map((t) => String(t.path || t.id || `${t.artist}::${t.title}`)));
+        let added = 0;
+        for (const t of picked) {
+          const k = String(t.path || t.id || `${t.artist}::${t.title}`);
+          if (!existingKeys.has(k)) {
+            pl.tracks.push(t);
+            existingKeys.add(k);
+            added++;
+          }
+        }
+        try { localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists)); } catch (_) {}
+        if (typeof showToast === 'function') showToast(`Added ${added} local track(s) to playlist`, 'success');
+        openPlaylistDetail(pl.id);
+      };
+    }
+    const researchPlBtn = document.getElementById('btn-playlist-research');
+    if (researchPlBtn) {
+      researchPlBtn.onclick = async () => {
+        if (!window.EclipseTrackSourceUI || !Array.isArray(pl.tracks)) return;
+        researchPlBtn.disabled = true;
+        try {
+          const res = await window.EclipseTrackSourceUI.bulkResearchPlaylistTracks(pl.tracks, {
+            platform: state.platform || 'ytmusic',
+            currentTrackId: state.currentTrack?.id || null
+          });
+          try { localStorage.setItem('devsize_playlists', JSON.stringify(state.playlists)); } catch (_) {}
+          if (typeof showToast === 'function') showToast(`Re-searched ${res.updated}/${res.total} tracks`, 'success');
+          openPlaylistDetail(pl.id);
+        } finally {
+          researchPlBtn.disabled = false;
+        }
+      };
+    }
     if (el.playlistDetailTitle) {
       el.playlistDetailTitle.textContent = pl.name || 'Untitled';
       el.playlistDetailTitle.contentEditable = 'plaintext-only';

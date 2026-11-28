@@ -478,7 +478,7 @@ function runGUI() {
   }
 
   async function createWindow() {
-    serverPort = await startServer(PORT);
+    serverPort = await startServer(PORT, { userDataDir: app.getPath('userData') });
     const firstRun = !tutorialDone();
     const initialBounds = getResponsiveWindowBounds();
     const savedState = readWindowState();

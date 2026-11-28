@@ -2894,6 +2894,25 @@ async function handleStreamInfo(req, res, trackUrl, trackId, platform = 'youtube
     trackUrl = '';
   }
 
+  // Apply persistent manual audio source mapping & blocklist precedence
+  try {
+    const trackSourceStore = require('./track-source-store');
+    const savedSource = trackSourceStore.getSavedTrackSource(artist, title);
+    if (savedSource) {
+      const blockedSet = new Set(savedSource.blockedSourceIds || []);
+      if (savedSource.selectedSource && savedSource.selectedSource.sourceId && !blockedSet.has(savedSource.selectedSource.sourceId) && !forceYtDlp) {
+        cleanId = savedSource.selectedSource.sourceId;
+        platform = savedSource.selectedSource.provider || platform;
+        if (savedSource.selectedSource.canonicalUrl) {
+          trackUrl = savedSource.selectedSource.canonicalUrl;
+        }
+      } else if (cleanId && blockedSet.has(cleanId)) {
+        cleanId = '';
+        trackUrl = '';
+      }
+    }
+  } catch (_) {}
+
   const isSc = platform === "soundcloud" || (trackUrl && trackUrl.includes("soundcloud.com"));
   if (isSc && (!title && !artist) && trackUrl) {
     const slugMatch = trackUrl.match(/soundcloud\.com\/[^/]+\/([^/?#]+)/);
@@ -6566,7 +6585,13 @@ const TOKEN_PROTECTED_ROUTES = new Set([
   '/api/clear-offline-library',
   '/api/save-custom-lyrics',
   '/api/encode',
-  '/api/yandex-import'
+  '/api/yandex-import',
+  '/api/ytm/mv',
+  '/api/ytm/mv/override',
+  '/api/ytm/mv/invalidate',
+  '/api/track-source',
+  '/api/track-source/block',
+  '/api/track-source/reset'
 ]);
 
 function getServerToken() {
@@ -10176,18 +10201,227 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (parsedUrl.pathname === '/api/ytm/mv') {
-    const id = (parsedUrl.query.id || '').toString();
+  if (parsedUrl.pathname === '/api/track-source' && req.method === 'GET') {
+    const artist = (parsedUrl.query.artist || '').toString();
+    const title = (parsedUrl.query.title || '').toString();
+    const trackSourceStore = require('./track-source-store');
+    const data = trackSourceStore.getSavedTrackSource(artist, title);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ success: true, data }));
+  }
+
+  if (parsedUrl.pathname === '/api/track-source' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => {
+      if (res.writableEnded) return;
+      body += chunk;
+      if (body.length > MAX_BODY_BYTES) {
+        body = '';
+        req.removeAllListeners('data');
+        req.removeAllListeners('end');
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'payload too large' }));
+        req.resume();
+      }
+    });
+    req.on('end', async () => {
+      if (res.writableEnded) return;
+      const payload = safeJsonParse(body, {});
+      const artist = typeof payload.artist === 'string' ? payload.artist.trim() : '';
+      const title = typeof payload.title === 'string' ? payload.title.trim() : '';
+      const sourceId = typeof payload.sourceId === 'string' ? payload.sourceId.trim() : '';
+      if ((!artist && !title) || !sourceId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: 'artist/title and sourceId are required' }));
+      }
+      try {
+        const trackSourceStore = require('./track-source-store');
+        const saved = await trackSourceStore.saveTrackSource(artist, title, {
+          provider: payload.provider || 'youtube',
+          sourceId,
+          canonicalUrl: payload.canonicalUrl || '',
+          sourceMeta: payload.sourceMeta || { title, artist, thumbnail: payload.thumbnail || '' },
+          selection: payload.selection || 'manual'
+        });
+        for (const k of Array.from(streamUrlCache.keys())) {
+          if (k.includes(sourceId.toLowerCase()) || (title && k.includes(title.toLowerCase()))) {
+            streamUrlCache.delete(k);
+          }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, data: saved }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/track-source/block' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => {
+      if (res.writableEnded) return;
+      body += chunk;
+      if (body.length > MAX_BODY_BYTES) {
+        body = '';
+        req.removeAllListeners('data');
+        req.removeAllListeners('end');
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'payload too large' }));
+        req.resume();
+      }
+    });
+    req.on('end', async () => {
+      if (res.writableEnded) return;
+      const payload = safeJsonParse(body, {});
+      const artist = typeof payload.artist === 'string' ? payload.artist.trim() : '';
+      const title = typeof payload.title === 'string' ? payload.title.trim() : '';
+      const sourceId = typeof payload.sourceId === 'string' ? payload.sourceId.trim() : '';
+      if ((!artist && !title) || !sourceId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: 'artist/title and sourceId are required' }));
+      }
+      try {
+        const trackSourceStore = require('./track-source-store');
+        const data = await trackSourceStore.blockTrackSource(artist, title, sourceId);
+        for (const k of Array.from(streamUrlCache.keys())) {
+          if (k.includes(sourceId.toLowerCase())) streamUrlCache.delete(k);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, data }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/track-source/reset' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => {
+      if (res.writableEnded) return;
+      body += chunk;
+      if (body.length > MAX_BODY_BYTES) {
+        body = '';
+        req.removeAllListeners('data');
+        req.removeAllListeners('end');
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'payload too large' }));
+        req.resume();
+      }
+    });
+    req.on('end', async () => {
+      if (res.writableEnded) return;
+      const payload = safeJsonParse(body, {});
+      const artist = typeof payload.artist === 'string' ? payload.artist.trim() : '';
+      const title = typeof payload.title === 'string' ? payload.title.trim() : '';
+      if (!artist && !title) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: 'artist or title is required' }));
+      }
+      try {
+        const trackSourceStore = require('./track-source-store');
+        const data = await trackSourceStore.resetTrackSource(artist, title);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, data }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/mv' && req.method === 'GET') {
+    const songId = (parsedUrl.query.songId || parsedUrl.query.id || '').toString();
     const title = (parsedUrl.query.title || '').toString();
     const artist = (parsedUrl.query.artist || '').toString();
+    const durationSec = parsedUrl.query.durationSec ? Number(parsedUrl.query.durationSec) : undefined;
+    const forceRefresh = parsedUrl.query.forceRefresh === '1' || parsedUrl.query.forceRefresh === 'true';
     try {
-      const data = await ytmMv.resolveMusicVideo(id, title, artist);
+      const data = await ytmMv.resolveMusicVideo({ songId, title, artist, durationSec, forceRefresh });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ success: true, ...data }));
     } catch (e) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ success: false, error: e.message }));
     }
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/mv/override' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => {
+      if (res.writableEnded) return;
+      body += chunk;
+      if (body.length > MAX_BODY_BYTES) {
+        body = '';
+        req.removeAllListeners('data');
+        req.removeAllListeners('end');
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'payload too large' }));
+        req.resume();
+      }
+    });
+    req.on('end', async () => {
+      if (res.writableEnded) return;
+      const payload = safeJsonParse(body, {});
+      const songId = typeof payload.songId === 'string' ? payload.songId.trim() : '';
+      const mvVideoId = typeof payload.mvVideoId === 'string' ? payload.mvVideoId.trim() : '';
+      const offsetMs = payload.offsetMs !== undefined ? Number(payload.offsetMs) : undefined;
+      const offsetUserOverride = payload.offsetUserOverride !== undefined ? Boolean(payload.offsetUserOverride) : true;
+      if (!songId || !/^[a-zA-Z0-9_-]{11}$/.test(mvVideoId) || (offsetMs !== undefined && !Number.isFinite(offsetMs))) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: 'invalid override payload' }));
+      }
+      try {
+        const mvMappingStore = require('./mv-mapping-store');
+        const mapping = await mvMappingStore.saveManualOverride(songId, { mvVideoId, offsetMs, offsetUserOverride });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, mapping }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/ytm/mv/invalidate' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => {
+      if (res.writableEnded) return;
+      body += chunk;
+      if (body.length > MAX_BODY_BYTES) {
+        body = '';
+        req.removeAllListeners('data');
+        req.removeAllListeners('end');
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'payload too large' }));
+        req.resume();
+      }
+    });
+    req.on('end', async () => {
+      if (res.writableEnded) return;
+      const payload = safeJsonParse(body, {});
+      const songId = typeof payload.songId === 'string' ? payload.songId.trim() : '';
+      const reason = typeof payload.reason === 'string' ? payload.reason.trim() : 'unavailable';
+      if (!songId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: 'songId is required' }));
+      }
+      try {
+        const mvMappingStore = require('./mv-mapping-store');
+        const mapping = await mvMappingStore.invalidateMapping(songId, { reason });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, mapping }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
   }
 
   if (parsedUrl.pathname === '/api/storage/stats') {
@@ -11370,7 +11604,13 @@ if (parsedUrl.pathname === '/api/ytm/intercept-cookie' && req.method === 'POST')
   res.end('Not found');
 });
 
-function startServer(port = PORT) {
+function startServer(port = PORT, options = {}) {
+  if (options && options.userDataDir) {
+    try {
+      require('./mv-mapping-store').configure({ userDataDir: options.userDataDir });
+      require('./track-source-store').configure({ userDataDir: options.userDataDir });
+    } catch (_) {}
+  }
   if (server.listening) {
     const address = server.address();
     return Promise.resolve(address && typeof address === 'object' ? address.port : port);

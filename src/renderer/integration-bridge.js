@@ -51,7 +51,18 @@
       try {
         window.eclipseMvPlayerInstance = new window.EclipseMvPlayer({
           audioElement: nativeAudio,
-          apiBase: apiBase
+          apiBase: apiBase,
+          apiToken: token,
+          onAdvanceQueue: () => {
+            if (typeof window._eclipsePlayNext === 'function') {
+              window._eclipsePlayNext();
+            }
+          },
+          onAbortAutoMix: (reason) => {
+            if (window.autoMixDjInstance && typeof window.autoMixDjInstance.abortCrossfade === 'function') {
+              window.autoMixDjInstance.abortCrossfade(reason);
+            }
+          }
         });
 
         const coreSt = getCoreState();
@@ -477,7 +488,7 @@
               const skipCheck = typeof window.autoMixDjInstance.shouldSkipCrossfade === 'function'
                 ? window.autoMixDjInstance.shouldSkipCrossfade(currentTrack, nextTrack, {
                     gaplessSameAlbum: keepAlbumsContinuous,
-                    isVideoMode: !!(window.eclipseMvPlayer && window.eclipseMvPlayer.isVideoMode),
+                    isVideoMode: window.eclipseMvPlayerInstance?.isMvActive?.() === true,
                     isRepeatOne: !!(st.isRepeat || st.repeatMode === 1 || st.repeatMode === 'one'),
                     inSyncRoom: !!(window.syncRoomInstance && typeof window.syncRoomInstance.isActiveRoom === 'function' && window.syncRoomInstance.isActiveRoom())
                   })
